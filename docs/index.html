@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>台股成交值排行</title>
+<meta name="description" content="台股上市成交值前 200 大排行與歷史變動">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0f1216">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="成交值排行">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="app-bar">
+  <div class="app-bar__top">
+    <h1>台股成交值排行</h1>
+    <select id="date-select" aria-label="交易日期"></select>
+  </div>
+  <p class="app-bar__meta" id="meta">載入中…</p>
+</header>
+
+<nav class="tabs" id="tabs">
+  <a href="#/rank" data-view="rank">排行</a>
+  <a href="#/streak" data-view="streak">站穩</a>
+  <a href="#/moves" data-view="moves">異動</a>
+  <a href="#/stock" data-view="stock">個股</a>
+  <a href="#/compare" data-view="compare">對照</a>
+</nav>
+
+<main id="view" class="view">
+  <p class="hint">載入中…</p>
+</main>
+
+<footer class="foot">
+  資料來源：臺灣證券交易所公開資訊（上市，含 ETF）。僅供參考，非投資建議。
+</footer>
+
+<script src="app.js" defer></script>
+</body>
+</html>

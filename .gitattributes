@@ -1,0 +1,3 @@
+# 統一以 LF 存進倉庫：排程跑在 Linux runner 上，避免 CRLF 造成無謂差異
+* text=auto eol=lf
+*.png binary

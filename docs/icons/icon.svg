@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="台股成交值排行">
+  <rect width="512" height="512" rx="112" fill="#0f1216"/>
+  <g fill="#2f6fed">
+    <rect x="96" y="300" width="60" height="116" rx="10"/>
+    <rect x="188" y="236" width="60" height="180" rx="10"/>
+  </g>
+  <g fill="#d92d20">
+    <rect x="280" y="168" width="60" height="248" rx="10"/>
+    <rect x="372" y="96" width="60" height="320" rx="10"/>
+  </g>
+</svg>

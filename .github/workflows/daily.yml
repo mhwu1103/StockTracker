@@ -1,0 +1,75 @@
+name: 每日更新成交值排行
+
+on:
+  schedule:
+    # UTC 08:30 = 台灣 16:30，收盤資料此時已更新完成
+    - cron: "30 8 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 把資料 commit 回倉庫
+  pages: write      # 發佈網站
+  id-token: write   # 部署到 Pages 時的身分驗證
+
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安裝相依套件
+        run: pip install -r requirements.txt
+
+      - name: 抓取當日收盤行情
+        run: python scripts/fetch_daily.py
+
+      # GitHub 的排程可能被延遲甚至整次跳過，當日 API 又只提供最新一個交易日。
+      # 這一步用歷史 API 補上最近兩週內任何缺漏的交易日，已存在的日期不會發出請求。
+      - name: 補抓遺漏的交易日
+        run: python scripts/backfill.py --days 14 --sleep 4
+
+      - name: 重建索引與歷史序列
+        run: python scripts/build_history.py
+
+      - name: 提交資料變更
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/data
+          if git diff --staged --quiet; then
+            echo "資料無變化（可能是非交易日），不提交。"
+          else
+            git commit -m "資料更新 $(TZ=Asia/Taipei date +%Y-%m-%d)"
+            git push
+          fi
+
+      # 由本流程直接發佈網站。不倚賴「push 觸發 Pages 建置」——bot 的 push
+      # 不會觸發後續事件，那條路可能讓網站停在舊資料。
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+      # 沒設定 secret 時會自動略過，不會讓整個流程失敗。
+      # 非交易日因為沒有當天的新資料，也不會重複推播。
+      - name: 推播 Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SITE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: python scripts/notify_telegram.py

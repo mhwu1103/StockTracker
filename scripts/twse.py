@@ -1,0 +1,243 @@
+"""共用工具：抓取臺灣證券交易所公開資料並正規化欄位。
+
+兩個資料來源產出的紀錄格式完全相同，差別只在：
+  - STOCK_DAY_ALL：只有「當日」資料，每日排程用。
+  - MI_INDEX     ：可指定任一交易日，歷史回補用。
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+import requests
+
+ROOT = Path(__file__).resolve().parent.parent
+SITE_DIR = ROOT / "docs"
+DATA_DIR = SITE_DIR / "data"
+DAILY_DIR = DATA_DIR / "daily"
+HISTORY_DIR = DATA_DIR / "history"
+INDEX_PATH = DATA_DIR / "index.json"
+
+# 多存 100 名，前端才能正確判斷前 200 名的「進榜／掉出榜」
+TOP_N = 300
+
+# 「進榜」的定義：成交值前 200 名。連續進榜天數以此為準，需與前端 app.js 的 TOP 一致。
+STREAK_RANK = 200
+
+TAIPEI = timezone(timedelta(hours=8))
+
+STOCK_DAY_ALL_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+MI_INDEX_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StockTracker/1.0",
+    "Accept": "application/json, text/plain, */*",
+}
+
+# 只追蹤普通股／特別股（4 碼 + 選擇性英文字母）與 ETF／ETN（00 開頭），
+# 排除權證、牛熊證等 6 碼商品。
+_CODE_RE = re.compile(r"^(?:\d{4}[A-Z]?|00\d{2,4}[A-Z]?)$")
+_TAG_RE = re.compile(r"<[^>]*>")
+
+
+# --------------------------------------------------------------------------- #
+# 基礎工具
+# --------------------------------------------------------------------------- #
+def taipei_today() -> date:
+    return datetime.now(TAIPEI).date()
+
+
+def is_tracked_code(code: str) -> bool:
+    return bool(_CODE_RE.match(str(code).strip()))
+
+
+def strip_tags(raw) -> str:
+    return _TAG_RE.sub("", str(raw)).replace("　", " ").strip()
+
+
+def clean_number(raw):
+    """'1,234,567' -> 1234567.0；'--'、''、'X'、None -> None"""
+    if raw is None:
+        return None
+    text = strip_tags(raw).replace(",", "").replace("+", "").replace(" ", "")
+    if text in ("", "--", "---", "X", "x", "N/A"):
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def roc_to_iso(roc) -> str:
+    """民國日期 '1150814' 或 '115/08/14' -> '2026-08-14'"""
+    text = str(roc).strip()
+    if "/" in text:
+        year, month, day = text.split("/")
+    else:
+        text = text.zfill(7)
+        year, month, day = text[:-4], text[-4:-2], text[-2:]
+    return f"{int(year) + 1911:04d}-{int(month):02d}-{int(day):02d}"
+
+
+def change_pct(close, change):
+    """由收盤價與漲跌價差回推漲跌百分比。"""
+    if close is None or change is None:
+        return None
+    prev = close - change
+    if prev <= 0:
+        return None
+    return round(change / prev * 100, 2)
+
+
+def fetch_json(url, params=None, *, retries=3, timeout=30, backoff=3.0):
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as err:  # 網路錯誤、限流、非 JSON 回應都在此重試
+            last_err = err
+            if attempt < retries:
+                wait = backoff * attempt
+                print(f"  ! {type(err).__name__}: {err} — {wait:.0f} 秒後重試 ({attempt}/{retries})")
+                time.sleep(wait)
+    raise RuntimeError(f"抓取失敗 {url} params={params}：{last_err}")
+
+
+# --------------------------------------------------------------------------- #
+# 紀錄組裝
+# --------------------------------------------------------------------------- #
+def make_record(code, name, volume, value, close, change):
+    """把任一來源的一列資料轉成統一格式；不該追蹤或無成交者回傳 None。"""
+    code = str(code).strip()
+    if not is_tracked_code(code):
+        return None
+    trade_value = clean_number(value)
+    if not trade_value:
+        return None
+    close_price = clean_number(close)
+    return {
+        "code": code,
+        "name": strip_tags(name),
+        "value": int(trade_value),
+        "volume": int(clean_number(volume) or 0),
+        "close": close_price,
+        "changePct": change_pct(close_price, clean_number(change)),
+    }
+
+
+def build_payload(date_iso: str, source: str, records: list, top_n: int = TOP_N) -> dict:
+    ordered = sorted(records, key=lambda r: r["value"], reverse=True)
+    top = []
+    for rank, rec in enumerate(ordered[:top_n], start=1):
+        item = dict(rec)
+        item["rank"] = rank
+        top.append(item)
+    return {
+        "date": date_iso,
+        "source": source,
+        "marketCount": len(ordered),
+        "marketValue": sum(r["value"] for r in ordered),
+        "stocks": top,
+    }
+
+
+def daily_path(date_iso: str) -> Path:
+    return DAILY_DIR / f"{date_iso}.json"
+
+
+def write_json(path: Path, payload) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_daily(payload: dict) -> Path:
+    return write_json(daily_path(payload["date"]), payload)
+
+
+# --------------------------------------------------------------------------- #
+# 來源一：當日全部上市收盤行情（OpenAPI）
+# --------------------------------------------------------------------------- #
+def fetch_stock_day_all():
+    rows = fetch_json(STOCK_DAY_ALL_URL)
+    if not rows:
+        raise RuntimeError("STOCK_DAY_ALL 回傳空資料")
+    date_iso = roc_to_iso(rows[0]["Date"])
+    records = []
+    for row in rows:
+        rec = make_record(
+            row.get("Code"),
+            row.get("Name"),
+            row.get("TradeVolume"),
+            row.get("TradeValue"),
+            row.get("ClosingPrice"),
+            row.get("Change"),
+        )
+        if rec:
+            records.append(rec)
+    return date_iso, records
+
+
+# --------------------------------------------------------------------------- #
+# 來源二：指定日期全部上市收盤行情（歷史回補）
+# --------------------------------------------------------------------------- #
+def fetch_mi_index(day: date):
+    """回傳 (date_iso, records)；非交易日回傳 None。"""
+    payload = fetch_json(
+        MI_INDEX_URL,
+        {"date": day.strftime("%Y%m%d"), "type": "ALLBUT0999", "response": "json"},
+    )
+    if not payload or payload.get("stat") != "OK":
+        return None
+
+    table = next(
+        (t for t in payload.get("tables") or [] if "每日收盤行情" in (t.get("title") or "")),
+        None,
+    )
+    if table is None or not table.get("data"):
+        return None
+
+    fields = [re.sub(r"\s", "", str(f)) for f in table.get("fields") or []]
+
+    def idx(label):
+        for i, field in enumerate(fields):
+            if field.startswith(label):
+                return i
+        return None
+
+    i_code, i_name = idx("證券代號"), idx("證券名稱")
+    i_volume, i_value = idx("成交股數"), idx("成交金額")
+    i_close, i_diff, i_sign = idx("收盤價"), idx("漲跌價差"), idx("漲跌(+/-)")
+    if None in (i_code, i_name, i_volume, i_value, i_close, i_diff):
+        raise RuntimeError(f"MI_INDEX 欄位格式已改變：{fields}")
+
+    records = []
+    for row in table["data"]:
+        diff = clean_number(row[i_diff])
+        if diff is not None and i_sign is not None and strip_tags(row[i_sign]).startswith("-"):
+            diff = -diff
+        rec = make_record(row[i_code], row[i_name], row[i_volume], row[i_value], row[i_close], diff)
+        if rec:
+            records.append(rec)
+
+    if not records:
+        return None
+    return day.isoformat(), records
+
+
+# --------------------------------------------------------------------------- #
+# 既有資料查詢
+# --------------------------------------------------------------------------- #
+def existing_dates() -> list:
+    if not DAILY_DIR.exists():
+        return []
+    return sorted(p.stem for p in DAILY_DIR.glob("*.json"))
