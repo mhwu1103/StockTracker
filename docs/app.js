@@ -7,6 +7,16 @@ const CHART_CDN = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.mi
 // 圖表線色。Chart.js 吃不到 CSS 變數，只能寫死；深淺色模式都看得清楚的中間色調。
 const LINE = { rank: '#2f6fed', market: '#2f6fed', top200: '#7b61ff', top10: '#d92d20' };
 
+// 這份 app.js 自己的版號，取自 index.html 的 <script src="app.js?v=N">。
+// 「新資料配舊前端」的災情全靠這個數字才認得出來，所以錯誤訊息一定要帶上它。
+const APP_VERSION = (() => {
+  try {
+    return new URL(document.currentScript.src).searchParams.get('v') || 'dev';
+  } catch (err) {
+    return 'dev';
+  }
+})();
+
 const TAIPEI_OFFSET_MIN = 8 * 60;
 // 最新資料距今超過這麼多個日曆日就提示。週五收盤後到週一盤中最多差 3 天，
 // 取 4 是為了讓正常的週末不會誤報 —— 寧可晚一天提醒，也不要天天狼來了。
@@ -50,6 +60,59 @@ const fmtOku = (oku) => `${num(oku)} 億`;             // history 存的已是�
 const trend = (v) => (v > 0 ? 'up' : v < 0 ? 'down' : 'flat');
 
 // --------------------------------------------------------------------------
+// 快取救援
+//
+// data/index.json 一律 cache: 'reload' 抓最新的，外殼（app.js）卻可能被瀏覽器或
+// Service Worker 留在舊版——舊 app.js 讀不懂新的 index.json，整頁就掛在「載入失敗」。
+// index.html 的 ?v= 版號與 sw.js 的 no-cache 是預防；這裡是萬一還是撞上時的解法。
+// --------------------------------------------------------------------------
+const HEAL_KEY = 'stocktracker.healed';
+
+/** 丟掉 Service Worker 與它的所有快取再重載。自選股在 localStorage，不動。 */
+async function resetCaches() {
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch (err) {
+    /* 清不乾淨也還是要重載，至少會再跟伺服器要一次 */
+  }
+  location.reload();
+}
+
+/**
+ * 自動修一次就好。修完還是壞的話一定是別的原因，再重載下去就是無限迴圈。
+ * 無痕模式讀不到 sessionStorage，那就不自動重載，讓使用者自己按按鈕。
+ */
+function autoHealOnce() {
+  try {
+    if (sessionStorage.getItem(HEAL_KEY)) return false;
+    sessionStorage.setItem(HEAL_KEY, APP_VERSION);
+  } catch (err) {
+    return false;
+  }
+  resetCaches();
+  return true;
+}
+
+/** 壞掉時的畫面：講清楚發生什麼事，並給一個真的能自救的按鈕。 */
+function failBox(message, detail = '') {
+  return `<p class="hint">${esc(message)}</p>
+    ${detail ? `<p class="hint">${esc(detail)}</p>` : ''}
+    <p class="hint"><button class="pill" id="reset-cache">清除快取並重新載入</button></p>`;
+}
+
+// 委派在 document 上：連 index.json 都還沒讀到時也要能按
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#reset-cache')) resetCaches();
+});
+
+// --------------------------------------------------------------------------
 // 資料存取
 // --------------------------------------------------------------------------
 function getJSON(path, opts) {
@@ -79,13 +142,16 @@ function loadHistory(year, scope = state.scope) {
 
 /** 目前範圍的每日成交值序列（index.json 裡三種範圍各存一份）*/
 function scopeSeries() {
-  return state.index.scopes[state.scope];
+  const scopes = state.index.scopes || {};
+  return scopes[state.scope] || null;
 }
 
 /** 該範圍在這一天有沒有資料。缺資料時序列裡是 null。 */
 function hasScopeData(date) {
+  const ser = scopeSeries();
+  if (!ser) return false;
   const i = state.index.dates.indexOf(date);
-  return i >= 0 && scopeSeries().marketValues[i] !== null;
+  return i >= 0 && ser.marketValues[i] !== null;
 }
 
 const scopeLabel = () => (SCOPES.find((s) => s.value === state.scope) || SCOPES[0]).label;
@@ -1100,7 +1166,8 @@ function paintChrome() {
   $('#scope-select').value = state.scope;
 
   const i = idx.dates.indexOf(state.date);
-  const market = scopeSeries().marketValues[i];
+  const ser = scopeSeries();
+  const market = ser ? ser.marketValues[i] : null;
   $('#meta').textContent =
     `${scopeLabel()}成交值 ${num(market, 0)} 億 · 共 ${idx.dates.length} 個交易日（${idx.dates[0]} 起）`
     + ` · 更新 ${idx.updated.slice(0, 16).replace('T', ' ')}`;
@@ -1119,14 +1186,13 @@ async function render() {
   const view = $('#view');
   view.innerHTML = '<p class="hint">載入中…</p>';
 
-  // 某個範圍在某一天沒有資料時，直接講清楚，不要讓它變成一則 404 載入失敗
-  if (!hasScopeData(state.date)) {
-    view.innerHTML = `<p class="hint">${scopeLabel()}在 ${state.date} 沒有資料。<br>請改選其他日期或範圍。</p>`;
-    paintChrome();
-    return;
-  }
-
   try {
+    // 某個範圍在某一天沒有資料時，直接講清楚，不要讓它變成一則 404 載入失敗
+    if (!hasScopeData(state.date)) {
+      view.innerHTML = `<p class="hint">${scopeLabel()}在 ${state.date} 沒有資料。<br>請改選其他日期或範圍。</p>`;
+      paintChrome();
+      return;
+    }
     if (route.view === 'market') await renderMarket(view);
     else if (route.view === 'sector') await renderSector(view);
     else if (route.view === 'streak') await renderStreak(view);
@@ -1136,7 +1202,8 @@ async function render() {
     else await renderRank(view);
     paintChrome();
   } catch (err) {
-    view.innerHTML = `<p class="hint">載入失敗：${esc(err.message)}</p>`;
+    view.innerHTML = failBox(`載入失敗：${err.message}`,
+      `前端版本 ${APP_VERSION}。若清除快取後仍然一樣，就不是快取的問題。`);
   }
 }
 
@@ -1188,6 +1255,18 @@ async function start() {
     $('#view').innerHTML = `<p class="hint">找不到資料檔（${esc(err.message)}）。<br>請先執行 scripts/fetch_daily.py 與 scripts/build_history.py。</p>`;
     return;
   }
+
+  // index.json 讀得到、卻不是這一版看得懂的格式，代表跑的是被快取住的舊 app.js。
+  // 先自己清一次快取重載；真的還是壞的才把按鈕交給使用者。
+  const idx = state.index;
+  const usable = idx && Array.isArray(idx.dates) && idx.dates.length && idx.scopes && idx.scopes.all;
+  if (!usable) {
+    if (autoHealOnce()) return;
+    $('#view').innerHTML = failBox(
+      'data/index.json 的格式與目前的前端對不起來。',
+      `前端版本 ${APP_VERSION}。多半是瀏覽器留著舊版程式檔；若是本機環境，請重跑 scripts/build_history.py。`);
+    return;
+  }
   // 產業別與題材族群都是選配：抓不到就當作沒有那一種分類，不影響其他分頁。
   try {
     const ind = await getJSON(`${DATA}/industry.json`);
@@ -1205,8 +1284,9 @@ async function start() {
 
   state.watch = loadWatch();
   try {
+    // 除了在選單裡，還要這份 index.json 真的有這個範圍——舊版留下來的設定不該讓整頁掛掉
     const saved = localStorage.getItem(SCOPE_KEY);
-    if (SCOPES.some((s) => s.value === saved)) state.scope = saved;
+    if (SCOPES.some((s) => s.value === saved) && state.index.scopes[saved]) state.scope = saved;
     const grouping = localStorage.getItem(GROUPING_KEY);
     if (GROUPINGS.some((g) => g.value === grouping)) state.grouping = grouping;
   } catch (err) {
@@ -1221,7 +1301,17 @@ async function start() {
   await render();
 
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    // updateViaCache: 'none'：sw.js 自己絕不能從 HTTP 快取拿，否則換了版也發現不了
+    const had = !!navigator.serviceWorker.controller;
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      // 新版 SW 用 skipWaiting + claim 直接接手，這一頁的外殼卻還是舊的，重載一次拿新版。
+      // 第一次安裝就接手是正常的，不用重載。
+      if (!had || reloading) return;
+      reloading = true;
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
   }
 }
 
