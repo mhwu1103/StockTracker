@@ -4,12 +4,22 @@ const DATA = 'data';
 const TOP = 200;                       // 排行榜與進出榜的門檻
 const CHART_CDN = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';
 
+// 圖表線色。Chart.js 吃不到 CSS 變數，只能寫死；深淺色模式都看得清楚的中間色調。
+const LINE = { rank: '#2f6fed', market: '#2f6fed', top200: '#7b61ff', top10: '#d92d20' };
+
+const TAIPEI_OFFSET_MIN = 8 * 60;
+// 最新資料距今超過這麼多個日曆日就提示。週五收盤後到週一盤中最多差 3 天，
+// 取 4 是為了讓正常的週末不會誤報 —— 寧可晚一天提醒，也不要天天狼來了。
+const STALE_DAYS = 4;
+
 const state = {
   index: null,
   date: null,          // 目前選定的交易日
   baseline: 1,         // 比較基準：往前 N 個交易日
   span: 120,           // 個股走勢顯示的交易日數
   query: '',           // 排行榜搜尋字串
+  industry: {},        // code -> 產業中文名（industry.json，抓不到時為空）
+  sector: '',          // 排行榜的產業篩選；'' 代表全部
   streakDays: 3,       // 「站穩」分頁要看的連續進榜天數
   daily: new Map(),    // date -> Promise<payload>
   history: new Map(),  // year -> Promise<payload>
@@ -45,10 +55,51 @@ function loadHistory(year) {
   return state.history.get(year);
 }
 
+/**
+ * 以台北時區計算某個交易日距今幾個日曆日。
+ * 資料是收盤資料，比到「日」就夠，不必管時分秒。
+ */
+function daysSinceTaipei(dateIso) {
+  const now = new Date();
+  const taipei = new Date(now.getTime() + (now.getTimezoneOffset() + TAIPEI_OFFSET_MIN) * 60000);
+  const today = Date.UTC(taipei.getFullYear(), taipei.getMonth(), taipei.getDate());
+  const [y, m, d] = dateIso.split('-').map(Number);
+  return Math.round((today - Date.UTC(y, m - 1, d)) / 86400000);
+}
+
 /** 由目前日期往前推 n 個交易日，超出範圍回傳 null */
 function dateBack(n, from = state.date) {
   const i = state.index.dates.indexOf(from);
   return i - n >= 0 ? state.index.dates[i - n] : null;
+}
+
+/**
+ * 代號 -> 產業。industry.json 只涵蓋上市「公司」，所以要補三條規則。
+ * 這幾條規則與 scripts/fetch_industry.py 的說明一致，改動時兩邊要一起看。
+ */
+const ETF_LABEL = 'ETF';
+const OTHER_LABEL = '其他';
+
+function industryOf(code) {
+  const map = state.industry;
+  if (map[code]) return map[code];
+  if (code.startsWith('00')) return ETF_LABEL;             // ETF／ETN 不在公司清單裡
+  const parent = code.replace(/[A-Z]+$/, '');              // 特別股沿用母公司的分類
+  if (map[parent]) return map[parent];
+  return OTHER_LABEL;
+}
+
+/** 把一份股票清單依產業彙總成 [{ name, count, value }]，成交值由大到小。 */
+function bySector(stocks) {
+  const acc = new Map();
+  for (const s of stocks) {
+    const name = industryOf(s.code);
+    const cur = acc.get(name) || { name, count: 0, value: 0 };
+    cur.count += 1;
+    cur.value += s.value;
+    acc.set(name, cur);
+  }
+  return [...acc.values()].sort((a, b) => b.value - a.value);
 }
 
 function rankMap(payload) {
@@ -78,6 +129,8 @@ function streakLabel(stock, withDate = false) {
   return withDate ? `${stock.since} 起 · ${days}` : days;
 }
 
+const hasIndustry = () => Object.keys(state.industry).length > 0;
+
 function stockRow(stock, base) {
   const prev = base ? base.rank : null;
   const pct = stock.changePct;
@@ -86,7 +139,7 @@ function stockRow(stock, base) {
   return `<a class="row" href="#/stock/${stock.code}">
     <div class="rank"><span class="no">${stock.rank}</span>${deltaBadge(stock.rank, prev)}</div>
     <div class="ident"><span class="name">${esc(stock.name)}</span>
-      <span class="code">${stock.code}</span>
+      <span class="code">${stock.code}${hasIndustry() ? ` · ${esc(industryOf(stock.code))}` : ''}</span>
       ${streak ? `<span class="streak">${streak}</span>` : ''}</div>
     <div class="figures"><span class="value">${fmtValue(stock.value)}</span>
       <span class="price">${stock.close === null ? '' : num(stock.close, 2)} ${pctText}</span></div>
@@ -121,9 +174,20 @@ async function renderRank(view) {
   const baseMap = rankMap(base);
   const top = today.stocks.filter((s) => s.rank <= TOP);
 
+  // 產業選單只列當日榜上有的產業，選了不存在的產業會看到空清單沒有意義
+  const sectors = hasIndustry() ? bySector(top).map((g) => g.name) : [];
+  const sectorSelect = sectors.length
+    ? `<select id="sector-pick" aria-label="產業篩選">
+        <option value="">全部產業</option>
+        <option value="!ETF" ${state.sector === '!ETF' ? 'selected' : ''}>排除 ETF</option>
+        ${sectors.map((n) => `<option value="${esc(n)}" ${n === state.sector ? 'selected' : ''}>${esc(n)}</option>`).join('')}
+      </select>`
+    : '';
+
   view.innerHTML = `
     <div class="controls">
       <input type="search" id="q" placeholder="搜尋代號或名稱" value="${esc(state.query)}">
+      ${sectorSelect}
       ${pills('baseline', BASELINES, state.baseline)}
     </div>
     <section class="card">
@@ -131,9 +195,16 @@ async function renderRank(view) {
       <div id="rank-list"></div>
     </section>`;
 
+  const matchSector = (s) => {
+    if (!state.sector) return true;
+    if (state.sector === '!ETF') return industryOf(s.code) !== ETF_LABEL;
+    return industryOf(s.code) === state.sector;
+  };
+
   const paint = () => {
     const q = state.query.trim().toLowerCase();
     const rows = top
+      .filter(matchSector)
       .filter((s) => !q || s.code.toLowerCase().includes(q) || s.name.toLowerCase().includes(q))
       .map((s) => stockRow(s, baseMap.get(s.code)));
     $('#rank-list').innerHTML = rows.length ? rows.join('') : '<p class="hint">找不到符合的股票</p>';
@@ -144,6 +215,13 @@ async function renderRank(view) {
     state.query = e.target.value;
     paint();
   });
+
+  if (sectorSelect) {
+    $('#sector-pick').addEventListener('change', (e) => {
+      state.sector = e.target.value;
+      paint();
+    });
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -257,6 +335,54 @@ async function seriesFor(code) {
   return { name, byDate };
 }
 
+/**
+ * 全期間進榜紀錄。兩個容易踩到的地方：
+ *   1. byDate 含 rank 201–300 的日子（daily 存 300 名是為了判斷進出榜），
+ *      所以「有沒有進榜」要看 rank <= TOP，不能只看那天有沒有值。
+ *   2. 連續性要用 index.dates 的索引判斷，不能拿日曆日相減（週末與休市日會斷）。
+ */
+function lifetimeStats(byDate) {
+  const dates = state.index.dates;
+  const runs = [];               // 每一段連續進榜：{ from, to, days }
+  let open = null;               // 尚未結束的那一段
+  let totalDays = 0;
+  let best = null;               // { rank, date }，含 201–300 名的日子
+
+  for (const date of dates) {
+    const hit = byDate.get(date);
+    if (hit && (best === null || hit.rank < best.rank)) best = { rank: hit.rank, date };
+
+    if (hit && hit.rank <= TOP) {
+      totalDays += 1;
+      if (open) {
+        open.days += 1;
+        open.to = date;
+      } else {
+        open = { from: date, to: date, days: 1 };
+        runs.push(open);
+      }
+    } else {
+      open = null;
+    }
+  }
+
+  const closed = runs.filter((r) => r !== open);
+  const longest = runs.reduce((a, b) => (b.days > (a ? a.days : 0) ? b : a), null);
+  const lastExit = closed.length
+    ? dates[dates.indexOf(closed[closed.length - 1].to) + 1] ?? null
+    : null;
+
+  return {
+    totalDays,
+    spells: runs.length,
+    best,
+    longest,
+    lastExit,
+    // 第一段若一路連到資料起點，真正的天數可能更長
+    truncated: longest !== null && longest.from === dates[0],
+  };
+}
+
 function loadChartJs() {
   if (!loadChartJs.promise) {
     loadChartJs.promise = new Promise((resolve, reject) => {
@@ -275,18 +401,42 @@ function destroyCharts() {
   state.charts = [];
 }
 
-function drawLine(Chart, canvas, labels, data, { reverse = false, color = '#2f6fed', label = '' }) {
+/**
+ * series：[{ data, color, label }]，單線就給一個元素（單線才填色，多線只畫線）。
+ * suffix 會接在 tooltip 數值後面（例如 ' %'）；資料為 null 代表當日沒有值。
+ */
+function drawLine(Chart, canvas, labels, series, { reverse = false, suffix = '', emptyText = '未進榜' } = {}) {
   const chart = new Chart(canvas, {
     type: 'line',
     data: {
       labels,
-      datasets: [{ label, data, borderColor: color, backgroundColor: `${color}22`, borderWidth: 2, pointRadius: 0, tension: 0.2, spanGaps: false, fill: true }],
+      datasets: series.map((s) => ({
+        label: s.label,
+        data: s.data,
+        borderColor: s.color,
+        backgroundColor: `${s.color}22`,
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.2,
+        spanGaps: false,
+        fill: series.length === 1,
+      })),
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${label}：${c.parsed.y ?? '未進榜'}` } } },
+      plugins: {
+        legend: { display: series.length > 1, labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: (c) => {
+              const v = c.parsed.y;
+              return `${c.dataset.label}：${v === null || v === undefined ? emptyText : v + suffix}`;
+            },
+          },
+        },
+      },
       scales: {
         x: { ticks: { maxTicksLimit: 5, font: { size: 10 } }, grid: { display: false } },
         y: { reverse, ticks: { font: { size: 10 } }, grid: { color: 'rgba(128,128,128,.18)' } },
@@ -333,24 +483,43 @@ async function renderStock(view, code) {
   const latest = byDate.get(state.date);
   const todayEntry = todayPayload.stocks.find((s) => s.code === code);
   const streak = streakLabel(todayEntry);
+  const lt = lifetimeStats(byDate);
+  const allDays = state.index.dates.length;
 
   view.innerHTML = `
     <div class="controls">
-      ${pills('span', [{ value: 60, label: '60 日' }, { value: 120, label: '120 日' }, { value: 9999, label: '全部' }], state.span)}
+      ${pills('span', SPANS, state.span)}
     </div>
     <section class="card">
-      <h2>${esc(name)} <small>${code}</small></h2>
+      <h2>${esc(name)} <small>${code} · 近 ${labels.length} 個交易日</small></h2>
       <div class="stat-grid">
         <div class="stat"><b>${latest ? latest.rank : '—'}</b><span>${state.date} 名次</span></div>
         <div class="stat"><b>${latest ? fmtOku(latest.value) : '—'}</b><span>成交值</span></div>
-        <div class="stat"><b>${best ?? '—'}</b><span>期間最佳</span></div>
-        <div class="stat"><b>${inTop}/${labels.length}</b><span>進前 ${TOP} 天數</span></div>
+        <div class="stat"><b>${best ?? '—'}</b><span>區間最佳名次</span></div>
+        <div class="stat"><b>${inTop}/${labels.length}</b><span>區間進榜天數</span></div>
         <div class="stat"><b>${streak ?? '—'}</b><span>連續進前 ${TOP}</span></div>
         <div class="stat"><b class="sm">${todayEntry?.since ?? '—'}</b><span>連續起算日</span></div>
       </div>
       ${todayEntry && todayEntry.since === state.index.dates[0]
         ? `<p class="note">這段連續進榜從本站最早一天（${state.index.dates[0]}）就開始了，實際天數可能更長。</p>`
         : ''}
+    </section>
+    <section class="card">
+      <h2>全期間紀錄 <small>${state.index.dates[0]} 起 ${allDays} 個交易日</small></h2>
+      <div class="stat-grid">
+        <div class="stat"><b>${lt.totalDays}</b><span>進前 ${TOP} 天數</span></div>
+        <div class="stat"><b>${num((lt.totalDays / allDays) * 100, 0)}%</b><span>佔全部交易日</span></div>
+        <div class="stat"><b>${lt.spells || '—'}</b><span>進榜波段</span></div>
+        <div class="stat"><b>${lt.best ? lt.best.rank : '—'}</b><span>歷史最佳名次</span></div>
+        <div class="stat"><b>${lt.longest ? `${lt.longest.days}${lt.truncated ? '+' : ''}` : '—'}</b><span>最長連續天數</span></div>
+        <div class="stat"><b class="sm">${lt.lastExit ?? '—'}</b><span>上次掉出榜</span></div>
+      </div>
+      <p class="note">
+        ${lt.best ? `最佳名次出現在 ${lt.best.date}。` : ''}
+        ${lt.longest ? `最長連續進榜 ${lt.longest.from} ~ ${lt.longest.to}。` : '本站資料期間內沒有進過前 200 名。'}
+        ${lt.truncated ? '這段一路連到本站最早一天，實際天數可能更長。' : ''}
+        ${lt.lastExit ? '' : lt.spells ? '從未掉出過前 200 名。' : ''}
+      </p>
     </section>
     <section class="card">
       <h2>成交值排名走勢 <small>斷線＝當日未進前 300</small></h2>
@@ -363,8 +532,150 @@ async function renderStock(view, code) {
 
   try {
     const Chart = await loadChartJs();
-    drawLine(Chart, $('#c-rank'), labels, ranks, { reverse: true, color: '#2f6fed', label: '名次' });
-    drawLine(Chart, $('#c-value'), labels, values, { color: '#d92d20', label: '成交值(億)' });
+    drawLine(Chart, $('#c-rank'), labels, [{ data: ranks, color: LINE.rank, label: '名次' }], { reverse: true });
+    drawLine(Chart, $('#c-value'), labels, [{ data: values, color: LINE.top10, label: '成交值(億)' }]);
+  } catch (err) {
+    document.querySelectorAll('.chart-box').forEach((box) => {
+      box.innerHTML = `<p class="hint">${esc(err.message)}</p>`;
+    });
+  }
+}
+
+// --------------------------------------------------------------------------
+// 分頁六：族群（依產業看資金流向）
+// --------------------------------------------------------------------------
+function sectorRow(cur, base, totalValue) {
+  const share = totalValue ? (cur.value / totalValue) * 100 : 0;
+  const delta = base && base.value ? ((cur.value - base.value) / base.value) * 100 : null;
+  const deltaText = delta === null
+    ? '<em class="flat">NEW</em>'
+    : `<em class="${trend(delta)}">${delta > 0 ? '+' : ''}${delta.toFixed(1)}%</em>`;
+  const countDelta = base ? cur.count - base.count : null;
+
+  return `<details class="sector">
+    <summary class="row">
+      <div class="rank"><span class="no">${cur.count}</span>
+        <span class="delta ${trend(countDelta)}">${countDelta ? `${countDelta > 0 ? '+' : ''}${countDelta} 檔` : '檔'}</span></div>
+      <div class="ident"><span class="name">${esc(cur.name)}</span>
+        <span class="code">佔榜上成交值 ${num(share)}%</span></div>
+      <div class="figures"><span class="value">${fmtValue(cur.value)}</span>
+        <span class="price">${deltaText}</span></div>
+    </summary>
+    <div class="sector__body" data-sector="${esc(cur.name)}"></div>
+  </details>`;
+}
+
+async function renderSector(view) {
+  if (!hasIndustry()) {
+    view.innerHTML = '<p class="hint">沒有產業對照資料，請先執行 scripts/fetch_industry.py。</p>';
+    return;
+  }
+
+  const baseDate = dateBack(state.baseline);
+  const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(baseDate)]);
+  const topStocks = today.stocks.filter((s) => s.rank <= TOP);
+  const groups = bySector(topStocks);
+  const baseGroups = new Map(
+    base ? bySector(base.stocks.filter((s) => s.rank <= TOP)).map((g) => [g.name, g]) : []
+  );
+  const totalValue = groups.reduce((sum, g) => sum + g.value, 0);
+
+  view.innerHTML = `
+    <div class="controls">${pills('baseline', BASELINES, state.baseline)}</div>
+    <section class="card">
+      <h2>產業分布 <small>${state.date} 前 ${TOP} 大${baseDate ? ` · 成交值變化 vs ${baseDate}` : ''}</small></h2>
+      ${groups.map((g) => sectorRow(g, baseGroups.get(g.name), totalValue)).join('')}
+      <p class="note">點一列可以展開該產業當日在榜的個股。
+        產業別採證交所的官方分類，與市場口中的題材族群（AI 伺服器、重電等）不一定對得起來；
+        分類取自最新一次抓取的結果，並回頭套用到歷史日期。</p>
+    </section>`;
+
+  // 展開時才填內容，200 檔一次全渲染沒必要
+  const rowsOf = (name) => topStocks
+    .filter((s) => industryOf(s.code) === name)
+    .map((s) => stockRow(s, rankMap(base).get(s.code)))
+    .join('');
+  view.querySelectorAll('details.sector').forEach((el) => {
+    el.addEventListener('toggle', () => {
+      const box = $('.sector__body', el);
+      if (el.open && !box.innerHTML) box.innerHTML = rowsOf(box.dataset.sector);
+    });
+  });
+}
+
+// --------------------------------------------------------------------------
+// 分頁五：大盤（成交值走勢與資金集中度）
+// --------------------------------------------------------------------------
+const SPANS = [
+  { value: 60, label: '60 日' },
+  { value: 120, label: '120 日' },
+  { value: 9999, label: '全部' },
+];
+
+/** a[i] / b[i] 的百分比；b 為 0 時給 null，圖上會斷線而不是畫成 0。 */
+function ratioSeries(a, b) {
+  return a.map((v, i) => (b[i] ? Math.round((v / b[i]) * 1000) / 10 : null));
+}
+
+function signed(pct) {
+  if (pct === null) return '—';
+  return `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`;
+}
+
+async function renderMarket(view) {
+  const idx = state.index;
+  if (!idx.top200Values) {
+    view.innerHTML = '<p class="hint">index.json 沒有集中度欄位，請重新執行 scripts/build_history.py。</p>';
+    return;
+  }
+
+  const at = idx.dates.indexOf(state.date);          // 目前選定日在全序列中的位置
+  const from = Math.max(0, at + 1 - state.span);
+  const labels = idx.dates.slice(from, at + 1);
+  const cut = (arr) => arr.slice(from, at + 1);
+
+  const market = cut(idx.marketValues);
+  const top200 = cut(idx.top200Values);
+  const top10 = cut(idx.top10Values);
+
+  const dod = at > 0 && idx.marketValues[at - 1]
+    ? ((idx.marketValues[at] - idx.marketValues[at - 1]) / idx.marketValues[at - 1]) * 100
+    : null;
+  const share = (v) => (idx.marketValues[at] ? (v / idx.marketValues[at]) * 100 : null);
+
+  view.innerHTML = `
+    <div class="controls">${pills('span', SPANS, state.span)}</div>
+    <section class="card">
+      <h2>${state.date} 市場概況</h2>
+      <div class="stat-grid">
+        <div class="stat"><b>${num(idx.marketValues[at], 0)}</b><span>大盤成交值（億）</span></div>
+        <div class="stat"><b class="${trend(dod)}">${signed(dod)}</b><span>對比前一日</span></div>
+        <div class="stat"><b>${num(share(idx.top200Values[at]))}%</b><span>前 200 大佔比</span></div>
+        <div class="stat"><b>${num(share(idx.top10Values[at]))}%</b><span>前 10 大佔比</span></div>
+      </div>
+      <p class="note">這裡的大盤成交值是本站追蹤範圍（上市普通股與 ETF，已排除權證等商品）的合計，
+        與證交所公布的市場總成交值會有小幅差異。</p>
+    </section>
+    <section class="card">
+      <h2>成交值走勢 <small>億元</small></h2>
+      <div class="chart-box"><canvas id="c-market"></canvas></div>
+    </section>
+    <section class="card">
+      <h2>資金集中度 <small>前 N 大佔大盤成交值的比重</small></h2>
+      <div class="chart-box"><canvas id="c-share"></canvas></div>
+      <p class="note">往上代表錢集中到少數幾檔，往下代表資金擴散到更多股票。</p>
+    </section>`;
+
+  try {
+    const Chart = await loadChartJs();
+    drawLine(Chart, $('#c-market'), labels, [
+      { data: market, color: LINE.market, label: '大盤' },
+      { data: top200, color: LINE.top200, label: '前 200 大' },
+    ], { emptyText: '無資料' });
+    drawLine(Chart, $('#c-share'), labels, [
+      { data: ratioSeries(top200, market), color: LINE.top200, label: '前 200 大' },
+      { data: ratioSeries(top10, market), color: LINE.top10, label: '前 10 大' },
+    ], { suffix: '%', emptyText: '無資料' });
   } catch (err) {
     document.querySelectorAll('.chart-box').forEach((box) => {
       box.innerHTML = `<p class="hint">${esc(err.message)}</p>`;
@@ -424,6 +735,12 @@ function paintChrome() {
   const market = idx.marketValues[i];
   $('#meta').textContent =
     `大盤成交值 ${num(market, 0)} 億 · 共 ${idx.dates.length} 個交易日（${idx.dates[0]} 起）· 更新 ${idx.updated.slice(0, 16).replace('T', ' ')}`;
+
+  // 排程停擺時畫面看起來一切正常，使用者會以為看到的是當天的盤，所以要明講。
+  const stale = daysSinceTaipei(idx.latest);
+  const banner = $('#stale');
+  banner.hidden = stale < STALE_DAYS;
+  banner.textContent = banner.hidden ? '' : `⚠ 最新資料只到 ${idx.latest}，已 ${stale} 天沒有更新`;
 }
 
 async function render() {
@@ -433,7 +750,9 @@ async function render() {
   const view = $('#view');
   view.innerHTML = '<p class="hint">載入中…</p>';
   try {
-    if (route.view === 'streak') await renderStreak(view);
+    if (route.view === 'market') await renderMarket(view);
+    else if (route.view === 'sector') await renderSector(view);
+    else if (route.view === 'streak') await renderStreak(view);
     else if (route.view === 'moves') await renderMoves(view);
     else if (route.view === 'stock') await renderStock(view, route.arg);
     else if (route.view === 'compare') await renderCompare(view, route.params);
@@ -472,6 +791,14 @@ async function start() {
     $('#view').innerHTML = `<p class="hint">找不到資料檔（${esc(err.message)}）。<br>請先執行 scripts/fetch_daily.py 與 scripts/build_history.py。</p>`;
     return;
   }
+  // 產業別是選配：抓不到就整站當作沒有產業資訊，不影響其他分頁。
+  try {
+    const ind = await getJSON(`${DATA}/industry.json`);
+    state.industry = ind.map || {};
+  } catch (err) {
+    state.industry = {};
+  }
+
   state.date = state.index.latest;
   bindGlobalControls();
   await render();

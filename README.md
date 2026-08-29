@@ -13,8 +13,12 @@
 | 排行 | 任一交易日的成交值前 200 大，含相對前 1／5／20 日的名次變化箭頭、連續進榜天數、搜尋 |
 | 站穩 | 新進榜後連續留在榜上的股票：剛滿 N 天（N 可選 2／3／5／10）與連續 N 天以上 |
 | 異動 | 新進榜、掉出榜、名次進步／退步最多的前 20 名 |
-| 個股 | 排名走勢與成交值走勢圖（未進前 300 的日子會斷線）、連續進榜天數與起算日 |
+| 個股 | 排名走勢與成交值走勢圖（未進前 300 的日子會斷線）、區間統計與全期間紀錄 |
 | 對照 | 自選任兩個交易日並排比較 |
+| 大盤 | 大盤與前 200 大的成交值走勢，以及前 200／前 10 大佔大盤的資金集中度 |
+| 族群 | 榜上各產業的檔數、成交值與佔比，可展開看該產業當日在榜的個股 |
+
+最新資料距今太久時，頂部會顯示過期提醒，避免把舊資料誤看成當天的盤。
 
 ## 資料來源
 
@@ -22,6 +26,7 @@
 |---|---|
 | 當日收盤（每日排程） | `https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL` |
 | 指定日期（歷史回補） | `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=YYYYMMDD&type=ALLBUT0999&response=json` |
+| 產業別對照 | `https://openapi.twse.com.tw/v1/opendata/t187ap03_L` |
 
 兩者產出的資料格式已統一，同一天用兩條路徑抓取結果完全一致。
 範圍是**上市**股票與 ETF，已排除權證、牛熊證等商品。
@@ -34,16 +39,21 @@ scripts/
   fetch_daily.py    抓當日 → docs/data/daily/YYYY-MM-DD.json
   backfill.py       用 MI_INDEX 逐日回補歷史（可中斷續跑）
   build_history.py  由 daily/ 重算 index.json 與 history/YYYY.json
+  fetch_industry.py 抓上市公司的產業別 → docs/data/industry.json
   notify_telegram.py 把當日新進榜／連續 2、3、5 天的清單推播到 Telegram
   serve.py          本機開發用的靜態伺服器（送出 no-store，不會被快取咬）
 docs/               GitHub Pages 網站根目錄
   index.html app.js style.css sw.js manifest.webmanifest icons/
   data/
-    index.json      交易日清單 + 每日大盤成交值
+    index.json      交易日清單 + 每日大盤／前 200／前 10 大成交值
+    industry.json   代號 -> 產業中文名（ETF 與特別股由前端補規則）
     daily/          每日前 300 名（多存 100 名以便判斷前 200 的進出榜）
                     前 200 名另帶 streak（連續進榜天數）與 since（連續起算日）
     history/        依年度切檔的「個股 → 每日 (名次, 成交值)」轉置表
 ```
+
+產業別採證交所的官方分類，與市場口中的題材族群（AI 伺服器、重電等）不一定對得起來；
+分類取自最新一次抓取的結果，並回頭套用到歷史日期。
 
 `docs/data/history/`、`index.json` 與 daily 檔裡的連續進榜欄位都是衍生資料，
 `build_history.py` 每次都由 `daily/` 從頭重算，只有內容真的改變的檔案才會重寫。
@@ -56,6 +66,7 @@ docs/               GitHub Pages 網站根目錄
 ```bash
 pip install -r requirements.txt
 python scripts/fetch_daily.py        # 抓最新一個交易日
+python scripts/fetch_industry.py     # 抓產業別對照（偶爾跑一次就好）
 python scripts/build_history.py      # 重建索引與歷史
 cd docs && python -m http.server 8765
 ```
@@ -113,6 +124,6 @@ python scripts/notify_telegram.py --dry-run
 
 ## 備註
 
-- 目前只涵蓋上市（TWSE）。要加上櫃（TPEx）時，在 `scripts/twse.py` 增加一個
-  抓取函式並沿用 `make_record()` 即可，其餘流程不必改。
+- 目前只涵蓋上市（TWSE），尚未包含上櫃（TPEx）。
+- 接下來想做什麼、以及各項目的優先級與規格，見 [ROADMAP.md](ROADMAP.md)。
 - 資料僅供參考，非投資建議。

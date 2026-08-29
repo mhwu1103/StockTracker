@@ -47,7 +47,9 @@ def main() -> int:
         print("docs/data/daily/ 沒有任何資料，請先執行 fetch_daily.py 或 backfill.py")
         return 1
 
-    market_values = []          # 與 dates 平行，單位：億元
+    market_values = []          # 以下三個陣列都與 dates 平行，單位：億元
+    top200_values = []          # 當日前 200 名成交值合計（集中度的分子）
+    top10_values = []
     by_year = defaultdict(lambda: {"dates": [], "stocks": {}})
     streaks = {}                # code -> (連續天數, 起算日, 最後一次進榜的日期序號)
     rewritten = 0
@@ -55,6 +57,12 @@ def main() -> int:
     for day_index, date_iso in enumerate(dates):
         payload = json.loads(twse.daily_path(date_iso).read_text(encoding="utf-8"))
         market_values.append(round(payload.get("marketValue", 0) / 1e8, 2))
+
+        # 前 N 名成交值合計。除以大盤成交值就是「資金集中度」，
+        # 用來看錢是集中在少數幾檔還是擴散開來。
+        stocks = payload["stocks"]
+        top200_values.append(round(sum(s["value"] for s in stocks if s["rank"] <= twse.STREAK_RANK) / 1e8, 2))
+        top10_values.append(round(sum(s["value"] for s in stocks if s["rank"] <= 10) / 1e8, 2))
 
         # 連續進前 200 名的天數。整份資料每次都從頭重算，不必保存中間狀態；
         # 只有內容真的改變的檔案才會重寫，避免每天產生無謂的 git 差異。
@@ -98,6 +106,8 @@ def main() -> int:
             "years": sorted(by_year, reverse=True),
             "dates": dates,
             "marketValues": market_values,
+            "top200Values": top200_values,
+            "top10Values": top10_values,
         },
     )
     print(f"index.json：{len(dates)} 個交易日（{dates[0]} ~ {dates[-1]}）")

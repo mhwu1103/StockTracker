@@ -39,6 +39,12 @@ jobs:
       - name: 補抓遺漏的交易日
         run: python scripts/backfill.py --days 14 --sleep 4
 
+      # 產業別幾乎不會變，但它只是輔助資訊：證交所這支 API 掛掉時
+      # 不該連帶讓當日行情更新失敗，所以允許這一步出錯。
+      - name: 更新產業別對照
+        continue-on-error: true
+        run: python scripts/fetch_industry.py
+
       - name: 重建索引與歷史序列
         run: python scripts/build_history.py
 
