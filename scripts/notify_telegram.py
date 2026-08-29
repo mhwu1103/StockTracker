@@ -14,6 +14,7 @@
     python scripts/notify_telegram.py --dry-run   # 只印出訊息，不發送（不需要金鑰）
     python scripts/notify_telegram.py --force     # 資料不是今天的也照發（測試用）
     python scripts/notify_telegram.py --watchlist 2330,2454 --dry-run
+    python scripts/notify_telegram.py --scope tpex --dry-run    # 只推上櫃排行
 """
 
 from __future__ import annotations
@@ -39,15 +40,16 @@ def escape(text: str) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def build_message(payload: dict, site_url: str = "") -> str:
+def build_message(payload: dict, site_url: str = "", scope_name: str = "",
+                  total_label: str = "大盤") -> str:
     by_streak = defaultdict(list)
     for stock in payload["stocks"]:
         if stock.get("streak") in STREAK_GROUPS:
             by_streak[stock["streak"]].append(stock)
 
     lines = [
-        f"<b>📊 台股成交值排行 · {payload['date']}</b>",
-        f"大盤成交值 {payload['marketValue'] / 1e8:,.0f} 億",
+        f"<b>📊 台股成交值排行{scope_name} · {payload['date']}</b>",
+        f"{total_label}成交值 {payload['marketValue'] / 1e8:,.0f} 億",
     ]
 
     for days in STREAK_GROUPS:
@@ -74,14 +76,15 @@ def parse_watchlist(raw: str) -> list:
     return [c.strip() for c in str(raw or "").replace("\n", ",").split(",") if c.strip()]
 
 
-def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = "") -> str:
+def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = "",
+                        scope_name: str = "", total_label: str = "大盤") -> str:
     """只講自選股：今天在不在榜上、名次多少、是不是剛進榜或剛掉出榜。"""
     today = {s["code"]: s for s in payload["stocks"] if s["rank"] <= twse.STREAK_RANK}
     before = {s["code"]: s for s in (prev or {}).get("stocks", []) if s["rank"] <= twse.STREAK_RANK}
 
     lines = [
-        f"<b>⭐ 自選股 · {payload['date']}</b>",
-        f"大盤成交值 {payload['marketValue'] / 1e8:,.0f} 億",
+        f"<b>⭐ 自選股{scope_name} · {payload['date']}</b>",
+        f"{total_label}成交值 {payload['marketValue'] / 1e8:,.0f} 億",
         "",
     ]
 
@@ -146,11 +149,13 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="資料不是今天的也照發")
     parser.add_argument("--date", help="指定要推播的日期 YYYY-MM-DD（預設為最新一天）")
     parser.add_argument("--watchlist", help="逗號分隔的自選代號，蓋過 WATCHLIST 環境變數")
+    parser.add_argument("--scope", choices=twse.SCOPES, default="all",
+                        help="要推播哪個範圍的排行（預設 all 全部）")
     args = parser.parse_args()
 
-    dates = twse.existing_dates()
+    dates = twse.existing_dates(args.scope)
     if not dates:
-        print("沒有任何資料，請先執行 fetch_daily.py")
+        print(f"{twse.SCOPE_NAMES[args.scope]}沒有任何資料，請先執行 fetch_daily.py 與 build_history.py")
         return 1
 
     date_iso = args.date or dates[-1]
@@ -159,14 +164,17 @@ def main() -> int:
         print(f"最新資料是 {date_iso}，不是今天（{today}），可能是非交易日，不發送。")
         return 0
 
-    payload = json.loads(twse.daily_path(date_iso).read_text(encoding="utf-8"))
+    payload = json.loads(twse.daily_path(date_iso, args.scope).read_text(encoding="utf-8"))
     site_url = os.environ.get("SITE_URL", "")
     codes = parse_watchlist(args.watchlist or os.environ.get("WATCHLIST", ""))
+    # 「全部」是預設範圍，標題就不必特別寫出來
+    scope_name = "" if args.scope == "all" else f"（{twse.SCOPE_NAMES[args.scope]}）"
+    total_label = "大盤" if args.scope == "all" else twse.SCOPE_NAMES[args.scope]
 
     if codes:
         i = dates.index(date_iso)
         prev = (
-            json.loads(twse.daily_path(dates[i - 1]).read_text(encoding="utf-8"))
+            json.loads(twse.daily_path(dates[i - 1], args.scope).read_text(encoding="utf-8"))
             if i > 0 else None
         )
         on_board = {s["code"] for s in payload["stocks"] if s["rank"] <= twse.STREAK_RANK}
@@ -175,9 +183,9 @@ def main() -> int:
         if not any(c in on_board or c in was_on for c in codes):
             print(f"自選股（{len(codes)} 檔）在 {date_iso} 都沒有進出榜，不發送。")
             return 0
-        message = build_watch_message(payload, prev, codes, site_url)
+        message = build_watch_message(payload, prev, codes, site_url, scope_name, total_label)
     else:
-        message = build_message(payload, site_url)
+        message = build_message(payload, site_url, scope_name, total_label)
 
     if args.dry_run:
         print(message)

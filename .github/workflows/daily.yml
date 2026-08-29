@@ -35,7 +35,8 @@ jobs:
         run: python scripts/fetch_daily.py
 
       # GitHub 的排程可能被延遲甚至整次跳過，當日 API 又只提供最新一個交易日。
-      # 這一步用歷史 API 補上最近兩週內任何缺漏的交易日，已存在的日期不會發出請求。
+      # 這一步用歷史 API 補上最近兩週內任何缺漏的交易日（上市與上櫃都補），
+      # 已存在的日期不會發出請求。
       - name: 補抓遺漏的交易日
         run: python scripts/backfill.py --days 14 --sleep 4
 

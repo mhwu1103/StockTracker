@@ -91,7 +91,14 @@ select, input, button {
   min-height: 40px;
 }
 
-#date-select { max-width: 46vw; }
+/* 手機上標題＋範圍＋日期要擠在同一列，所以兩個選單都壓縮 padding */
+#scope-select, #date-select { padding: 8px 4px; }
+#scope-select { flex: 0 0 auto; }
+#date-select { max-width: 38vw; }
+
+@media (max-width: 400px) {
+  .app-bar h1 { font-size: 15px; letter-spacing: 0; }
+}
 
 /* ---------- 分頁 ---------- */
 .tabs {

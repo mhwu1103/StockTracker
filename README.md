@@ -1,7 +1,18 @@
 # 台股成交值排行追蹤器
 
-每天自動抓取臺灣證券交易所的上市收盤行情，算出**成交值前 200 大排行**並保存歷史，
-用手機開網址就能看排行、進出榜與個股排名走勢。
+每天自動抓取上市（證交所）與上櫃（櫃買中心）的收盤行情，算出**成交值前 200 大排行**
+並保存歷史，用手機開網址就能看排行、進出榜與個股排名走勢。
+
+排行分成三種範圍，頂部可隨時切換，選過的會記住：
+
+| 範圍 | 內容 |
+|---|---|
+| 全部 | 上市＋上櫃合併後重新排名（預設） |
+| 上市 | 只看證交所 |
+| 上櫃 | 只看櫃買中心 |
+
+三種範圍各自計算名次、進出榜與連續進榜天數 —— 同一檔股票在「上櫃」排第 3、
+在「全部」可能排第 19，是兩個不同的問題。
 
 沒有伺服器、沒有資料庫：排程跑在 GitHub Actions，資料是 repo 裡的 JSON，
 前端是純靜態網頁掛在 GitHub Pages。
@@ -29,30 +40,38 @@ localStorage，不會上傳，換裝置或清除瀏覽資料就會消失。
 |---|---|
 | 當日收盤（每日排程） | `https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL` |
 | 指定日期（歷史回補） | `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=YYYYMMDD&type=ALLBUT0999&response=json` |
-| 產業別對照 | `https://openapi.twse.com.tw/v1/opendata/t187ap03_L` |
+| 上櫃當日（每日排程） | `https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes` |
+| 上櫃指定日期（歷史回補） | `https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=YYYY/MM/DD&type=EW&response=json` |
+| 產業別對照 | `https://openapi.twse.com.tw/v1/opendata/t187ap03_L`、`https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O` |
 
-兩者產出的資料格式已統一，同一天用兩條路徑抓取結果完全一致。
-範圍是**上市**股票與 ETF，已排除權證、牛熊證等商品。
+四個行情來源產出的資料格式已統一，同一天用當日或歷史路徑抓取結果完全一致。
+涵蓋普通股、特別股與 ETF／ETN，已排除權證、牛熊證等商品。
+
+「全部」不需要另外抓：某檔若排得進合併後的前 300 名，它在自己市場裡必然也在前 300 名內，
+所以用兩邊各自的前 300 名就能還原出正確的合併排行，由 `build_history.py` 算出來。
 
 ## 目錄結構
 
 ```
 scripts/
   twse.py           共用：抓取、欄位正規化、民國轉西元
-  fetch_daily.py    抓當日 → docs/data/daily/YYYY-MM-DD.json
-  backfill.py       用 MI_INDEX 逐日回補歷史（可中斷續跑）
-  build_history.py  由 daily/ 重算 index.json 與 history/YYYY.json
-  fetch_industry.py 抓上市公司的產業別 → docs/data/industry.json
+  fetch_daily.py    抓當日上市與上櫃 → docs/data/daily/{twse,tpex}/
+  backfill.py       逐日回補歷史（可中斷續跑，--scope 可只補單一市場）
+  build_history.py  由 daily/ 合併出 all/，並重算 index.json 與 history/
+  fetch_industry.py 抓上市與上櫃公司的產業別 → docs/data/industry.json
   notify_telegram.py 把當日新進榜／連續 2、3、5 天的清單推播到 Telegram
   serve.py          本機開發用的靜態伺服器（送出 no-store，不會被快取咬）
 docs/               GitHub Pages 網站根目錄
   index.html app.js style.css sw.js manifest.webmanifest icons/
   data/
-    index.json      交易日清單 + 每日大盤／前 200／前 10 大成交值
+    index.json      交易日清單 + 三種範圍各自的每日成交值與集中度
     industry.json   代號 -> 產業中文名（ETF 與特別股由前端補規則）
-    daily/          每日前 300 名（多存 100 名以便判斷前 200 的進出榜）
+    daily/{all,twse,tpex}/YYYY-MM-DD.json
+                    每日前 300 名（多存 100 名以便判斷前 200 的進出榜）
                     前 200 名另帶 streak（連續進榜天數）與 since（連續起算日）
-    history/        依年度切檔的「個股 → 每日 (名次, 成交值)」轉置表
+                    all/ 是純衍生檔，由 twse/ 與 tpex/ 合併算出來
+    history/{all,twse,tpex}/YYYY.json
+                    依年度切檔的「個股 → 每日 (名次, 成交值)」轉置表
 ```
 
 產業別採證交所的官方分類，與市場口中的題材族群（AI 伺服器、重電等）不一定對得起來；
@@ -82,6 +101,9 @@ cd docs && python -m http.server 8765
 python scripts/backfill.py --from 2024-08-16 --to 2026-08-14
 python scripts/build_history.py
 ```
+
+上櫃的歷史 API 每次回應約 1.4 MB，比上市慢得多，兩年份大約要一小時。
+只補單一市場可以用 `--scope twse` 或 `--scope tpex`。
 
 ## 部署到 GitHub Pages
 
@@ -137,6 +159,5 @@ python scripts/notify_telegram.py --watchlist 2330,2454 --dry-run
 
 ## 備註
 
-- 目前只涵蓋上市（TWSE），尚未包含上櫃（TPEx）。
 - 接下來想做什麼、以及各項目的優先級與規格，見 [ROADMAP.md](ROADMAP.md)。
 - 資料僅供參考，非投資建議。

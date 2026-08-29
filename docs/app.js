@@ -12,8 +12,16 @@ const TAIPEI_OFFSET_MIN = 8 * 60;
 // 取 4 是為了讓正常的週末不會誤報 —— 寧可晚一天提醒，也不要天天狼來了。
 const STALE_DAYS = 4;
 
+const SCOPES = [
+  { value: 'all', label: '全部' },
+  { value: 'twse', label: '上市' },
+  { value: 'tpex', label: '上櫃' },
+];
+const SCOPE_KEY = 'stocktracker.scope';
+
 const state = {
   index: null,
+  scope: 'all',        // 排行範圍：all 全部／twse 上市／tpex 上櫃
   date: null,          // 目前選定的交易日
   baseline: 1,         // 比較基準：往前 N 個交易日
   span: 120,           // 個股走勢顯示的交易日數
@@ -47,16 +55,36 @@ function getJSON(path, opts) {
   });
 }
 
-function loadDaily(date) {
+function loadDaily(date, scope = state.scope) {
   if (!date) return Promise.resolve(null);
-  if (!state.daily.has(date)) state.daily.set(date, getJSON(`${DATA}/daily/${date}.json`));
-  return state.daily.get(date);
+  const key = `${scope}/${date}`;
+  if (!state.daily.has(key)) state.daily.set(key, getJSON(`${DATA}/daily/${scope}/${date}.json`));
+  return state.daily.get(key);
 }
 
-function loadHistory(year) {
-  if (!state.history.has(year)) state.history.set(year, getJSON(`${DATA}/history/${year}.json`));
-  return state.history.get(year);
+function loadHistory(year, scope = state.scope) {
+  const key = `${scope}/${year}`;
+  if (!state.history.has(key)) {
+    // 某個範圍不一定每一年都有資料（例如上櫃是後來才開始收的），當成空的即可，
+    // 個股頁那幾年就只是沒有點而已，不該整頁掛掉。
+    state.history.set(key, getJSON(`${DATA}/history/${scope}/${year}.json`)
+      .catch(() => ({ dates: [], stocks: {} })));
+  }
+  return state.history.get(key);
 }
+
+/** 目前範圍的每日成交值序列（index.json 裡三種範圍各存一份）*/
+function scopeSeries() {
+  return state.index.scopes[state.scope];
+}
+
+/** 該範圍在這一天有沒有資料。缺資料時序列裡是 null。 */
+function hasScopeData(date) {
+  const i = state.index.dates.indexOf(date);
+  return i >= 0 && scopeSeries().marketValues[i] !== null;
+}
+
+const scopeLabel = () => (SCOPES.find((s) => s.value === state.scope) || SCOPES[0]).label;
 
 /**
  * 以台北時區計算某個交易日距今幾個日曆日。
@@ -156,6 +184,9 @@ function streakLabel(stock, withDate = false) {
   return withDate ? `${stock.since} 起 · ${days}` : days;
 }
 
+// 只有「全部」範圍的資料才帶 m 欄位，因為只有那時候才需要分辨是哪個市場
+const MARKET_TAGS = { twse: '上市', tpex: '上櫃' };
+
 const hasIndustry = () => Object.keys(state.industry).length > 0;
 
 function stockRow(stock, base) {
@@ -166,7 +197,7 @@ function stockRow(stock, base) {
   return `<a class="row" href="#/stock/${stock.code}">
     <div class="rank"><span class="no">${stock.rank}</span>${deltaBadge(stock.rank, prev)}</div>
     <div class="ident"><span class="name">${state.watch.has(stock.code) ? '<span class="star">★</span>' : ''}${esc(stock.name)}</span>
-      <span class="code">${stock.code}${hasIndustry() ? ` · ${esc(industryOf(stock.code))}` : ''}</span>
+      <span class="code">${stock.code}${stock.m ? ` · ${esc(MARKET_TAGS[stock.m])}` : ''}${hasIndustry() ? ` · ${esc(industryOf(stock.code))}` : ''}</span>
       ${streak ? `<span class="streak">${streak}</span>` : ''}</div>
     <div class="figures"><span class="value">${fmtValue(stock.value)}</span>
       <span class="price">${stock.close === null ? '' : num(stock.close, 2)} ${pctText}</span></div>
@@ -714,8 +745,9 @@ function signed(pct) {
 
 async function renderMarket(view) {
   const idx = state.index;
-  if (!idx.top200Values) {
-    view.innerHTML = '<p class="hint">index.json 沒有集中度欄位，請重新執行 scripts/build_history.py。</p>';
+  const ser = idx.scopes && scopeSeries();
+  if (!ser) {
+    view.innerHTML = '<p class="hint">index.json 格式是舊的，請重新執行 scripts/build_history.py。</p>';
     return;
   }
 
@@ -724,27 +756,27 @@ async function renderMarket(view) {
   const labels = idx.dates.slice(from, at + 1);
   const cut = (arr) => arr.slice(from, at + 1);
 
-  const market = cut(idx.marketValues);
-  const top200 = cut(idx.top200Values);
-  const top10 = cut(idx.top10Values);
+  const market = cut(ser.marketValues);
+  const top200 = cut(ser.top200Values);
+  const top10 = cut(ser.top10Values);
 
-  const dod = at > 0 && idx.marketValues[at - 1]
-    ? ((idx.marketValues[at] - idx.marketValues[at - 1]) / idx.marketValues[at - 1]) * 100
+  const dod = at > 0 && ser.marketValues[at - 1]
+    ? ((ser.marketValues[at] - ser.marketValues[at - 1]) / ser.marketValues[at - 1]) * 100
     : null;
-  const share = (v) => (idx.marketValues[at] ? (v / idx.marketValues[at]) * 100 : null);
+  const share = (v) => (ser.marketValues[at] ? (v / ser.marketValues[at]) * 100 : null);
 
   view.innerHTML = `
     <div class="controls">${pills('span', SPANS, state.span)}</div>
     <section class="card">
-      <h2>${state.date} 市場概況</h2>
+      <h2>${state.date} 市場概況 <small>${scopeLabel()}</small></h2>
       <div class="stat-grid">
-        <div class="stat"><b>${num(idx.marketValues[at], 0)}</b><span>大盤成交值（億）</span></div>
+        <div class="stat"><b>${num(ser.marketValues[at], 0)}</b><span>${scopeLabel()}成交值（億）</span></div>
         <div class="stat"><b class="${trend(dod)}">${signed(dod)}</b><span>對比前一日</span></div>
-        <div class="stat"><b>${num(share(idx.top200Values[at]))}%</b><span>前 200 大佔比</span></div>
-        <div class="stat"><b>${num(share(idx.top10Values[at]))}%</b><span>前 10 大佔比</span></div>
+        <div class="stat"><b>${num(share(ser.top200Values[at]))}%</b><span>前 200 大佔比</span></div>
+        <div class="stat"><b>${num(share(ser.top10Values[at]))}%</b><span>前 10 大佔比</span></div>
       </div>
-      <p class="note">這裡的大盤成交值是本站追蹤範圍（上市普通股與 ETF，已排除權證等商品）的合計，
-        與證交所公布的市場總成交值會有小幅差異。</p>
+      <p class="note">成交值是本站追蹤範圍（普通股與 ETF，已排除權證等商品）的合計，
+        與交易所公布的市場總成交值會有小幅差異。</p>
     </section>
     <section class="card">
       <h2>成交值走勢 <small>億元</small></h2>
@@ -759,7 +791,7 @@ async function renderMarket(view) {
   try {
     const Chart = await loadChartJs();
     drawLine(Chart, $('#c-market'), labels, [
-      { data: market, color: LINE.market, label: '大盤' },
+      { data: market, color: LINE.market, label: scopeLabel() },
       { data: top200, color: LINE.top200, label: '前 200 大' },
     ], { emptyText: '無資料' });
     drawLine(Chart, $('#c-share'), labels, [
@@ -821,10 +853,13 @@ function paintChrome() {
   select.innerHTML = idx.dates.slice().reverse().map((d) => `<option value="${d}">${d}</option>`).join('');
   select.value = state.date;
 
+  $('#scope-select').value = state.scope;
+
   const i = idx.dates.indexOf(state.date);
-  const market = idx.marketValues[i];
+  const market = scopeSeries().marketValues[i];
   $('#meta').textContent =
-    `大盤成交值 ${num(market, 0)} 億 · 共 ${idx.dates.length} 個交易日（${idx.dates[0]} 起）· 更新 ${idx.updated.slice(0, 16).replace('T', ' ')}`;
+    `${scopeLabel()}成交值 ${num(market, 0)} 億 · 共 ${idx.dates.length} 個交易日（${idx.dates[0]} 起）`
+    + ` · 更新 ${idx.updated.slice(0, 16).replace('T', ' ')}`;
 
   // 排程停擺時畫面看起來一切正常，使用者會以為看到的是當天的盤，所以要明講。
   const stale = daysSinceTaipei(idx.latest);
@@ -839,6 +874,14 @@ async function render() {
   destroyCharts();
   const view = $('#view');
   view.innerHTML = '<p class="hint">載入中…</p>';
+
+  // 某個範圍在某一天沒有資料時，直接講清楚，不要讓它變成一則 404 載入失敗
+  if (!hasScopeData(state.date)) {
+    view.innerHTML = `<p class="hint">${scopeLabel()}在 ${state.date} 沒有資料。<br>請改選其他日期或範圍。</p>`;
+    paintChrome();
+    return;
+  }
+
   try {
     if (route.view === 'market') await renderMarket(view);
     else if (route.view === 'sector') await renderSector(view);
@@ -856,6 +899,16 @@ async function render() {
 function bindGlobalControls() {
   $('#date-select').addEventListener('change', (e) => {
     state.date = e.target.value;
+    render();
+  });
+
+  $('#scope-select').addEventListener('change', (e) => {
+    state.scope = e.target.value;
+    try {
+      localStorage.setItem(SCOPE_KEY, state.scope);
+    } catch (err) {
+      /* 記不住就算了，不影響這次瀏覽 */
+    }
     render();
   });
 
@@ -891,6 +944,16 @@ async function start() {
   }
 
   state.watch = loadWatch();
+  try {
+    const saved = localStorage.getItem(SCOPE_KEY);
+    if (SCOPES.some((s) => s.value === saved)) state.scope = saved;
+  } catch (err) {
+    /* 讀不到就用預設的「全部」 */
+  }
+
+  $('#scope-select').innerHTML =
+    SCOPES.map((s) => `<option value="${s.value}">${s.label}</option>`).join('');
+
   state.date = state.index.latest;
   bindGlobalControls();
   await render();

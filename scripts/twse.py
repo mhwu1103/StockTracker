@@ -1,8 +1,13 @@
-"""共用工具：抓取臺灣證券交易所公開資料並正規化欄位。
+"""共用工具：抓取上市（證交所）與上櫃（櫃買中心）公開資料並正規化欄位。
 
-兩個資料來源產出的紀錄格式完全相同，差別只在：
-  - STOCK_DAY_ALL：只有「當日」資料，每日排程用。
-  - MI_INDEX     ：可指定任一交易日，歷史回補用。
+四個資料來源產出的紀錄格式完全相同，差別只在市場與可查詢的日期：
+
+                  當日（每日排程）        任一交易日（歷史回補）
+    上市 TWSE     STOCK_DAY_ALL          MI_INDEX
+    上櫃 TPEx     tpex_mainboard_quotes  dailyQuotes
+
+排行分成三種範圍（scope）：all 全部、twse 上市、tpex 上櫃。
+抓取端只產出 twse 與 tpex，all 由 build_history.py 合併兩者算出來。
 """
 
 from __future__ import annotations
@@ -32,6 +37,13 @@ TAIPEI = timezone(timedelta(hours=8))
 
 STOCK_DAY_ALL_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
 MI_INDEX_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
+
+# 上櫃。openapi 那支不含權證；dailyQuotes 含權證，但會被 is_tracked_code 濾掉。
+TPEX_QUOTES_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
+TPEX_DAILY_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
+
+SCOPES = ("all", "twse", "tpex")
+SCOPE_NAMES = {"all": "全部", "twse": "上市", "tpex": "上櫃"}
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StockTracker/1.0",
@@ -147,8 +159,12 @@ def build_payload(date_iso: str, source: str, records: list, top_n: int = TOP_N)
     }
 
 
-def daily_path(date_iso: str) -> Path:
-    return DAILY_DIR / f"{date_iso}.json"
+def daily_path(date_iso: str, scope: str = "twse") -> Path:
+    return DAILY_DIR / scope / f"{date_iso}.json"
+
+
+def history_path(year, scope: str = "twse") -> Path:
+    return HISTORY_DIR / scope / f"{year}.json"
 
 
 def write_json(path: Path, payload) -> Path:
@@ -160,8 +176,8 @@ def write_json(path: Path, payload) -> Path:
     return path
 
 
-def write_daily(payload: dict) -> Path:
-    return write_json(daily_path(payload["date"]), payload)
+def write_daily(payload: dict, scope: str = "twse") -> Path:
+    return write_json(daily_path(payload["date"], scope), payload)
 
 
 # --------------------------------------------------------------------------- #
@@ -235,9 +251,78 @@ def fetch_mi_index(day: date):
 
 
 # --------------------------------------------------------------------------- #
+# 來源三：當日全部上櫃收盤行情（OpenAPI）
+# --------------------------------------------------------------------------- #
+def fetch_tpex_quotes():
+    rows = fetch_json(TPEX_QUOTES_URL)
+    if not rows:
+        raise RuntimeError("tpex_mainboard_quotes 回傳空資料")
+    date_iso = roc_to_iso(rows[0]["Date"])
+    records = []
+    for row in rows:
+        rec = make_record(
+            row.get("SecuritiesCompanyCode"),
+            row.get("CompanyName"),
+            row.get("TradingShares"),
+            row.get("TransactionAmount"),
+            row.get("Close"),
+            row.get("Change"),          # 這裡的漲跌已自帶正負號
+        )
+        if rec:
+            records.append(rec)
+    return date_iso, records
+
+
+# --------------------------------------------------------------------------- #
+# 來源四：指定日期全部上櫃收盤行情（歷史回補）
+# --------------------------------------------------------------------------- #
+def fetch_tpex_daily(day: date):
+    """回傳 (date_iso, records)；非交易日回傳 None。
+
+    非交易日的 stat 一樣是 ok，只是 data 為空，所以要看筆數而不是看 stat。
+    """
+    payload = fetch_json(
+        TPEX_DAILY_URL,
+        {"date": day.strftime("%Y/%m/%d"), "type": "EW", "response": "json"},
+    )
+    table = next(
+        (t for t in (payload or {}).get("tables") or [] if t.get("data")),
+        None,
+    )
+    if table is None:
+        return None
+
+    fields = [re.sub(r"\s", "", str(f)) for f in table.get("fields") or []]
+
+    def idx(label):
+        for i, field in enumerate(fields):
+            if field.startswith(label):
+                return i
+        return None
+
+    i_code, i_name = idx("代號"), idx("名稱")
+    i_volume, i_value = idx("成交股數"), idx("成交金額")
+    i_close, i_diff = idx("收盤"), idx("漲跌")
+    if None in (i_code, i_name, i_volume, i_value, i_close, i_diff):
+        raise RuntimeError(f"TPEx dailyQuotes 欄位格式已改變：{fields}")
+
+    records = []
+    for row in table["data"]:
+        rec = make_record(row[i_code], row[i_name], row[i_volume], row[i_value],
+                          row[i_close], row[i_diff])
+        if rec:
+            records.append(rec)
+
+    if not records:
+        return None
+    return day.isoformat(), records
+
+
+# --------------------------------------------------------------------------- #
 # 既有資料查詢
 # --------------------------------------------------------------------------- #
-def existing_dates() -> list:
-    if not DAILY_DIR.exists():
+def existing_dates(scope: str = "twse") -> list:
+    folder = DAILY_DIR / scope
+    if not folder.exists():
         return []
-    return sorted(p.stem for p in DAILY_DIR.glob("*.json"))
+    return sorted(p.stem for p in folder.glob("*.json"))

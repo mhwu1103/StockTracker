@@ -1,7 +1,7 @@
-"""抓上市公司的產業別 → docs/data/industry.json
+"""抓上市與上櫃公司的產業別 → docs/data/industry.json
 
-證交所的公司基本資料裡，產業別是代碼（台積電是 "24"），這裡轉成中文再存，
-前端就不必再帶一份對照表。
+兩個交易所的公司基本資料裡，產業別都是代碼（台積電是 "24"），而且用的是同一套
+代碼，只是欄位名稱不同。這裡轉成中文再存，前端就不必再帶一份對照表。
 
 ETF、特別股不在「公司」基本資料裡，對照不到的代號由讀取端自行歸類
 （規則見 docs/app.js 的 industryOf()）。
@@ -18,7 +18,12 @@ from datetime import datetime
 
 import twse
 
-COMPANY_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+# (市場, 網址, 代號欄位, 產業別欄位)
+SOURCES = [
+    ("上市", "https://openapi.twse.com.tw/v1/opendata/t187ap03_L", "公司代號", "產業別"),
+    ("上櫃", "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
+     "SecuritiesCompanyCode", "SecuritiesIndustryCode"),
+]
 
 INDUSTRY_PATH = twse.DATA_DIR / "industry.json"
 
@@ -69,23 +74,31 @@ INDUSTRY_NAMES = {
 
 
 def main() -> int:
-    rows = twse.fetch_json(COMPANY_URL)
-    if not rows:
-        print("公司基本資料回傳空資料")
-        return 1
-
     mapping = {}
     unknown = {}
-    for row in rows:
-        code = str(row.get("公司代號", "")).strip()
-        if not twse.is_tracked_code(code):
+    for label, url, code_field, industry_field in SOURCES:
+        try:
+            rows = twse.fetch_json(url)
+        except RuntimeError as err:
+            print(f"{label}：抓取失敗，沿用既有資料 —— {err}")
             continue
-        raw = str(row.get("產業別", "")).strip()
-        name = INDUSTRY_NAMES.get(raw)
-        if name is None:
-            unknown[raw] = unknown.get(raw, 0) + 1
-            name = "其他"
-        mapping[code] = name
+        if not rows:
+            print(f"{label}：公司基本資料回傳空資料")
+            continue
+
+        added = 0
+        for row in rows:
+            code = str(row.get(code_field, "")).strip()
+            if not twse.is_tracked_code(code):
+                continue
+            raw = str(row.get(industry_field, "")).strip()
+            name = INDUSTRY_NAMES.get(raw)
+            if name is None:
+                unknown[raw] = unknown.get(raw, 0) + 1
+                name = "其他"
+            mapping[code] = name
+            added += 1
+        print(f"{label}：{added} 檔")
 
     if not mapping:
         print("沒有對應到任何代號，欄位格式可能已改變")
