@@ -250,6 +250,35 @@ select, input, button {
 .sector[open] > summary { background: var(--bg); }
 .sector__body .row { padding-left: 26px; background: var(--bg); }
 
+/* 資金流向橫條：中線為零，往右流入、往左流出 */
+.flow-bar {
+  grid-column: 1 / -1;
+  position: relative;
+  height: 4px;
+  margin-top: 2px;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.flow-bar::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  width: 1px;
+  height: 8px;
+  background: var(--muted);
+  opacity: .5;
+}
+
+.flow-bar i {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: currentColor;
+}
+
 /* 題材族群展開後的子族群標題 */
 .subhead {
   margin: 0;
@@ -260,7 +289,7 @@ select, input, button {
   font-weight: 600;
 }
 .subhead small { margin-left: 6px; font-weight: 400; color: var(--muted); }
-.figures .price em { font-style: normal; font-variant-numeric: tabular-nums; }
+.row em { font-style: normal; font-variant-numeric: tabular-nums; }
 
 /* ---------- 圖表與統計 ---------- */
 .stat-grid {

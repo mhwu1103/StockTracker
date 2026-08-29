@@ -30,6 +30,7 @@ const state = {
   themes: [],          // 題材族群（themes.json，抓不到時為空陣列）
   themesUpdated: '',   // themes.json 的維護日期，族群頁要標出來
   grouping: 'industry',// 族群頁的分類軸：industry 官方產業／theme 題材族群
+  sectorSort: 'flow',  // 族群頁排序：flow 資金增減／shift 佔比位移／value 成交值
   sector: '',          // 排行榜的分類篩選；'' 代表全部
   sort: 'rank',        // 排行榜排序欄位
   floor: 0,            // 排行榜成交值門檻（億）
@@ -203,6 +204,7 @@ function byTheme(stocks) {
     groups.push({
       name: group.name,
       count: members.size,
+      codes: [...members],      // 加權漲跌幅要用；同一檔列在兩個子族群時只算一次
       value: sum([...members]),
       subs: subs.sort((a, b) => b.value - a.value),
     });
@@ -754,26 +756,100 @@ async function renderStock(view, code) {
 }
 
 // --------------------------------------------------------------------------
-// 分頁六：族群（依產業看資金流向）
+// 分頁六：族群（資金流向）
 // --------------------------------------------------------------------------
-function sectorRow(cur, base, totalValue) {
-  const share = totalValue ? (cur.value / totalValue) * 100 : 0;
-  const delta = base && base.value ? ((cur.value - base.value) / base.value) * 100 : null;
-  const deltaText = delta === null
-    ? '<em class="flat">NEW</em>'
-    : `<em class="${trend(delta)}">${delta > 0 ? '+' : ''}${delta.toFixed(1)}%</em>`;
-  const countDelta = base ? cur.count - base.count : null;
+const SECTOR_SORTS = [
+  { value: 'flow', label: '依資金增減' },
+  { value: 'shift', label: '依佔比位移' },
+  { value: 'value', label: '依成交值' },
+];
+
+// 億元。10 億以下留一位小數，否則小族群與小額的資金變化會全部顯示成「0 億」。
+const okuText = (yuan) => {
+  const oku = yuan / 1e8;
+  return `${num(oku, Math.abs(oku) < 10 ? 1 : 0)} 億`;
+};
+const signedPct = (v, digits = 1) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(digits)}%`);
+
+/**
+ * 成交值加權漲跌幅。成交值本身沒有方向（一買一賣才成交），
+ * 所以「這一族的錢是把價格推上去還是砍下來」要靠漲跌幅補，
+ * 而權重必須是成交值——族群的資金流向本來就由成交值大的那幾檔決定。
+ */
+function weightedChange(codes, pool) {
+  let weight = 0;
+  let sum = 0;
+  for (const code of codes) {
+    const s = pool.get(code);
+    if (!s || s.changePct === null || s.changePct === undefined) continue;
+    weight += s.value;
+    sum += s.value * s.changePct;
+  }
+  return weight ? sum / weight : null;
+}
+
+/**
+ * 替各族群算出與基準日相比的資金變化。兩個數字要一起看：
+ *
+ *   flow   成交值增減（元）——直覺的「錢變多還變少」，但大盤整體縮量時全部都會是負的
+ *   shift  佔榜上成交值比重的變化（百分點）——把大盤的縮放抽掉，錢實際上從哪一族轉到哪一族
+ *
+ * 只出現在今天、基準日沒進榜的族群沒有比較基準，flow／shift 皆為 null，排序時沉到最後。
+ */
+function groupFlows(groups, baseGroups, pool, total, baseTotal) {
+  return groups.map((g) => {
+    const base = baseGroups.get(g.name);
+    const share = total ? (g.value / total) * 100 : 0;
+    return {
+      ...g,
+      share,
+      chg: weightedChange(g.codes, pool),
+      flow: base ? g.value - base.value : null,
+      flowPct: base && base.value ? ((g.value - base.value) / base.value) * 100 : null,
+      shift: base && baseTotal ? share - (base.value / baseTotal) * 100 : null,
+      countDelta: base ? g.count - base.count : null,
+    };
+  });
+}
+
+/** 資金流向橫條：從中線往右是流入、往左是流出，長度對比當日最大流量。 */
+function flowBar(flow, maxFlow) {
+  if (flow === null || !maxFlow) return '<div class="flow-bar"></div>';
+  const width = Math.min(50, (Math.abs(flow) / maxFlow) * 50);
+  const side = flow >= 0 ? 'left:50%' : 'right:50%';
+  return `<div class="flow-bar"><i class="${trend(flow)}" style="${side};width:${width.toFixed(1)}%"></i></div>`;
+}
+
+function sectorRow(g, maxFlow) {
+  const flowText = g.flow === null
+    ? '<span class="value flat">NEW</span>'
+    : `<span class="value ${trend(g.flow)}">${g.flow > 0 ? '+' : ''}${okuText(g.flow)}</span>`;
+  const shiftText = g.shift === null
+    ? ''
+    : ` · <em class="${trend(g.shift)}">${g.shift > 0 ? '+' : ''}${g.shift.toFixed(2)}pp</em>`;
+  const countText = g.countDelta ? `${g.countDelta > 0 ? '+' : ''}${g.countDelta} 檔` : '檔';
+  const identText = g.gone
+    ? `整族退出前 ${TOP} 大${shiftText}`
+    : `${okuText(g.value)} · 佔 ${num(g.share)}%${shiftText}`;
+  const priceText = g.gone
+    ? '已退榜'
+    : `${g.flowPct === null ? '新進榜' : signedPct(g.flowPct)}
+       · 加權 <em class="${trend(g.chg)}">${signedPct(g.chg, 2)}</em>`;
+
+  const summary = `<div class="rank"><span class="no">${g.count}</span>
+        <span class="delta ${trend(g.countDelta)}">${countText}</span></div>
+      <div class="ident"><span class="name">${esc(g.name)}</span>
+        <span class="code">${identText}</span></div>
+      <div class="figures">${flowText}
+        <span class="price">${priceText}</span></div>
+      ${flowBar(g.flow, maxFlow)}`;
+
+  // 整族退出榜外的沒有當日成分股可以展開，就畫成一般的列
+  if (g.gone) return `<div class="row">${summary}</div>`;
 
   return `<details class="sector">
-    <summary class="row">
-      <div class="rank"><span class="no">${cur.count}</span>
-        <span class="delta ${trend(countDelta)}">${countDelta ? `${countDelta > 0 ? '+' : ''}${countDelta} 檔` : '檔'}</span></div>
-      <div class="ident"><span class="name">${esc(cur.name)}</span>
-        <span class="code">佔榜上成交值 ${num(share)}%${cur.subs && cur.subs.length > 1 ? ` · ${cur.subs.length} 個子族群` : ''}</span></div>
-      <div class="figures"><span class="value">${fmtValue(cur.value)}</span>
-        <span class="price">${deltaText}</span></div>
-    </summary>
-    <div class="sector__body" data-sector="${esc(cur.name)}"></div>
+    <summary class="row">${summary}</summary>
+    <div class="sector__body" data-sector="${esc(g.name)}"></div>
   </details>`;
 }
 
@@ -790,14 +866,45 @@ async function renderSector(view) {
   const baseDate = dateBack(state.baseline);
   const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(baseDate)]);
   const topStocks = today.stocks.filter((s) => s.rank <= TOP);
+  const baseStocks = base ? base.stocks.filter((s) => s.rank <= TOP) : [];
   const group = mode === 'theme' ? byTheme : bySector;
-  const groups = group(topStocks);
-  const baseGroups = new Map(
-    base ? group(base.stocks.filter((s) => s.rank <= TOP)).map((g) => [g.name, g]) : []
-  );
+  const baseGroups = new Map(group(baseStocks).map((g) => [g.name, g]));
   // 題材族群一檔可屬多個族群，拿各族群加總當分母會把重複計算的部分算進去。
   // 分母一律取「榜上成交值總額」，每檔只算一次；官方產業模式下兩者本來就相等。
-  const totalValue = topStocks.reduce((sum, s) => sum + s.value, 0);
+  const sumValue = (list) => list.reduce((n, s) => n + s.value, 0);
+  const totalValue = sumValue(topStocks);
+  const baseTotal = sumValue(baseStocks);
+  const byCode = new Map(topStocks.map((s) => [s.code, s]));
+
+  const groups = groupFlows(group(topStocks), baseGroups, byCode, totalValue, baseTotal);
+  // 基準日在榜、今天整族退出榜外的也是資金流出，不能因為今天榜上沒有就當作沒發生。
+  // 「未分類」不算：它從名單裡消失代表今天全部歸類到了，不是有錢流出去。
+  const present = new Set(groups.map((g) => g.name));
+  for (const b of baseGroups.values()) {
+    if (present.has(b.name) || b.name === UNGROUPED_LABEL) continue;
+    groups.push({
+      name: b.name, count: 0, codes: [], value: 0, share: 0, chg: null, gone: true,
+      flow: -b.value, flowPct: -100, shift: -(b.value / baseTotal) * 100, countDelta: -b.count,
+    });
+  }
+
+  const sorters = {
+    flow: (a, b) => (b.flow ?? -Infinity) - (a.flow ?? -Infinity),
+    shift: (a, b) => (b.shift ?? -Infinity) - (a.shift ?? -Infinity),
+    value: (a, b) => b.value - a.value,
+  };
+  groups.sort((a, b) => {
+    // 未分類是名單的缺口，不是族群，不管怎麼排都固定在最後
+    if (a.name === UNGROUPED_LABEL) return 1;
+    if (b.name === UNGROUPED_LABEL) return -1;
+    return sorters[state.sectorSort](a, b);
+  });
+  const maxFlow = Math.max(...groups.map((g) => Math.abs(g.flow || 0)));
+
+  const totalFlowPct = baseTotal ? ((totalValue - baseTotal) / baseTotal) * 100 : null;
+  const marketChg = weightedChange([...byCode.keys()], byCode);
+  const inflow = groups.filter((g) => g.flow > 0).length;
+  const outflow = groups.filter((g) => g.flow < 0).length;
 
   // 名單的缺口要講出來，不然「未分類」看起來只是一個普通族群
   const ungrouped = groups.find((g) => g.name === UNGROUPED_LABEL)?.count || 0;
@@ -816,14 +923,27 @@ async function renderSector(view) {
       ${pills('baseline', BASELINES, state.baseline)}
     </div>
     <section class="card">
-      <h2>${mode === 'theme' ? '題材族群' : '產業分布'}
-        <small>${state.date} 前 ${TOP} 大${baseDate ? ` · 成交值變化 vs ${baseDate}` : ''}</small></h2>
-      ${groups.map((g) => sectorRow(g, baseGroups.get(g.name), totalValue)).join('')}
-      <p class="note">點一列可以展開該族群當日在榜的個股。${note}</p>
+      <h2>榜上資金總量 <small>${state.date}${baseDate ? ` vs ${baseDate}` : ''}</small></h2>
+      <div class="stat-grid">
+        <div class="stat"><b class="sm">${okuText(totalValue)}</b><span>前 ${TOP} 大成交值</span></div>
+        <div class="stat"><b class="sm ${trend(totalFlowPct)}">${signedPct(totalFlowPct)}</b><span>整體增減</span></div>
+        <div class="stat"><b class="sm ${trend(marketChg)}">${signedPct(marketChg, 2)}</b><span>成交值加權漲跌</span></div>
+        <div class="stat"><b class="sm"><span class="up">${inflow}</span> / <span class="down">${outflow}</span></b><span>流入 / 流出族群</span></div>
+      </div>
+      <p class="note">整體增減是大盤的縮放，會讓所有族群一起變大或變小。
+        要看「錢從哪一族轉到哪一族」，用抽掉大盤縮放的<b>佔比位移（pp）</b>。</p>
+    </section>
+    <div class="controls">${pills('sectorsort', SECTOR_SORTS, state.sectorSort)}</div>
+    <section class="card">
+      <h2>${mode === 'theme' ? '題材族群' : '官方產業'}
+        <small>${groups.filter((g) => !g.gone).length} 族群在榜${baseDate ? ` · 資金流向 vs ${baseDate}` : ''}</small></h2>
+      ${groups.map((g) => sectorRow(g, maxFlow)).join('')}
+      <p class="note">紅條向右是資金流入、綠條向左是流出，長度對比當日最大流量。
+        成交值是買賣雙邊的總量、本身沒有方向，「加權」是成交值加權的漲跌幅，
+        看的是這些錢把價格推上去還是砍下來。點一列可以展開該族群當日在榜的個股。${note}</p>
     </section>`;
 
   // 展開時才填內容，200 檔一次全渲染沒必要
-  const byCode = new Map(topStocks.map((s) => [s.code, s]));
   const baseRanks = rankMap(base);
   const found = new Map(groups.map((g) => [g.name, g]));
   const rowsOf = (codes) => codes
@@ -1043,6 +1163,7 @@ function bindGlobalControls() {
     if (pill.dataset.baseline) state.baseline = Number(pill.dataset.baseline);
     if (pill.dataset.span) state.span = Number(pill.dataset.span);
     if (pill.dataset.streak) state.streakDays = Number(pill.dataset.streak);
+    if (pill.dataset.sectorsort) state.sectorSort = pill.dataset.sectorsort;
     if (pill.dataset.grouping) {
       state.grouping = pill.dataset.grouping;
       try {
