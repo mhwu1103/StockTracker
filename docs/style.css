@@ -249,6 +249,17 @@ select, input, button {
 .sector > summary::-webkit-details-marker { display: none; }
 .sector[open] > summary { background: var(--bg); }
 .sector__body .row { padding-left: 26px; background: var(--bg); }
+
+/* 題材族群展開後的子族群標題 */
+.subhead {
+  margin: 0;
+  padding: 8px 12px 4px 26px;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 600;
+}
+.subhead small { margin-left: 6px; font-weight: 400; color: var(--muted); }
 .figures .price em { font-style: normal; font-variant-numeric: tabular-nums; }
 
 /* ---------- 圖表與統計 ---------- */

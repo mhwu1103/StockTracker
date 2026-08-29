@@ -27,7 +27,10 @@ const state = {
   span: 120,           // 個股走勢顯示的交易日數
   query: '',           // 排行榜搜尋字串
   industry: {},        // code -> 產業中文名（industry.json，抓不到時為空）
-  sector: '',          // 排行榜的產業篩選；'' 代表全部
+  themes: [],          // 題材族群（themes.json，抓不到時為空陣列）
+  themesUpdated: '',   // themes.json 的維護日期，族群頁要標出來
+  grouping: 'industry',// 族群頁的分類軸：industry 官方產業／theme 題材族群
+  sector: '',          // 排行榜的分類篩選；'' 代表全部
   sort: 'rank',        // 排行榜排序欄位
   floor: 0,            // 排行榜成交值門檻（億）
   watch: new Set(),    // 自選股代號
@@ -144,17 +147,81 @@ function industryOf(code) {
   return OTHER_LABEL;
 }
 
-/** 把一份股票清單依產業彙總成 [{ name, count, value }]，成交值由大到小。 */
+/** 把一份股票清單依官方產業彙總成 [{ name, count, value, codes }]，成交值由大到小。 */
 function bySector(stocks) {
   const acc = new Map();
   for (const s of stocks) {
     const name = industryOf(s.code);
-    const cur = acc.get(name) || { name, count: 0, value: 0 };
+    const cur = acc.get(name) || { name, count: 0, value: 0, codes: [] };
     cur.count += 1;
     cur.value += s.value;
+    cur.codes.push(s.code);
     acc.set(name, cur);
   }
   return [...acc.values()].sort((a, b) => b.value - a.value);
+}
+
+/**
+ * 題材族群（themes.json）。與官方產業別並存而不是取代它：官方分類一檔只有一類、
+ * 跟著證交所自動更新、永遠不會漏掉任何一檔；題材族群是人工維護的供應鏈視角，
+ * 貼近盤面語言，但一檔可以同時屬於多個族群，也會有名單還沒補到的股票。
+ */
+const UNGROUPED_LABEL = '未分類';
+const ETF_GROUP_LABEL = 'ETF · 指數商品';
+
+const hasThemes = () => state.themes.length > 0;
+
+/** 某個題材族群（或其中一個子族群）的成分代號。 */
+function themeCodes(groupName, subName) {
+  const group = state.themes.find((g) => g.name === groupName);
+  if (!group) return new Set();
+  const subs = subName ? group.subs.filter((s) => s.name === subName) : group.subs;
+  return new Set(subs.flatMap((s) => s.codes));
+}
+
+/**
+ * 依題材族群彙總成 [{ name, count, value, subs?, codes? }]，成交值由大到小。
+ * 名單外的個股歸「未分類」並固定排在最後；ETF 依 industryOf() 自動成一族，
+ * 這樣新掛牌的 ETF 不必手動補進 themes.json。
+ */
+function byTheme(stocks) {
+  const pool = new Map(stocks.map((s) => [s.code, s]));
+  const sum = (codes) => codes.reduce((n, c) => n + pool.get(c).value, 0);
+  const taken = new Set();
+  const groups = [];
+
+  for (const group of state.themes) {
+    const members = new Set();   // 同一檔同時列在兩個子族群時只算一次
+    const subs = [];
+    for (const sub of group.subs) {
+      const codes = sub.codes.filter((c) => pool.has(c));
+      if (!codes.length) continue;
+      subs.push({ name: sub.name, codes, value: sum(codes) });
+      codes.forEach((c) => { members.add(c); taken.add(c); });
+    }
+    if (!members.size) continue;
+    groups.push({
+      name: group.name,
+      count: members.size,
+      value: sum([...members]),
+      subs: subs.sort((a, b) => b.value - a.value),
+    });
+  }
+
+  const bucket = (name, list) => {
+    if (!list.length) return;
+    const codes = list.map((s) => s.code);
+    groups.push({ name, count: codes.length, value: sum(codes), codes });
+  };
+  const left = stocks.filter((s) => !taken.has(s.code));
+  bucket(ETF_GROUP_LABEL, left.filter((s) => industryOf(s.code) === ETF_LABEL));
+  bucket(UNGROUPED_LABEL, left.filter((s) => industryOf(s.code) !== ETF_LABEL));
+
+  return groups.sort((a, b) => {
+    if (a.name === UNGROUPED_LABEL) return 1;      // 未分類是名單的缺口，不是族群
+    if (b.name === UNGROUPED_LABEL) return -1;
+    return b.value - a.value;
+  });
 }
 
 function rankMap(payload) {
@@ -236,6 +303,12 @@ const BASELINES = [
   { value: 20, label: '對比 20 日前' },
 ];
 
+const GROUPINGS = [
+  { value: 'industry', label: '官方產業' },
+  { value: 'theme', label: '題材族群' },
+];
+const GROUPING_KEY = 'stocktracker.grouping';
+
 // --------------------------------------------------------------------------
 // 分頁一：排行榜
 // --------------------------------------------------------------------------
@@ -250,11 +323,22 @@ async function renderRank(view) {
   const opt = (value, label, current) =>
     `<option value="${esc(value)}" ${String(value) === String(current) ? 'selected' : ''}>${esc(label)}</option>`;
 
+  // 題材族群同樣只列當日榜上有成分股的，大族群與子族群都能選
+  const themePicks = hasThemes()
+    ? byTheme(top).filter((g) => g.subs).flatMap((g) => [
+      { value: `T:${g.name}`, label: g.name },
+      ...(g.subs.length > 1
+        ? g.subs.map((sub) => ({ value: `T:${g.name}/${sub.name}`, label: `　${sub.name}` }))
+        : []),
+    ])
+    : [];
+
   const pickSelect = `<select id="sector-pick" aria-label="篩選">
       ${opt('', '全部', state.sector)}
       ${state.watch.size ? opt('!WATCH', `★ 只看自選（${state.watch.size}）`, state.sector) : ''}
       ${hasIndustry() ? opt('!ETF', '排除 ETF', state.sector) : ''}
-      ${sectors.map((n) => opt(n, n, state.sector)).join('')}
+      ${sectors.length ? `<optgroup label="官方產業">${sectors.map((n) => opt(n, n, state.sector)).join('')}</optgroup>` : ''}
+      ${themePicks.length ? `<optgroup label="題材族群">${themePicks.map((o) => opt(o.value, o.label, state.sector)).join('')}</optgroup>` : ''}
     </select>`;
 
   const sortSelect = `<select id="sort-pick" aria-label="排序">
@@ -276,11 +360,17 @@ async function renderRank(view) {
       <div id="rank-list"></div>
     </section>`;
 
-  const matchPick = (s) => {
-    if (!state.sector) return true;
-    if (state.sector === '!WATCH') return state.watch.has(s.code);
-    if (state.sector === '!ETF') return industryOf(s.code) !== ETF_LABEL;
-    return industryOf(s.code) === state.sector;
+  const pickFilter = () => {
+    const sel = state.sector;
+    if (!sel) return () => true;
+    if (sel === '!WATCH') return (s) => state.watch.has(s.code);
+    if (sel === '!ETF') return (s) => industryOf(s.code) !== ETF_LABEL;
+    if (sel.startsWith('T:')) {
+      const [name, sub] = sel.slice(2).split('/');
+      const codes = themeCodes(name, sub);
+      return (s) => codes.has(s.code);
+    }
+    return (s) => industryOf(s.code) === sel;
   };
 
   // 排序用的鍵值一律「越大越前面」，沒有值的排到最後
@@ -295,8 +385,9 @@ async function renderRank(view) {
 
   const paint = () => {
     const q = state.query.trim().toLowerCase();
+    const match = pickFilter();
     const rows = top
-      .filter(matchPick)
+      .filter(match)
       .filter((s) => s.value >= state.floor * 1e8)
       .filter((s) => !q || s.code.toLowerCase().includes(q) || s.name.toLowerCase().includes(q))
       .sort((a, b) => sortKey(b) - sortKey(a))
@@ -678,7 +769,7 @@ function sectorRow(cur, base, totalValue) {
       <div class="rank"><span class="no">${cur.count}</span>
         <span class="delta ${trend(countDelta)}">${countDelta ? `${countDelta > 0 ? '+' : ''}${countDelta} 檔` : '檔'}</span></div>
       <div class="ident"><span class="name">${esc(cur.name)}</span>
-        <span class="code">佔榜上成交值 ${num(share)}%</span></div>
+        <span class="code">佔榜上成交值 ${num(share)}%${cur.subs && cur.subs.length > 1 ? ` · ${cur.subs.length} 個子族群` : ''}</span></div>
       <div class="figures"><span class="value">${fmtValue(cur.value)}</span>
         <span class="price">${deltaText}</span></div>
     </summary>
@@ -687,39 +778,72 @@ function sectorRow(cur, base, totalValue) {
 }
 
 async function renderSector(view) {
-  if (!hasIndustry()) {
-    view.innerHTML = '<p class="hint">沒有產業對照資料，請先執行 scripts/fetch_industry.py。</p>';
+  // 兩種分類軸並存，任一邊缺資料就自動退到另一邊
+  let mode = state.grouping;
+  if (mode === 'theme' && !hasThemes()) mode = 'industry';
+  if (mode === 'industry' && !hasIndustry()) mode = 'theme';
+  if (!hasIndustry() && !hasThemes()) {
+    view.innerHTML = '<p class="hint">沒有分類資料，請先執行 scripts/fetch_industry.py。</p>';
     return;
   }
 
   const baseDate = dateBack(state.baseline);
   const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(baseDate)]);
   const topStocks = today.stocks.filter((s) => s.rank <= TOP);
-  const groups = bySector(topStocks);
+  const group = mode === 'theme' ? byTheme : bySector;
+  const groups = group(topStocks);
   const baseGroups = new Map(
-    base ? bySector(base.stocks.filter((s) => s.rank <= TOP)).map((g) => [g.name, g]) : []
+    base ? group(base.stocks.filter((s) => s.rank <= TOP)).map((g) => [g.name, g]) : []
   );
-  const totalValue = groups.reduce((sum, g) => sum + g.value, 0);
+  // 題材族群一檔可屬多個族群，拿各族群加總當分母會把重複計算的部分算進去。
+  // 分母一律取「榜上成交值總額」，每檔只算一次；官方產業模式下兩者本來就相等。
+  const totalValue = topStocks.reduce((sum, s) => sum + s.value, 0);
+
+  // 名單的缺口要講出來，不然「未分類」看起來只是一個普通族群
+  const ungrouped = groups.find((g) => g.name === UNGROUPED_LABEL)?.count || 0;
+  const coverage = ungrouped
+    ? `今日榜上 ${topStocks.length} 檔中還有 ${ungrouped} 檔沒歸類。`
+    : `今日榜上 ${topStocks.length} 檔都已歸類。`;
+  const note = mode === 'theme'
+    ? `題材族群是人工維護的供應鏈視角（<code>data/themes.json</code>${state.themesUpdated ? `，維護於 ${esc(state.themesUpdated)}` : ''}），
+       一檔可以同時屬於多個族群，所以各族群佔比加總會超過 100%。${coverage}`
+    : '產業別採證交所的官方分類，跟著上市櫃公司基本資料自動更新，不會漏掉任何一檔；'
+      + '但它與市場口中的題材族群對不起來時，切到「題材族群」看。分類取自最新一次抓取的結果，並回頭套用到歷史日期。';
 
   view.innerHTML = `
-    <div class="controls">${pills('baseline', BASELINES, state.baseline)}</div>
+    <div class="controls">
+      ${hasIndustry() && hasThemes() ? pills('grouping', GROUPINGS, mode) : ''}
+      ${pills('baseline', BASELINES, state.baseline)}
+    </div>
     <section class="card">
-      <h2>產業分布 <small>${state.date} 前 ${TOP} 大${baseDate ? ` · 成交值變化 vs ${baseDate}` : ''}</small></h2>
+      <h2>${mode === 'theme' ? '題材族群' : '產業分布'}
+        <small>${state.date} 前 ${TOP} 大${baseDate ? ` · 成交值變化 vs ${baseDate}` : ''}</small></h2>
       ${groups.map((g) => sectorRow(g, baseGroups.get(g.name), totalValue)).join('')}
-      <p class="note">點一列可以展開該產業當日在榜的個股。
-        產業別採證交所的官方分類，與市場口中的題材族群（AI 伺服器、重電等）不一定對得起來；
-        分類取自最新一次抓取的結果，並回頭套用到歷史日期。</p>
+      <p class="note">點一列可以展開該族群當日在榜的個股。${note}</p>
     </section>`;
 
   // 展開時才填內容，200 檔一次全渲染沒必要
-  const rowsOf = (name) => topStocks
-    .filter((s) => industryOf(s.code) === name)
-    .map((s) => stockRow(s, rankMap(base).get(s.code)))
+  const byCode = new Map(topStocks.map((s) => [s.code, s]));
+  const baseRanks = rankMap(base);
+  const found = new Map(groups.map((g) => [g.name, g]));
+  const rowsOf = (codes) => codes
+    .slice()
+    .sort((a, b) => byCode.get(a).rank - byCode.get(b).rank)
+    .map((c) => stockRow(byCode.get(c), baseRanks.get(c)))
     .join('');
+  const bodyOf = (name) => {
+    const g = found.get(name);
+    if (!g) return '';
+    if (!g.subs) return rowsOf(g.codes);
+    if (g.subs.length < 2) return rowsOf(g.subs[0].codes);
+    return g.subs.map((sub) =>
+      `<p class="subhead">${esc(sub.name)}
+        <small>${sub.codes.length} 檔 · ${fmtValue(sub.value)}</small></p>${rowsOf(sub.codes)}`).join('');
+  };
   view.querySelectorAll('details.sector').forEach((el) => {
     el.addEventListener('toggle', () => {
       const box = $('.sector__body', el);
-      if (el.open && !box.innerHTML) box.innerHTML = rowsOf(box.dataset.sector);
+      if (el.open && !box.innerHTML) box.innerHTML = bodyOf(box.dataset.sector);
     });
   });
 }
@@ -919,6 +1043,14 @@ function bindGlobalControls() {
     if (pill.dataset.baseline) state.baseline = Number(pill.dataset.baseline);
     if (pill.dataset.span) state.span = Number(pill.dataset.span);
     if (pill.dataset.streak) state.streakDays = Number(pill.dataset.streak);
+    if (pill.dataset.grouping) {
+      state.grouping = pill.dataset.grouping;
+      try {
+        localStorage.setItem(GROUPING_KEY, state.grouping);
+      } catch (err) {
+        /* 記不住就算了，下次回到預設的官方產業 */
+      }
+    }
     if (pill.dataset.watch) toggleWatch(pill.dataset.watch);
     render();
   });
@@ -935,20 +1067,29 @@ async function start() {
     $('#view').innerHTML = `<p class="hint">找不到資料檔（${esc(err.message)}）。<br>請先執行 scripts/fetch_daily.py 與 scripts/build_history.py。</p>`;
     return;
   }
-  // 產業別是選配：抓不到就整站當作沒有產業資訊，不影響其他分頁。
+  // 產業別與題材族群都是選配：抓不到就當作沒有那一種分類，不影響其他分頁。
   try {
     const ind = await getJSON(`${DATA}/industry.json`);
     state.industry = ind.map || {};
   } catch (err) {
     state.industry = {};
   }
+  try {
+    const th = await getJSON(`${DATA}/themes.json`);
+    state.themes = Array.isArray(th.groups) ? th.groups : [];
+    state.themesUpdated = th._updated || '';
+  } catch (err) {
+    state.themes = [];
+  }
 
   state.watch = loadWatch();
   try {
     const saved = localStorage.getItem(SCOPE_KEY);
     if (SCOPES.some((s) => s.value === saved)) state.scope = saved;
+    const grouping = localStorage.getItem(GROUPING_KEY);
+    if (GROUPINGS.some((g) => g.value === grouping)) state.grouping = grouping;
   } catch (err) {
-    /* 讀不到就用預設的「全部」 */
+    /* 讀不到就用預設的「全部」與「官方產業」 */
   }
 
   $('#scope-select').innerHTML =
