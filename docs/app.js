@@ -7,6 +7,16 @@ const CHART_CDN = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.mi
 // 圖表線色。Chart.js 吃不到 CSS 變數，只能寫死；深淺色模式都看得清楚的中間色調。
 const LINE = { rank: '#2f6fed', market: '#2f6fed', top200: '#7b61ff', top10: '#d92d20' };
 
+// 這份 app.js 自己的版號，取自 index.html 的 <script src="app.js?v=N">。
+// 「新資料配舊前端」的災情全靠這個數字才認得出來，所以錯誤訊息一定要帶上它。
+const APP_VERSION = (() => {
+  try {
+    return new URL(document.currentScript.src).searchParams.get('v') || 'dev';
+  } catch (err) {
+    return 'dev';
+  }
+})();
+
 const TAIPEI_OFFSET_MIN = 8 * 60;
 // 最新資料距今超過這麼多個日曆日就提示。週五收盤後到週一盤中最多差 3 天，
 // 取 4 是為了讓正常的週末不會誤報 —— 寧可晚一天提醒，也不要天天狼來了。
@@ -30,6 +40,7 @@ const state = {
   themes: [],          // 題材族群（themes.json，抓不到時為空陣列）
   themesUpdated: '',   // themes.json 的維護日期，族群頁要標出來
   grouping: 'industry',// 族群頁的分類軸：industry 官方產業／theme 題材族群
+  sectorSort: 'flow',  // 族群頁排序：flow 資金增減／shift 佔比位移／value 成交值
   sector: '',          // 排行榜的分類篩選；'' 代表全部
   sort: 'rank',        // 排行榜排序欄位
   floor: 0,            // 排行榜成交值門檻（億）
@@ -47,6 +58,59 @@ const num = (v, digits = 1) =>
 const fmtValue = (yuan) => `${num(yuan / 1e8)} 億`;   // 資料庫存的是元
 const fmtOku = (oku) => `${num(oku)} 億`;             // history 存的已是億元
 const trend = (v) => (v > 0 ? 'up' : v < 0 ? 'down' : 'flat');
+
+// --------------------------------------------------------------------------
+// 快取救援
+//
+// data/index.json 一律 cache: 'reload' 抓最新的，外殼（app.js）卻可能被瀏覽器或
+// Service Worker 留在舊版——舊 app.js 讀不懂新的 index.json，整頁就掛在「載入失敗」。
+// index.html 的 ?v= 版號與 sw.js 的 no-cache 是預防；這裡是萬一還是撞上時的解法。
+// --------------------------------------------------------------------------
+const HEAL_KEY = 'stocktracker.healed';
+
+/** 丟掉 Service Worker 與它的所有快取再重載。自選股在 localStorage，不動。 */
+async function resetCaches() {
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch (err) {
+    /* 清不乾淨也還是要重載，至少會再跟伺服器要一次 */
+  }
+  location.reload();
+}
+
+/**
+ * 自動修一次就好。修完還是壞的話一定是別的原因，再重載下去就是無限迴圈。
+ * 無痕模式讀不到 sessionStorage，那就不自動重載，讓使用者自己按按鈕。
+ */
+function autoHealOnce() {
+  try {
+    if (sessionStorage.getItem(HEAL_KEY)) return false;
+    sessionStorage.setItem(HEAL_KEY, APP_VERSION);
+  } catch (err) {
+    return false;
+  }
+  resetCaches();
+  return true;
+}
+
+/** 壞掉時的畫面：講清楚發生什麼事，並給一個真的能自救的按鈕。 */
+function failBox(message, detail = '') {
+  return `<p class="hint">${esc(message)}</p>
+    ${detail ? `<p class="hint">${esc(detail)}</p>` : ''}
+    <p class="hint"><button class="pill" id="reset-cache">清除快取並重新載入</button></p>`;
+}
+
+// 委派在 document 上：連 index.json 都還沒讀到時也要能按
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#reset-cache')) resetCaches();
+});
 
 // --------------------------------------------------------------------------
 // 資料存取
@@ -78,13 +142,16 @@ function loadHistory(year, scope = state.scope) {
 
 /** 目前範圍的每日成交值序列（index.json 裡三種範圍各存一份）*/
 function scopeSeries() {
-  return state.index.scopes[state.scope];
+  const scopes = state.index.scopes || {};
+  return scopes[state.scope] || null;
 }
 
 /** 該範圍在這一天有沒有資料。缺資料時序列裡是 null。 */
 function hasScopeData(date) {
+  const ser = scopeSeries();
+  if (!ser) return false;
   const i = state.index.dates.indexOf(date);
-  return i >= 0 && scopeSeries().marketValues[i] !== null;
+  return i >= 0 && ser.marketValues[i] !== null;
 }
 
 const scopeLabel = () => (SCOPES.find((s) => s.value === state.scope) || SCOPES[0]).label;
@@ -203,6 +270,7 @@ function byTheme(stocks) {
     groups.push({
       name: group.name,
       count: members.size,
+      codes: [...members],      // 加權漲跌幅要用；同一檔列在兩個子族群時只算一次
       value: sum([...members]),
       subs: subs.sort((a, b) => b.value - a.value),
     });
@@ -754,26 +822,100 @@ async function renderStock(view, code) {
 }
 
 // --------------------------------------------------------------------------
-// 分頁六：族群（依產業看資金流向）
+// 分頁六：族群（資金流向）
 // --------------------------------------------------------------------------
-function sectorRow(cur, base, totalValue) {
-  const share = totalValue ? (cur.value / totalValue) * 100 : 0;
-  const delta = base && base.value ? ((cur.value - base.value) / base.value) * 100 : null;
-  const deltaText = delta === null
-    ? '<em class="flat">NEW</em>'
-    : `<em class="${trend(delta)}">${delta > 0 ? '+' : ''}${delta.toFixed(1)}%</em>`;
-  const countDelta = base ? cur.count - base.count : null;
+const SECTOR_SORTS = [
+  { value: 'flow', label: '依資金增減' },
+  { value: 'shift', label: '依佔比位移' },
+  { value: 'value', label: '依成交值' },
+];
+
+// 億元。10 億以下留一位小數，否則小族群與小額的資金變化會全部顯示成「0 億」。
+const okuText = (yuan) => {
+  const oku = yuan / 1e8;
+  return `${num(oku, Math.abs(oku) < 10 ? 1 : 0)} 億`;
+};
+const signedPct = (v, digits = 1) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(digits)}%`);
+
+/**
+ * 成交值加權漲跌幅。成交值本身沒有方向（一買一賣才成交），
+ * 所以「這一族的錢是把價格推上去還是砍下來」要靠漲跌幅補，
+ * 而權重必須是成交值——族群的資金流向本來就由成交值大的那幾檔決定。
+ */
+function weightedChange(codes, pool) {
+  let weight = 0;
+  let sum = 0;
+  for (const code of codes) {
+    const s = pool.get(code);
+    if (!s || s.changePct === null || s.changePct === undefined) continue;
+    weight += s.value;
+    sum += s.value * s.changePct;
+  }
+  return weight ? sum / weight : null;
+}
+
+/**
+ * 替各族群算出與基準日相比的資金變化。兩個數字要一起看：
+ *
+ *   flow   成交值增減（元）——直覺的「錢變多還變少」，但大盤整體縮量時全部都會是負的
+ *   shift  佔榜上成交值比重的變化（百分點）——把大盤的縮放抽掉，錢實際上從哪一族轉到哪一族
+ *
+ * 只出現在今天、基準日沒進榜的族群沒有比較基準，flow／shift 皆為 null，排序時沉到最後。
+ */
+function groupFlows(groups, baseGroups, pool, total, baseTotal) {
+  return groups.map((g) => {
+    const base = baseGroups.get(g.name);
+    const share = total ? (g.value / total) * 100 : 0;
+    return {
+      ...g,
+      share,
+      chg: weightedChange(g.codes, pool),
+      flow: base ? g.value - base.value : null,
+      flowPct: base && base.value ? ((g.value - base.value) / base.value) * 100 : null,
+      shift: base && baseTotal ? share - (base.value / baseTotal) * 100 : null,
+      countDelta: base ? g.count - base.count : null,
+    };
+  });
+}
+
+/** 資金流向橫條：從中線往右是流入、往左是流出，長度對比當日最大流量。 */
+function flowBar(flow, maxFlow) {
+  if (flow === null || !maxFlow) return '<div class="flow-bar"></div>';
+  const width = Math.min(50, (Math.abs(flow) / maxFlow) * 50);
+  const side = flow >= 0 ? 'left:50%' : 'right:50%';
+  return `<div class="flow-bar"><i class="${trend(flow)}" style="${side};width:${width.toFixed(1)}%"></i></div>`;
+}
+
+function sectorRow(g, maxFlow) {
+  const flowText = g.flow === null
+    ? '<span class="value flat">NEW</span>'
+    : `<span class="value ${trend(g.flow)}">${g.flow > 0 ? '+' : ''}${okuText(g.flow)}</span>`;
+  const shiftText = g.shift === null
+    ? ''
+    : ` · <em class="${trend(g.shift)}">${g.shift > 0 ? '+' : ''}${g.shift.toFixed(2)}pp</em>`;
+  const countText = g.countDelta ? `${g.countDelta > 0 ? '+' : ''}${g.countDelta} 檔` : '檔';
+  const identText = g.gone
+    ? `整族退出前 ${TOP} 大${shiftText}`
+    : `${okuText(g.value)} · 佔 ${num(g.share)}%${shiftText}`;
+  const priceText = g.gone
+    ? '已退榜'
+    : `${g.flowPct === null ? '新進榜' : signedPct(g.flowPct)}
+       · 加權 <em class="${trend(g.chg)}">${signedPct(g.chg, 2)}</em>`;
+
+  const summary = `<div class="rank"><span class="no">${g.count}</span>
+        <span class="delta ${trend(g.countDelta)}">${countText}</span></div>
+      <div class="ident"><span class="name">${esc(g.name)}</span>
+        <span class="code">${identText}</span></div>
+      <div class="figures">${flowText}
+        <span class="price">${priceText}</span></div>
+      ${flowBar(g.flow, maxFlow)}`;
+
+  // 整族退出榜外的沒有當日成分股可以展開，就畫成一般的列
+  if (g.gone) return `<div class="row">${summary}</div>`;
 
   return `<details class="sector">
-    <summary class="row">
-      <div class="rank"><span class="no">${cur.count}</span>
-        <span class="delta ${trend(countDelta)}">${countDelta ? `${countDelta > 0 ? '+' : ''}${countDelta} 檔` : '檔'}</span></div>
-      <div class="ident"><span class="name">${esc(cur.name)}</span>
-        <span class="code">佔榜上成交值 ${num(share)}%${cur.subs && cur.subs.length > 1 ? ` · ${cur.subs.length} 個子族群` : ''}</span></div>
-      <div class="figures"><span class="value">${fmtValue(cur.value)}</span>
-        <span class="price">${deltaText}</span></div>
-    </summary>
-    <div class="sector__body" data-sector="${esc(cur.name)}"></div>
+    <summary class="row">${summary}</summary>
+    <div class="sector__body" data-sector="${esc(g.name)}"></div>
   </details>`;
 }
 
@@ -790,14 +932,45 @@ async function renderSector(view) {
   const baseDate = dateBack(state.baseline);
   const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(baseDate)]);
   const topStocks = today.stocks.filter((s) => s.rank <= TOP);
+  const baseStocks = base ? base.stocks.filter((s) => s.rank <= TOP) : [];
   const group = mode === 'theme' ? byTheme : bySector;
-  const groups = group(topStocks);
-  const baseGroups = new Map(
-    base ? group(base.stocks.filter((s) => s.rank <= TOP)).map((g) => [g.name, g]) : []
-  );
+  const baseGroups = new Map(group(baseStocks).map((g) => [g.name, g]));
   // 題材族群一檔可屬多個族群，拿各族群加總當分母會把重複計算的部分算進去。
   // 分母一律取「榜上成交值總額」，每檔只算一次；官方產業模式下兩者本來就相等。
-  const totalValue = topStocks.reduce((sum, s) => sum + s.value, 0);
+  const sumValue = (list) => list.reduce((n, s) => n + s.value, 0);
+  const totalValue = sumValue(topStocks);
+  const baseTotal = sumValue(baseStocks);
+  const byCode = new Map(topStocks.map((s) => [s.code, s]));
+
+  const groups = groupFlows(group(topStocks), baseGroups, byCode, totalValue, baseTotal);
+  // 基準日在榜、今天整族退出榜外的也是資金流出，不能因為今天榜上沒有就當作沒發生。
+  // 「未分類」不算：它從名單裡消失代表今天全部歸類到了，不是有錢流出去。
+  const present = new Set(groups.map((g) => g.name));
+  for (const b of baseGroups.values()) {
+    if (present.has(b.name) || b.name === UNGROUPED_LABEL) continue;
+    groups.push({
+      name: b.name, count: 0, codes: [], value: 0, share: 0, chg: null, gone: true,
+      flow: -b.value, flowPct: -100, shift: -(b.value / baseTotal) * 100, countDelta: -b.count,
+    });
+  }
+
+  const sorters = {
+    flow: (a, b) => (b.flow ?? -Infinity) - (a.flow ?? -Infinity),
+    shift: (a, b) => (b.shift ?? -Infinity) - (a.shift ?? -Infinity),
+    value: (a, b) => b.value - a.value,
+  };
+  groups.sort((a, b) => {
+    // 未分類是名單的缺口，不是族群，不管怎麼排都固定在最後
+    if (a.name === UNGROUPED_LABEL) return 1;
+    if (b.name === UNGROUPED_LABEL) return -1;
+    return sorters[state.sectorSort](a, b);
+  });
+  const maxFlow = Math.max(...groups.map((g) => Math.abs(g.flow || 0)));
+
+  const totalFlowPct = baseTotal ? ((totalValue - baseTotal) / baseTotal) * 100 : null;
+  const marketChg = weightedChange([...byCode.keys()], byCode);
+  const inflow = groups.filter((g) => g.flow > 0).length;
+  const outflow = groups.filter((g) => g.flow < 0).length;
 
   // 名單的缺口要講出來，不然「未分類」看起來只是一個普通族群
   const ungrouped = groups.find((g) => g.name === UNGROUPED_LABEL)?.count || 0;
@@ -816,14 +989,27 @@ async function renderSector(view) {
       ${pills('baseline', BASELINES, state.baseline)}
     </div>
     <section class="card">
-      <h2>${mode === 'theme' ? '題材族群' : '產業分布'}
-        <small>${state.date} 前 ${TOP} 大${baseDate ? ` · 成交值變化 vs ${baseDate}` : ''}</small></h2>
-      ${groups.map((g) => sectorRow(g, baseGroups.get(g.name), totalValue)).join('')}
-      <p class="note">點一列可以展開該族群當日在榜的個股。${note}</p>
+      <h2>榜上資金總量 <small>${state.date}${baseDate ? ` vs ${baseDate}` : ''}</small></h2>
+      <div class="stat-grid">
+        <div class="stat"><b class="sm">${okuText(totalValue)}</b><span>前 ${TOP} 大成交值</span></div>
+        <div class="stat"><b class="sm ${trend(totalFlowPct)}">${signedPct(totalFlowPct)}</b><span>整體增減</span></div>
+        <div class="stat"><b class="sm ${trend(marketChg)}">${signedPct(marketChg, 2)}</b><span>成交值加權漲跌</span></div>
+        <div class="stat"><b class="sm"><span class="up">${inflow}</span> / <span class="down">${outflow}</span></b><span>流入 / 流出族群</span></div>
+      </div>
+      <p class="note">整體增減是大盤的縮放，會讓所有族群一起變大或變小。
+        要看「錢從哪一族轉到哪一族」，用抽掉大盤縮放的<b>佔比位移（pp）</b>。</p>
+    </section>
+    <div class="controls">${pills('sectorsort', SECTOR_SORTS, state.sectorSort)}</div>
+    <section class="card">
+      <h2>${mode === 'theme' ? '題材族群' : '官方產業'}
+        <small>${groups.filter((g) => !g.gone).length} 族群在榜${baseDate ? ` · 資金流向 vs ${baseDate}` : ''}</small></h2>
+      ${groups.map((g) => sectorRow(g, maxFlow)).join('')}
+      <p class="note">紅條向右是資金流入、綠條向左是流出，長度對比當日最大流量。
+        成交值是買賣雙邊的總量、本身沒有方向，「加權」是成交值加權的漲跌幅，
+        看的是這些錢把價格推上去還是砍下來。點一列可以展開該族群當日在榜的個股。${note}</p>
     </section>`;
 
   // 展開時才填內容，200 檔一次全渲染沒必要
-  const byCode = new Map(topStocks.map((s) => [s.code, s]));
   const baseRanks = rankMap(base);
   const found = new Map(groups.map((g) => [g.name, g]));
   const rowsOf = (codes) => codes
@@ -980,7 +1166,8 @@ function paintChrome() {
   $('#scope-select').value = state.scope;
 
   const i = idx.dates.indexOf(state.date);
-  const market = scopeSeries().marketValues[i];
+  const ser = scopeSeries();
+  const market = ser ? ser.marketValues[i] : null;
   $('#meta').textContent =
     `${scopeLabel()}成交值 ${num(market, 0)} 億 · 共 ${idx.dates.length} 個交易日（${idx.dates[0]} 起）`
     + ` · 更新 ${idx.updated.slice(0, 16).replace('T', ' ')}`;
@@ -999,14 +1186,13 @@ async function render() {
   const view = $('#view');
   view.innerHTML = '<p class="hint">載入中…</p>';
 
-  // 某個範圍在某一天沒有資料時，直接講清楚，不要讓它變成一則 404 載入失敗
-  if (!hasScopeData(state.date)) {
-    view.innerHTML = `<p class="hint">${scopeLabel()}在 ${state.date} 沒有資料。<br>請改選其他日期或範圍。</p>`;
-    paintChrome();
-    return;
-  }
-
   try {
+    // 某個範圍在某一天沒有資料時，直接講清楚，不要讓它變成一則 404 載入失敗
+    if (!hasScopeData(state.date)) {
+      view.innerHTML = `<p class="hint">${scopeLabel()}在 ${state.date} 沒有資料。<br>請改選其他日期或範圍。</p>`;
+      paintChrome();
+      return;
+    }
     if (route.view === 'market') await renderMarket(view);
     else if (route.view === 'sector') await renderSector(view);
     else if (route.view === 'streak') await renderStreak(view);
@@ -1016,7 +1202,8 @@ async function render() {
     else await renderRank(view);
     paintChrome();
   } catch (err) {
-    view.innerHTML = `<p class="hint">載入失敗：${esc(err.message)}</p>`;
+    view.innerHTML = failBox(`載入失敗：${err.message}`,
+      `前端版本 ${APP_VERSION}。若清除快取後仍然一樣，就不是快取的問題。`);
   }
 }
 
@@ -1043,6 +1230,7 @@ function bindGlobalControls() {
     if (pill.dataset.baseline) state.baseline = Number(pill.dataset.baseline);
     if (pill.dataset.span) state.span = Number(pill.dataset.span);
     if (pill.dataset.streak) state.streakDays = Number(pill.dataset.streak);
+    if (pill.dataset.sectorsort) state.sectorSort = pill.dataset.sectorsort;
     if (pill.dataset.grouping) {
       state.grouping = pill.dataset.grouping;
       try {
@@ -1067,6 +1255,18 @@ async function start() {
     $('#view').innerHTML = `<p class="hint">找不到資料檔（${esc(err.message)}）。<br>請先執行 scripts/fetch_daily.py 與 scripts/build_history.py。</p>`;
     return;
   }
+
+  // index.json 讀得到、卻不是這一版看得懂的格式，代表跑的是被快取住的舊 app.js。
+  // 先自己清一次快取重載；真的還是壞的才把按鈕交給使用者。
+  const idx = state.index;
+  const usable = idx && Array.isArray(idx.dates) && idx.dates.length && idx.scopes && idx.scopes.all;
+  if (!usable) {
+    if (autoHealOnce()) return;
+    $('#view').innerHTML = failBox(
+      'data/index.json 的格式與目前的前端對不起來。',
+      `前端版本 ${APP_VERSION}。多半是瀏覽器留著舊版程式檔；若是本機環境，請重跑 scripts/build_history.py。`);
+    return;
+  }
   // 產業別與題材族群都是選配：抓不到就當作沒有那一種分類，不影響其他分頁。
   try {
     const ind = await getJSON(`${DATA}/industry.json`);
@@ -1084,8 +1284,9 @@ async function start() {
 
   state.watch = loadWatch();
   try {
+    // 除了在選單裡，還要這份 index.json 真的有這個範圍——舊版留下來的設定不該讓整頁掛掉
     const saved = localStorage.getItem(SCOPE_KEY);
-    if (SCOPES.some((s) => s.value === saved)) state.scope = saved;
+    if (SCOPES.some((s) => s.value === saved) && state.index.scopes[saved]) state.scope = saved;
     const grouping = localStorage.getItem(GROUPING_KEY);
     if (GROUPINGS.some((g) => g.value === grouping)) state.grouping = grouping;
   } catch (err) {
@@ -1100,7 +1301,17 @@ async function start() {
   await render();
 
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    // updateViaCache: 'none'：sw.js 自己絕不能從 HTTP 快取拿，否則換了版也發現不了
+    const had = !!navigator.serviceWorker.controller;
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      // 新版 SW 用 skipWaiting + claim 直接接手，這一頁的外殼卻還是舊的，重載一次拿新版。
+      // 第一次安裝就接手是正常的，不用重載。
+      if (!had || reloading) return;
+      reloading = true;
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
   }
 }
 
