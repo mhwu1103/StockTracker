@@ -20,6 +20,9 @@ const state = {
   query: '',           // 排行榜搜尋字串
   industry: {},        // code -> 產業中文名（industry.json，抓不到時為空）
   sector: '',          // 排行榜的產業篩選；'' 代表全部
+  sort: 'rank',        // 排行榜排序欄位
+  floor: 0,            // 排行榜成交值門檻（億）
+  watch: new Set(),    // 自選股代號
   streakDays: 3,       // 「站穩」分頁要看的連續進榜天數
   daily: new Map(),    // date -> Promise<payload>
   history: new Map(),  // year -> Promise<payload>
@@ -71,6 +74,30 @@ function daysSinceTaipei(dateIso) {
 function dateBack(n, from = state.date) {
   const i = state.index.dates.indexOf(from);
   return i - n >= 0 ? state.index.dates[i - n] : null;
+}
+
+// --------------------------------------------------------------------------
+// 自選股（只存在這台裝置的瀏覽器裡，不會上傳，也不會跟 Telegram 推播同步）
+// --------------------------------------------------------------------------
+const WATCH_KEY = 'stocktracker.watch';
+
+function loadWatch() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(WATCH_KEY) || '[]');
+    return new Set(Array.isArray(raw) ? raw : []);
+  } catch (err) {
+    return new Set();   // 無痕模式或被擋掉時就當作沒有自選
+  }
+}
+
+function toggleWatch(code) {
+  if (state.watch.has(code)) state.watch.delete(code);
+  else state.watch.add(code);
+  try {
+    localStorage.setItem(WATCH_KEY, JSON.stringify([...state.watch]));
+  } catch (err) {
+    /* 存不進去也不影響這次瀏覽 */
+  }
 }
 
 /**
@@ -138,7 +165,7 @@ function stockRow(stock, base) {
   const streak = streakLabel(stock, true);
   return `<a class="row" href="#/stock/${stock.code}">
     <div class="rank"><span class="no">${stock.rank}</span>${deltaBadge(stock.rank, prev)}</div>
-    <div class="ident"><span class="name">${esc(stock.name)}</span>
+    <div class="ident"><span class="name">${state.watch.has(stock.code) ? '<span class="star">★</span>' : ''}${esc(stock.name)}</span>
       <span class="code">${stock.code}${hasIndustry() ? ` · ${esc(industryOf(stock.code))}` : ''}</span>
       ${streak ? `<span class="streak">${streak}</span>` : ''}</div>
     <div class="figures"><span class="value">${fmtValue(stock.value)}</span>
@@ -159,6 +186,19 @@ function pills(name, options, current) {
     .join('')}</div>`;
 }
 
+const SORTS = [
+  { value: 'rank', label: '依名次' },
+  { value: 'change', label: '依漲跌幅' },
+  { value: 'delta', label: '依名次變化' },
+];
+
+const FLOORS = [
+  { value: 0, label: '不限成交值' },
+  { value: 50, label: '50 億以上' },
+  { value: 100, label: '100 億以上' },
+  { value: 200, label: '200 億以上' },
+];
+
 const BASELINES = [
   { value: 1, label: '對比前一日' },
   { value: 5, label: '對比 5 日前' },
@@ -176,18 +216,28 @@ async function renderRank(view) {
 
   // 產業選單只列當日榜上有的產業，選了不存在的產業會看到空清單沒有意義
   const sectors = hasIndustry() ? bySector(top).map((g) => g.name) : [];
-  const sectorSelect = sectors.length
-    ? `<select id="sector-pick" aria-label="產業篩選">
-        <option value="">全部產業</option>
-        <option value="!ETF" ${state.sector === '!ETF' ? 'selected' : ''}>排除 ETF</option>
-        ${sectors.map((n) => `<option value="${esc(n)}" ${n === state.sector ? 'selected' : ''}>${esc(n)}</option>`).join('')}
-      </select>`
-    : '';
+  const opt = (value, label, current) =>
+    `<option value="${esc(value)}" ${String(value) === String(current) ? 'selected' : ''}>${esc(label)}</option>`;
+
+  const pickSelect = `<select id="sector-pick" aria-label="篩選">
+      ${opt('', '全部', state.sector)}
+      ${state.watch.size ? opt('!WATCH', `★ 只看自選（${state.watch.size}）`, state.sector) : ''}
+      ${hasIndustry() ? opt('!ETF', '排除 ETF', state.sector) : ''}
+      ${sectors.map((n) => opt(n, n, state.sector)).join('')}
+    </select>`;
+
+  const sortSelect = `<select id="sort-pick" aria-label="排序">
+      ${SORTS.map((o) => opt(o.value, o.label, state.sort)).join('')}
+    </select>`;
+
+  const floorSelect = `<select id="floor-pick" aria-label="成交值門檻">
+      ${FLOORS.map((o) => opt(o.value, o.label, state.floor)).join('')}
+    </select>`;
 
   view.innerHTML = `
     <div class="controls">
       <input type="search" id="q" placeholder="搜尋代號或名稱" value="${esc(state.query)}">
-      ${sectorSelect}
+      ${pickSelect}${sortSelect}${floorSelect}
       ${pills('baseline', BASELINES, state.baseline)}
     </div>
     <section class="card">
@@ -195,19 +245,51 @@ async function renderRank(view) {
       <div id="rank-list"></div>
     </section>`;
 
-  const matchSector = (s) => {
+  const matchPick = (s) => {
     if (!state.sector) return true;
+    if (state.sector === '!WATCH') return state.watch.has(s.code);
     if (state.sector === '!ETF') return industryOf(s.code) !== ETF_LABEL;
     return industryOf(s.code) === state.sector;
+  };
+
+  // 排序用的鍵值一律「越大越前面」，沒有值的排到最後
+  const sortKey = (s) => {
+    if (state.sort === 'change') return s.changePct ?? -Infinity;
+    if (state.sort === 'delta') {
+      const base = baseMap.get(s.code);
+      return base ? base.rank - s.rank : -Infinity;   // 新進榜沒有前次名次可比
+    }
+    return -s.rank;
   };
 
   const paint = () => {
     const q = state.query.trim().toLowerCase();
     const rows = top
-      .filter(matchSector)
+      .filter(matchPick)
+      .filter((s) => s.value >= state.floor * 1e8)
       .filter((s) => !q || s.code.toLowerCase().includes(q) || s.name.toLowerCase().includes(q))
+      .sort((a, b) => sortKey(b) - sortKey(a))
       .map((s) => stockRow(s, baseMap.get(s.code)));
-    $('#rank-list').innerHTML = rows.length ? rows.join('') : '<p class="hint">找不到符合的股票</p>';
+
+    const watchNote = state.sector === '!WATCH'
+      ? `<p class="note">自選清單：<code id="watch-codes">${[...state.watch].sort().join(',')}</code>
+          <button class="linky" id="copy-watch">複製</button><br>
+          自選股只存在這台裝置的瀏覽器。要讓 Telegram 也只推這幾檔，把上面這串設成 <code>WATCHLIST</code> secret。</p>`
+      : '';
+    $('#rank-list').innerHTML =
+      (rows.length ? rows.join('') : '<p class="hint">找不到符合的股票</p>') + watchNote;
+
+    const copy = $('#copy-watch');
+    if (copy) {
+      copy.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText($('#watch-codes').textContent);
+          copy.textContent = '已複製';
+        } catch (err) {
+          copy.textContent = '請手動選取複製';
+        }
+      });
+    }
   };
   paint();
 
@@ -216,12 +298,18 @@ async function renderRank(view) {
     paint();
   });
 
-  if (sectorSelect) {
-    $('#sector-pick').addEventListener('change', (e) => {
-      state.sector = e.target.value;
-      paint();
-    });
-  }
+  $('#sector-pick').addEventListener('change', (e) => {
+    state.sector = e.target.value;
+    paint();
+  });
+  $('#sort-pick').addEventListener('change', (e) => {
+    state.sort = e.target.value;
+    paint();
+  });
+  $('#floor-pick').addEventListener('change', (e) => {
+    state.floor = Number(e.target.value);
+    paint();
+  });
 }
 
 // --------------------------------------------------------------------------
@@ -486,9 +574,11 @@ async function renderStock(view, code) {
   const lt = lifetimeStats(byDate);
   const allDays = state.index.dates.length;
 
+  const watched = state.watch.has(code);
   view.innerHTML = `
     <div class="controls">
       ${pills('span', SPANS, state.span)}
+      <button class="pill ${watched ? 'active' : ''}" data-watch="${code}">${watched ? '★ 已加入自選' : '☆ 加入自選'}</button>
     </div>
     <section class="card">
       <h2>${esc(name)} <small>${code} · 近 ${labels.length} 個交易日</small></h2>
@@ -776,6 +866,7 @@ function bindGlobalControls() {
     if (pill.dataset.baseline) state.baseline = Number(pill.dataset.baseline);
     if (pill.dataset.span) state.span = Number(pill.dataset.span);
     if (pill.dataset.streak) state.streakDays = Number(pill.dataset.streak);
+    if (pill.dataset.watch) toggleWatch(pill.dataset.watch);
     render();
   });
 
@@ -799,6 +890,7 @@ async function start() {
     state.industry = {};
   }
 
+  state.watch = loadWatch();
   state.date = state.index.latest;
   bindGlobalControls();
   await render();

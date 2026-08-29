@@ -216,6 +216,27 @@ select, input, button {
 .flat { color: var(--flat); }
 .badge-new { color: var(--accent); font-weight: 700; }
 
+/* ---------- 自選股 ---------- */
+.ident .name .star { color: var(--accent); margin-right: 3px; }
+
+.note code {
+  font-size: 12px;
+  word-break: break-all;
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.linky {
+  min-height: 0;
+  padding: 2px 8px;
+  margin-left: 6px;
+  font-size: 12px;
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
 /* ---------- 族群 ---------- */
 .sector > summary { cursor: pointer; list-style: none; }
 .sector > summary::-webkit-details-marker { display: none; }
