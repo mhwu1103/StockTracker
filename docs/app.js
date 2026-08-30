@@ -1512,6 +1512,8 @@ async function render() {
   document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('active', a.dataset.view === route.view));
   destroyCharts();
   const view = $('#view');
+  // 流向頁那兩張圖看的是面積，寬螢幕不跟其他分頁一樣限在 720px
+  view.classList.toggle('wide', route.view === 'flow');
   view.innerHTML = '<p class="hint">載入中…</p>';
 
   try {

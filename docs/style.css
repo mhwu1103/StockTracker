@@ -304,6 +304,8 @@ select, input, button {
   width: 100%;
   aspect-ratio: 1 / 1.1;
   min-height: 240px;
+  /* 螢幕再寬，地圖也不該高到要捲兩次才看得完 */
+  max-height: 72vh;
   overflow: hidden;
 }
 
@@ -311,6 +313,16 @@ select, input, button {
   .treemap { aspect-ratio: 1 / 0.66; }
   /* 四象限是等比縮放的 SVG，放到整個寬螢幕字會跟著變得很大，限個寬 */
   .quad { max-width: 540px; margin: 0 auto; }
+}
+
+/*
+ * 流向頁在寬螢幕滿版。其他分頁都是清單，拉寬只會把每一列扯開；
+ * 地圖與四象限則是給多少面積用多少，限在 720px 等於浪費一整片螢幕。
+ */
+@media (min-width: 900px) {
+  .view.wide { max-width: none; }
+  .view.wide .note { max-width: 92ch; }      /* 但說明文字拉到 1900px 寬就沒人讀得下去 */
+  .view.wide .quad { max-width: 620px; }
 }
 
 .tile {
