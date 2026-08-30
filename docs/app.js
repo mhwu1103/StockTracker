@@ -1252,6 +1252,7 @@ function watchTreemap(view, groups) {
 // 四象限圖的畫布。viewBox 的單位刻意接近手機的實際像素，
 // 這樣字級寫 10 在手機上就是 10px，放到寬螢幕才等比放大。
 const Q = { w: 360, h: 300, l: 30, r: 14, t: 14, b: 30, name: 10 };  // name 是 .q-name 的字級
+const NAMED_ALWAYS = 6;   // 前幾大的族群一定要有名字，就算得把字壓在泡泡上
 
 /**
  * 座標軸上限。取第 85 百分位而不是最大值：一兩檔冷門族群成交值翻三倍是常有的事，
@@ -1262,6 +1263,16 @@ function axisMax(values, floor) {
   const sorted = values.map((v) => Math.abs(v)).sort((a, b) => a - b);
   const p85 = sorted[Math.min(sorted.length - 1, Math.floor(0.85 * sorted.length))];
   return Math.max(floor, p85) * 1.15;
+}
+
+/**
+ * 一段文字實際佔掉的方框。y 是 baseline，字往上長，往下只留一點給標點的收尾；
+ * 兩側各留 1px，免得兩個標籤剛好切齊時看起來黏在一起。
+ */
+function labelBox(x, y, text, anchor) {
+  const w = emWidth(text) * Q.name;
+  const left = anchor === 'start' ? x : anchor === 'end' ? x - w : x - w / 2;
+  return { x1: left - 1, x2: left + w + 1, y1: y - Q.name * 0.8, y2: y + Q.name * 0.25 };
 }
 
 /**
@@ -1283,58 +1294,123 @@ function quadrant(groups) {
   const cx = px(0);
   const cy = py(0);
 
-  // 只有大的才標名字，不然字疊字反而讀不出來
-  const named = new Set(pts.slice().sort((a, b) => b.value - a.value).slice(0, 6).map((p) => p.name));
-
-  /**
-   * 標籤佔位。泡泡是照成交值由大到小畫的，所以先搶先贏＝大的族群優先標名字；
-   * 會疊到已經放好的標籤就乾脆不標——兩個名字疊在一起等於兩個都讀不到。
-   */
-  const placed = [];
-  const claim = (x, y, text) => {
-    const half = (emWidth(text) * Q.name) / 2;
-    const box = { x1: x - half, x2: x + half, y1: y - Q.name, y2: y + 3 };
-    if (placed.some((p) => box.x1 < p.x2 && box.x2 > p.x1 && box.y1 < p.y2 && box.y2 > p.y1)) return false;
-    placed.push(box);
-    return true;
-  };
+  // 四角的字往內縮 16px，把最外圈讓給瞄準框
   const corners = [
-    { x: Q.w - Q.r - 3, y: Q.t + 11, anchor: 'end', text: '量增價漲 · 資金進駐' },
-    { x: Q.l + 3, y: Q.t + 11, anchor: 'start', text: '量縮價漲 · 惜售' },
-    { x: Q.w - Q.r - 3, y: Q.h - Q.b - 4, anchor: 'end', text: '量增價跌 · 出貨' },
-    { x: Q.l + 3, y: Q.h - Q.b - 4, anchor: 'start', text: '量縮價跌 · 棄守' },
+    { x: Q.w - Q.r - 16, y: Q.t + 14, anchor: 'end', text: '量增價漲 · 資金進駐' },
+    { x: Q.l + 16, y: Q.t + 14, anchor: 'start', text: '量縮價漲 · 惜售' },
+    { x: Q.w - Q.r - 16, y: Q.h - Q.b - 8, anchor: 'end', text: '量增價跌 · 出貨' },
+    { x: Q.l + 16, y: Q.h - Q.b - 8, anchor: 'start', text: '量縮價跌 · 棄守' },
   ];
 
-  const dots = pts.slice().sort((a, b) => b.value - a.value).map((p) => {
-    const r = 3 + Math.sqrt(p.value / maxV) * 13;
-    const x = px(p.flowPct);
-    const y = py(p.chg);
+  const marks = pts.slice().sort((a, b) => b.value - a.value).map((p) => ({
+    p, x: px(p.flowPct), y: py(p.chg), r: 3 + Math.sqrt(p.value / maxV) * 13,
+  }));
+
+  /**
+   * 標名字。不限幾個，塞得下就標——原本只標前六大，右半邊一整片空地就這樣空著，
+   * 而離群的小族群正是最想知道名字的那種。上、下、右、左四個位置依序試，
+   * 條件是不壓到別人的字、不壓到任何泡泡，四個都不行就不標：名字疊在一起等於兩個都讀不到。
+   * 例外是前 NAMED_ALWAYS 大的族群，它們擠在一坨裡永遠找不到乾淨的位置，
+   * 但少了名字整張圖就沒有錨點，所以放寬成「只要不壓到別人的字」，靠字的白邊讀出來。
+   */
+  const placed = corners.map((c) => labelBox(c.x, c.y, c.text, c.anchor));
+  const clearOfText = (box) => box.x1 >= Q.l + 2 && box.x2 <= Q.w - Q.r - 2
+    && box.y1 >= Q.t + 2 && box.y2 <= Q.h - Q.b - 2
+    && !placed.some((q) => box.x1 < q.x2 && box.x2 > q.x1 && box.y1 < q.y2 && box.y2 > q.y1);
+  const clearOfDots = (box) => !marks.some((m) => {
+    const nx = Math.max(box.x1, Math.min(m.x, box.x2));     // 矩形上離圓心最近的點
+    const ny = Math.max(box.y1, Math.min(m.y, box.y2));
+    return (nx - m.x) ** 2 + (ny - m.y) ** 2 < m.r * m.r;
+  });
+
+  const nameOf = (m, i) => {
+    const gap = m.r + 4;
+    const candidates = [
+      { x: m.x, y: m.y - gap, anchor: 'middle' },
+      { x: m.x, y: m.y + gap + Q.name * 0.8, anchor: 'middle' },
+      { x: m.x + gap, y: m.y + Q.name * 0.35, anchor: 'start' },
+      { x: m.x - gap, y: m.y + Q.name * 0.35, anchor: 'end' },
+    ];
+    const boxes = candidates.map((c) => ({ c, box: labelBox(c.x, c.y, m.p.name, c.anchor) }));
+    const pick = boxes.find((b) => clearOfText(b.box) && clearOfDots(b.box))
+      || (i < NAMED_ALWAYS ? boxes.find((b) => clearOfText(b.box)) : null);
+    if (!pick) return '';
+    placed.push(pick.box);
+    return `<text class="q-name" x="${pick.c.x.toFixed(1)}" y="${pick.c.y.toFixed(1)}"
+           text-anchor="${pick.c.anchor}">${esc(m.p.name)}</text>`;
+  };
+
+  /*
+   * 一顆泡泡畫三層：主體、外面一圈虛線瞄準環、中心一個實心點。
+   * 環與點只給大顆的——小泡泡本來就只有幾個 px，再加東西就變成一團髒點。
+   * 中心點還有個實用的好處：一堆泡泡疊在一起時，圓心在哪一眼看得出來。
+   */
+  const dots = marks.map((m, i) => {
+    const p = m.p;
     const cls = p.shift === null ? 'flat' : trend(p.shift);
-    // 名字寫在泡泡正上方；貼著邊的往內縮，才不會被畫布切掉。
-    // 太靠上的改寫在下方，否則會壓到象限名稱。
-    const lx = Math.max(Q.l + 22, Math.min(Q.w - Q.r - 22, x));
-    const ly = y > Q.t + innerH * 0.22 ? y - r - 3 : y + r + 9;
-    const label = named.has(p.name) && claim(lx, ly, p.name)
-      ? `<text class="q-name" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}"
-           text-anchor="middle">${esc(p.name)}</text>`
-      : '';
     const shiftText = p.shift === null ? '—' : `${p.shift > 0 ? '+' : ''}${p.shift.toFixed(2)}pp`;
-    return `<g class="q-dot ${cls}"><title>${esc(p.name)}｜成交值 ${signedPct(p.flowPct)}｜`
+    const c = `cx="${m.x.toFixed(1)}" cy="${m.y.toFixed(1)}"`;
+    const ring = m.r >= 7 ? `<circle class="q-ring" ${c} r="${(m.r + 2.8).toFixed(1)}"/>` : '';
+    const pip = m.r >= 6 ? `<circle class="q-pip" ${c} r="1.15"/>` : '';
+    return `<g class="q-dot ${cls}" style="--d:${(i * 26).toFixed(0)}ms">`
+      + `<title>${esc(p.name)}｜成交值 ${signedPct(p.flowPct)}｜`
       + `加權 ${signedPct(p.chg, 2)}｜佔比 ${shiftText}</title>`
-      + `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}"/>${label}</g>`;
+      + `${ring}<circle class="q-body" ${c} r="${m.r.toFixed(1)}"/>${pip}${nameOf(m, i)}</g>`;
   }).join('');
 
+  // 網格切八等分，正中間那條剛好落在零軸上，所以格線本身就是「離零多遠」的刻度。
+  const gx = innerW / 8;
+  const gy = innerH / 8;
+
+  // 四角的瞄準框。往內縮 4px 避開圓角，兩支腳各 9px，指向框內。
+  const bracket = (x, y, sx, sy) => `<path class="q-hud" d="M${(x + sx * 9).toFixed(1)} ${y}`
+    + ` H${x} V${(y + sy * 9).toFixed(1)}"/>`;
+  const bx0 = Q.l + 4;
+  const bx1 = Q.w - Q.r - 4;
+  const by0 = Q.t + 4;
+  const by1 = Q.h - Q.b - 4;
+
+  // 兩個角落的暈色：右上是資金進駐、左下是棄守，讓人不必讀完角落的字也知道哪邊是哪邊。
+  // 淡到只剩暗示的程度——泡泡的紅綠是另一件事（佔比位移），不能讓底色搶了它的話。
   return `<svg class="quad" viewBox="0 0 ${Q.w} ${Q.h}" role="img" aria-label="量價四象限散佈圖">
-    <rect class="q-plot" x="${Q.l}" y="${Q.t}" width="${innerW}" height="${innerH}" rx="6"/>
+    <defs>
+      <clipPath id="q-clip"><rect x="${Q.l}" y="${Q.t}" width="${innerW}" height="${innerH}" rx="8"/></clipPath>
+      <linearGradient id="q-panel" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" class="q-panel-a"/><stop offset="1" class="q-panel-b"/>
+      </linearGradient>
+      <pattern id="q-mesh" x="${Q.l}" y="${Q.t}" width="${gx.toFixed(2)}" height="${gy.toFixed(2)}"
+               patternUnits="userSpaceOnUse">
+        <path class="q-mesh-line" d="M${gx.toFixed(2)} 0 H0 V${gy.toFixed(2)}"/>
+      </pattern>
+      <radialGradient id="q-zone-up" cx="1" cy="0" r="1">
+        <stop offset="0" class="q-stop-up"/><stop offset="1" class="q-stop-up q-stop-out"/>
+      </radialGradient>
+      <radialGradient id="q-zone-down" cx="0" cy="1" r="1">
+        <stop offset="0" class="q-stop-down"/><stop offset="1" class="q-stop-down q-stop-out"/>
+      </radialGradient>
+    </defs>
+    <rect class="q-plot" x="${Q.l}" y="${Q.t}" width="${innerW}" height="${innerH}" rx="8"
+          fill="url(#q-panel)"/>
+    <g clip-path="url(#q-clip)">
+      <rect x="${Q.l}" y="${Q.t}" width="${innerW}" height="${innerH}" fill="url(#q-mesh)"/>
+      <rect class="q-zone up" x="${cx}" y="${Q.t}" width="${Q.w - Q.r - cx}" height="${cy - Q.t}"/>
+      <rect class="q-zone down" x="${Q.l}" y="${cy}" width="${cx - Q.l}" height="${Q.h - Q.b - cy}"/>
+    </g>
+    ${bracket(bx0, by0, 1, 1)}${bracket(bx1, by0, -1, 1)}
+    ${bracket(bx0, by1, 1, -1)}${bracket(bx1, by1, -1, -1)}
     ${corners.map((c) => `<text class="q-corner" x="${c.x}" y="${c.y}" text-anchor="${c.anchor}">${c.text}</text>`).join('')}
     <line class="q-axis" x1="${Q.l}" y1="${cy}" x2="${Q.w - Q.r}" y2="${cy}"/>
     <line class="q-axis" x1="${cx}" y1="${Q.t}" x2="${cx}" y2="${Q.h - Q.b}"/>
+    <path class="q-arrow" d="M${Q.w - Q.r - 4.5} ${cy - 2.6} L${Q.w - Q.r} ${cy} L${Q.w - Q.r - 4.5} ${cy + 2.6} Z"/>
+    <path class="q-arrow" d="M${cx - 2.6} ${Q.t + 4.5} L${cx} ${Q.t} L${cx + 2.6} ${Q.t + 4.5} Z"/>
+    <circle class="q-origin" cx="${cx}" cy="${cy}" r="2.6"/>
     ${dots}
+    <text class="q-tick" x="${Q.l - 4}" y="${cy + 3}" text-anchor="end">0</text>
     <text class="q-tick" x="${Q.w - Q.r}" y="${Q.h - Q.b + 12}" text-anchor="end">成交值 +${maxX.toFixed(0)}%</text>
     <text class="q-tick" x="${Q.l}" y="${Q.h - Q.b + 12}" text-anchor="start">−${maxX.toFixed(0)}%</text>
     <text class="q-tick" x="${Q.l - 4}" y="${Q.t + 8}" text-anchor="end">+${maxY.toFixed(1)}%</text>
     <text class="q-tick" x="${Q.l - 4}" y="${Q.h - Q.b}" text-anchor="end">−${maxY.toFixed(1)}%</text>
-    <text class="q-tick" x="${Q.w / 2}" y="${Q.h - 4}" text-anchor="middle">橫軸：成交值增減　縱軸：成交值加權漲跌</text>
+    <text class="q-tick q-axis-title" x="${Q.w / 2}" y="${Q.h - 4}" text-anchor="middle">橫軸：成交值增減　縱軸：成交值加權漲跌</text>
   </svg>`;
 }
 
