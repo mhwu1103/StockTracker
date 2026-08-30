@@ -1109,14 +1109,12 @@ function squarify(items, rect, out = []) {
 }
 
 // 地圖以百分比定位，實際像素依螢幕而定。用手機寬度（約 360px × 這個比例）估一下
-// 塊夠不夠大能放字，估錯了也只是字被 overflow 切掉，不會排版壞掉。
-const MAP_RATIO = 0.78;
-const MAP_MIN_PX = 360;
-
 /**
  * 資金地圖。面積是今日成交值，顏色深淺是相對基準日的增減幅度。
  * 用增減「幅度」而不是「金額」上色：小族群翻倍也該看得出來，
  * 不然顏色會被半導體那種量體整片洗掉。
+ *
+ * 每一塊都先把名字與金額寫進去，塞不塞得下等畫出來以後量了再說（fitTiles）。
  */
 function treemap(groups) {
   const items = groups
@@ -1130,17 +1128,28 @@ function treemap(groups) {
     const cls = t.flow === null ? 'flat' : trend(t.flow);
     // 增減幅度對到 0.12～0.68 的底色濃度；60% 以上一律最濃
     const ink = t.flowPct === null ? 0.1 : 0.12 + Math.min(1, Math.abs(t.flowPct) / 60) * 0.56;
-    const px = { w: (t.w / 100) * MAP_MIN_PX, h: (t.h / 100) * MAP_MIN_PX * MAP_RATIO };
-    const room = px.w > 54 && px.h > 26;
-    const roomy = px.w > 54 && px.h > 46;
     const amount = t.flow === null ? 'NEW' : `${t.flow > 0 ? '+' : ''}${okuText(t.flow)}`;
     return `<div class="tile ${cls}" style="left:${t.x.toFixed(2)}%;top:${t.y.toFixed(2)}%;
         width:${t.w.toFixed(2)}%;height:${t.h.toFixed(2)}%;--ink:${ink.toFixed(2)}"
         title="${esc(t.name)}｜${okuText(t.value)}｜${amount}">
-      ${room ? `<b>${esc(t.name)}</b>` : ''}
-      ${roomy ? `<span>${amount}</span>` : ''}
+      <b>${esc(t.name)}</b><span>${amount}</span>
     </div>`;
   }).join('')}</div>`;
+}
+
+/**
+ * 塊太小就把字收起來，只留 title 的提示。
+ *
+ * 塊是用百分比定位的，但「放不放得下字」是絕對尺寸的問題，所以一定要等畫出來
+ * 以後量真實的 px——照假設的螢幕寬度去估的話，寬螢幕上明明放得下的格子也會被
+ * 判成放不下（本來就是這樣寫壞的）。量完只加 class，不重排版面。
+ */
+function fitTiles(root) {
+  root.querySelectorAll('.tile').forEach((el) => {
+    const { width, height } = el.getBoundingClientRect();
+    el.classList.toggle('no-text', width < 48 || height < 24);
+    el.classList.toggle('no-num', height < 42);
+  });
 }
 
 // 四象限圖的畫布。viewBox 的單位刻意接近手機的實際像素，
@@ -1277,6 +1286,8 @@ async function renderFlow(view) {
       <p class="note">${groupingNote(mode, topStocks.length, ungrouped)}
         要看每一族的細項與成分股，切到「族群」分頁。</p>
     </section>`;
+
+  fitTiles(view);
 }
 
 // --------------------------------------------------------------------------
@@ -1490,6 +1501,10 @@ function bindGlobalControls() {
   });
 
   window.addEventListener('hashchange', render);
+
+  // 轉螢幕方向或改視窗寬度會讓地圖的塊變大變小，字塞不塞得下要重量一次。
+  // 頁面上沒有地圖時這是個空操作，不必判斷現在在哪一頁。
+  window.addEventListener('resize', () => fitTiles($('#view')));
 }
 
 async function start() {

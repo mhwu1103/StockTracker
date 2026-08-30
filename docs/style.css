@@ -331,6 +331,9 @@ select, input, button {
 .tile b { color: var(--text); font-size: 12px; }
 .tile span { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
 
+/* 塞不下就收起來，只留 title 的提示；由 fitTiles() 量了實際大小後掛上 */
+.tile.no-text b, .tile.no-text span, .tile.no-num span { display: none; }
+
 .quad { display: block; width: 100%; height: auto; }
 .q-plot { fill: var(--bg); stroke: var(--line); }
 .q-axis { stroke: var(--muted); stroke-width: 1; opacity: .5; }
