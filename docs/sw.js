@@ -6,7 +6,7 @@
  * 只有 CDN 上帶版號的第三方程式庫走 cache-first，因為同一個網址內容永不改變。
  */
 
-const VERSION = '6';                 // 前端版號，與 index.html 的 ?v= 一起改
+const VERSION = '7';                 // 前端版號，與 index.html 的 ?v= 一起改
 const CACHE = `stocktracker-v${VERSION}`;
 const SHELL = ['./', 'index.html', `style.css?v=${VERSION}`, `app.js?v=${VERSION}`,
   'manifest.webmanifest', 'icons/icon.svg'];

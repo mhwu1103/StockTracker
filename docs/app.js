@@ -1114,27 +1114,37 @@ function squarify(items, rect, out = []) {
  * 用增減「幅度」而不是「金額」上色：小族群翻倍也該看得出來，
  * 不然顏色會被半導體那種量體整片洗掉。
  *
- * 每一塊都先把名字與金額寫進去，塞不塞得下等畫出來以後量了再說（fitTiles）。
+ * 這裡只給一個空盒子，實際的塊要等量到盒子的長寬才畫得出來（paintTreemap）。
  */
 function treemap(groups) {
-  const items = groups
-    .filter((g) => g.value > 0)
-    .map((g) => ({ ...g, value: g.value }))
-    .sort((a, b) => b.value - a.value);
-  if (!items.length) return '<p class="hint">這一天沒有資料。</p>';
+  if (!groups.some((g) => g.value > 0)) return '<p class="hint">這一天沒有資料。</p>';
+  return '<div class="treemap"></div>';
+}
 
-  const tiles = squarify(items, { x: 0, y: 0, w: 100, h: 100 });
-  return `<div class="treemap">${tiles.map((t) => {
+/**
+ * 把塊畫進盒子裡。
+ *
+ * squarify 一定要在盒子「真實的長寬」裡算，不能在 100×100 的百分比空間裡算完再拉開：
+ * 正方形裡排得漂漂亮亮的一組方塊，拉成 3:1 之後每一塊都會跟著橫向拉長三倍。
+ * 手機的地圖接近正方形所以看不出來，桌機滿版就整片扁掉了——這是實際踩過的坑。
+ * 算完再換算成百分比，之後盒子微幅縮放才不需要重畫。
+ */
+function paintTreemap(box, groups, w, h) {
+  const items = groups.filter((g) => g.value > 0).sort((a, b) => b.value - a.value);
+  const tiles = squarify(items, { x: 0, y: 0, w, h });
+  box.innerHTML = tiles.map((t) => {
     const cls = t.flow === null ? 'flat' : trend(t.flow);
     // 增減幅度對到 0.12～0.68 的底色濃度；60% 以上一律最濃
     const ink = t.flowPct === null ? 0.1 : 0.12 + Math.min(1, Math.abs(t.flowPct) / 60) * 0.56;
     const amount = t.flow === null ? 'NEW' : `${t.flow > 0 ? '+' : ''}${okuText(t.flow)}`;
-    return `<div class="tile ${cls}" style="left:${t.x.toFixed(2)}%;top:${t.y.toFixed(2)}%;
-        width:${t.w.toFixed(2)}%;height:${t.h.toFixed(2)}%;--ink:${ink.toFixed(2)}"
+    const pc = (v, all) => `${((v / all) * 100).toFixed(3)}%`;
+    return `<div class="tile ${cls}" style="left:${pc(t.x, w)};top:${pc(t.y, h)};
+        width:${pc(t.w, w)};height:${pc(t.h, h)};--ink:${ink.toFixed(2)}"
         title="${esc(t.name)}｜${okuText(t.value)}｜${amount}">
       <b>${esc(t.name)}</b><span>${amount}</span>
     </div>`;
-  }).join('')}</div>`;
+  }).join('');
+  fitTiles(box);
 }
 
 /**
@@ -1191,24 +1201,41 @@ function fitFont(width, height, em, max, rows) {
 }
 
 /**
- * 盯著地圖的大小重新量字。
+ * 盯著地圖的大小，尺寸一變就照新的長寬重排。
  *
- * 用 ResizeObserver 而不是 window 的 resize：地圖變大變小不只在改視窗寬度時發生
- * （分頁切換、面板收合、字體縮放都會），而且 observe() 一掛上就會先送一次，
- * 初次量測與後續變化用同一條路徑，不會有「量到 0 寬之後就再也沒重量」的狀況。
+ * 排版與字級都跟盒子的長寬有關，所以不能只在第一次畫的時候算：手機轉向、視窗拉寬、
+ * 側邊欄收合都會換一個長寬比，得整張重排。用 ResizeObserver 而不是 window 的 resize，
+ * 因為盒子變大變小不一定是視窗造成的，而且 observe() 一掛上就會先送一次。
  */
 let tileObserver = null;
 
-function watchTiles(view) {
+function watchTreemap(view, groups) {
   if (tileObserver) tileObserver.disconnect();     // 上一次 render 的觀察對象已經不在了
-  const map = $('.treemap', view);
-  if (!map) return;
-  // 先自己量一次：背景分頁不會跑 ResizeObserver（連 rAF 都不跑），
-  // 但 getBoundingClientRect() 照樣算得出來，切回來時才不會是一片沒有字的方塊。
-  fitTiles(view);
+  const box = $('.treemap', view);
+  if (!box) return;
+
+  let last = '';
+  const paint = () => {
+    const { width, height } = box.getBoundingClientRect();
+    const size = `${Math.round(width)}x${Math.round(height)}`;
+    if (!width || !height || size === last) return;   // 沒變就不重排，也擋掉自己觸發自己
+    last = size;
+    paintTreemap(box, groups, width, height);
+  };
+
+  // 尺寸有時候會分兩步到位（媒體查詢換了長寬比、手機轉向的中間狀態），
+  // 只認第一次量到的就會定在中間那個尺寸上。下一幀再確認一次，沒變就是空操作。
+  const settle = () => {
+    paint();
+    if (window.requestAnimationFrame) requestAnimationFrame(paint);
+  };
+
+  // 先自己畫一次：背景分頁不會跑 ResizeObserver（連 rAF 都不跑），
+  // 但 getBoundingClientRect() 照樣算得出來，切回來時才不會是一片空白。
+  settle();
   if (!window.ResizeObserver) return;
-  tileObserver = new ResizeObserver(() => fitTiles(view));
-  tileObserver.observe(map);
+  tileObserver = new ResizeObserver(settle);
+  tileObserver.observe(box);
 }
 
 // 四象限圖的畫布。viewBox 的單位刻意接近手機的實際像素，
@@ -1359,7 +1386,7 @@ async function renderFlow(view) {
         要看每一族的細項與成分股，切到「族群」分頁。</p>
     </section>`;
 
-  watchTiles(view);
+  watchTreemap(view, groups);
 }
 
 // --------------------------------------------------------------------------
