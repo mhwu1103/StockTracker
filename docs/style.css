@@ -11,6 +11,13 @@
   --down: #0d9145;    /* 綠跌 */
   --flat: #6b7480;
   --radius: 12px;
+
+  /* 四象限的儀表面板：底色漸層、外框、網格、名字白邊（取漸層的中間色） */
+  --q-panel-a: #fdfeff;
+  --q-panel-b: #eef2f7;
+  --q-edge: #dde3ea;
+  --q-mesh: #c4d1e2;
+  --q-halo: #f5f8fb;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -24,6 +31,12 @@
     --up: #ff6b5e;
     --down: #35c97a;
     --flat: #8b95a2;
+
+    --q-panel-a: #121a23;
+    --q-panel-b: #090d12;
+    --q-edge: #24303c;
+    --q-mesh: #22303e;
+    --q-halo: #0d131a;
   }
 }
 
@@ -108,13 +121,20 @@ select, input, button {
   display: flex;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
+  /* 分頁夠多時（現在是九個）窄螢幕會排不下，讓它橫向捲，
+     不要把兩個字折成上下兩行——那比捲動難讀得多。捲軸本身藏起來。 */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
+.tabs::-webkit-scrollbar { display: none; }
+
 .tabs a {
-  flex: 1;
-  padding: 12px 4px;
+  flex: 1 0 auto;               /* 不准縮到比字還窄，寧可整排捲 */
+  padding: 12px 3px;
   text-align: center;
   font-size: 14px;
+  white-space: nowrap;
   color: var(--muted);
   border-bottom: 2px solid transparent;
 }
@@ -211,7 +231,10 @@ select, input, button {
   line-height: 1.4;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
+  /* 一行寫不下就切掉，不能讓它把右邊的數字擠出畫面 */
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .figures { text-align: right; line-height: 1.3; font-variant-numeric: tabular-nums; }
@@ -290,6 +313,222 @@ select, input, button {
 }
 .subhead small { margin-left: 6px; font-weight: 400; color: var(--muted); }
 .row em { font-style: normal; font-variant-numeric: tabular-nums; }
+
+/* ---------- 流向頁：資金地圖與量價四象限 ---------- */
+.map-box { padding: 10px; }
+
+/*
+ * 全站的原則是手機優先、寬螢幕只做置中限寬，這裡是唯一的例外：
+ * 地圖的塊夠不夠大放得下字，看的是「面積」不是寬度。手機寬度窄，就得靠高度
+ * 把面積補回來，所以手機用直的、桌機用寬的——桌機本來就有寬度，不必再吃高度。
+ */
+.treemap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1.1;
+  min-height: 240px;
+  /* 螢幕再寬，地圖也不該高到要捲兩次才看得完 */
+  max-height: 72vh;
+  overflow: hidden;
+}
+
+@media (min-width: 560px) {
+  .treemap { aspect-ratio: 1 / 0.66; }
+  .quad-box { aspect-ratio: 1 / 0.62; }
+}
+
+/*
+ * 流向頁在寬螢幕滿版。其他分頁都是清單，拉寬只會把每一列扯開；
+ * 地圖與四象限則是給多少面積用多少，限在 720px 等於浪費一整片螢幕。
+ */
+@media (min-width: 900px) {
+  .view.wide { max-width: none; }
+  .view.wide .note { max-width: 92ch; }      /* 但說明文字拉到 1900px 寬就沒人讀得下去 */
+  .view.wide .quad-box { aspect-ratio: 1 / 0.5; }
+}
+
+.tile {
+  position: absolute;
+  overflow: hidden;
+  padding: 3px 5px;
+  border: 1px solid var(--surface);
+  border-radius: 4px;
+  line-height: 1.25;
+}
+
+/* 底色另外畫一層，才不會連字一起半透明 */
+.tile::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  opacity: var(--ink, .2);
+}
+
+.tile b, .tile span {
+  position: relative;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * 字級與折幾行都由 fitTiles() 照每一塊量到的大小算出來：塞得下多大就用多大，
+ * 高瘦的塊會折成三、四行（中文一個字一行也讀得到），超過的行數才切掉。
+ */
+.tile b {
+  display: -webkit-box;
+  -webkit-line-clamp: var(--lines, 1);
+  -webkit-box-orient: vertical;
+  color: var(--text);
+  font-size: var(--name-size, 12px);
+  line-height: 1.2;
+}
+
+.tile span {
+  display: block;
+  white-space: nowrap;
+  font-size: var(--num-size, 12px);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 塞不下就收起來，只留 title 的提示；由 fitTiles() 量了實際大小後掛上 */
+.tile.no-text b, .tile.no-text span, .tile.no-num span { display: none; }
+
+/*
+ * 四象限也是「盒子給多少就用多少」（見 quadGeom）：盒子定長寬，圖在盒子的
+ * 真實像素裡畫，所以這裡只管它該有多大。SVG 絕對定位是必要的——正常流的話
+ * 它會反過來把盒子撐高，ResizeObserver 量到自己畫出來的高度就無止境地重畫。
+ */
+.quad-box {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 0.83;
+  min-height: 240px;
+  /* 螢幕再寬，圖也不該高到要捲兩次才看得完 */
+  max-height: 72vh;
+}
+.quad-box.empty { aspect-ratio: auto; min-height: 0; }    /* 畫不出來時只剩一行提示 */
+.quad { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/*
+ * 畫布做成一塊儀表：底色由上往下沉、鋪一層細網格、四角切出瞄準框。
+ * 這些都不帶資料，純粹是為了讓人在讀到任何一個字之前，先認出「這是一張座標圖」。
+ * 漸層與網格用 fill="url(#…)" 寫在 SVG 上而不是這裡——外部 CSS 的 url(#id)
+ * 是相對於樣式表解析的，會變成 style.css#id。
+ */
+.q-panel-a { stop-color: var(--q-panel-a); }
+.q-panel-b { stop-color: var(--q-panel-b); }
+.q-plot { stroke: var(--q-edge); }
+.q-mesh-line { fill: none; stroke: var(--q-mesh); stroke-width: .55; }
+.q-hud { fill: none; stroke: var(--accent); stroke-width: 1.2; stroke-linecap: round; opacity: .5; }
+
+/* 右上「資金進駐」、左下「棄守」兩個角落的暈色，淡到只剩暗示 */
+.q-zone.up { fill: url(#q-zone-up); }
+.q-zone.down { fill: url(#q-zone-down); }
+.q-stop-up { stop-color: var(--up); stop-opacity: .16; }
+.q-stop-down { stop-color: var(--down); stop-opacity: .16; }
+.q-stop-out { stop-opacity: 0; }
+
+/* 兩條零軸是刻度不是資料，畫成虛線退到泡泡後面；箭頭指出量增與價漲的方向 */
+.q-axis { stroke: var(--muted); stroke-width: .8; stroke-dasharray: 2 4; opacity: .5; }
+.q-arrow { fill: var(--muted); opacity: .5; }
+.q-origin { fill: none; stroke: var(--muted); stroke-width: .8; opacity: .5; }
+
+/*
+ * 一顆泡泡三層：主體、外圈虛線瞄準環、中心點。主體帶一圈同色輝光，
+ * 二十幾顆疊在一起時邊界才不會糊成一片；暗色模式的輝光加重，變成霓虹。
+ */
+.q-body {
+  fill: currentColor;
+  fill-opacity: .18;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-opacity: .9;
+  filter: drop-shadow(0 0 2px color-mix(in srgb, currentColor 30%, transparent));
+  transition: fill-opacity .15s, stroke-width .15s;
+}
+.q-ring {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: .6;
+  stroke-opacity: .3;
+  stroke-dasharray: 1.5 3;
+  transition: stroke-opacity .15s;
+}
+.q-pip { fill: currentColor; fill-opacity: .85; }
+
+/* 滑過去的那顆浮上來一點，重疊成一坨的地方才分得出摸到的是哪一顆 */
+.q-dot:hover .q-body { fill-opacity: .42; stroke-width: 2; }
+.q-dot:hover .q-ring { stroke-opacity: .75; }
+.q-dot:hover .q-name { font-weight: 700; }
+
+/* 照成交值由大到小依序長出來：一次全部出現看不出誰大誰小，錯開就看得到順序 */
+.q-dot circle {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: q-pop .42s cubic-bezier(.2, 1.3, .5, 1) backwards;
+  animation-delay: var(--d, 0ms);
+}
+
+@keyframes q-pop {
+  from { transform: scale(.1); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .q-dot circle { animation: none; }
+}
+
+/* 前幾大的族群名字會壓在泡泡上，描一圈底色當白邊才讀得出來（paint-order 讓邊在字下面） */
+.q-name {
+  font-size: var(--q-fs, 10px);
+  fill: var(--text);
+  paint-order: stroke;
+  stroke: var(--q-halo);        /* 取面板漸層的中間色，白邊才隱形 */
+  stroke-width: .25em;          /* 跟著字級走，字大了白邊才不會變成一條細線 */
+  stroke-linejoin: round;
+  letter-spacing: .2px;
+}
+.q-corner { font-size: var(--q-fs-s, 8.5px); fill: var(--muted); letter-spacing: 1px; opacity: .8; }
+.q-tick { font-size: var(--q-fs-s, 8.5px); fill: var(--muted); letter-spacing: .4px; font-variant-numeric: tabular-nums; }
+.q-axis-title { letter-spacing: 1.2px; opacity: .8; }
+
+@media (prefers-color-scheme: dark) {
+  .q-body { filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 55%, transparent)); }
+  .q-pip { fill-opacity: 1; }
+  .q-hud { opacity: .7; }
+}
+
+/* ---------- 均線頁：穿越矩陣與四線標記 ---------- */
+.matrix-box { padding: 10px 12px 12px; }
+
+.matrix {
+  display: grid;
+  grid-template-columns: 3.4rem repeat(5, 1fr);
+  gap: 4px;
+}
+
+.matrix .head,
+.matrix .rowlab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.matrix .rowlab { justify-content: flex-start; }
+
+.matrix .cell {
+  width: 100%;
+  padding: 8px 2px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ident .ma-chips { display: block; font-size: 11px; line-height: 1.4; }
+.ma-chip { margin-right: 6px; font-variant-numeric: tabular-nums; }
 
 /* ---------- 圖表與統計 ---------- */
 .stat-grid {
