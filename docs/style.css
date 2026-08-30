@@ -291,6 +291,54 @@ select, input, button {
 .subhead small { margin-left: 6px; font-weight: 400; color: var(--muted); }
 .row em { font-style: normal; font-variant-numeric: tabular-nums; }
 
+/* ---------- 流向頁：資金地圖與量價四象限 ---------- */
+.map-box { padding: 10px; }
+
+.treemap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 0.78;
+  min-height: 240px;
+  overflow: hidden;
+}
+
+.tile {
+  position: absolute;
+  overflow: hidden;
+  padding: 3px 5px;
+  border: 1px solid var(--surface);
+  border-radius: 4px;
+  line-height: 1.25;
+}
+
+/* 底色另外畫一層，才不會連字一起半透明 */
+.tile::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  opacity: var(--ink, .2);
+}
+
+.tile b, .tile span {
+  position: relative;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tile b { color: var(--text); font-size: 12px; }
+.tile span { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.quad { display: block; width: 100%; height: auto; }
+.q-plot { fill: var(--bg); stroke: var(--line); }
+.q-axis { stroke: var(--muted); stroke-width: 1; opacity: .5; }
+.q-dot circle { fill: currentColor; fill-opacity: .32; stroke: currentColor; stroke-width: 1.2; }
+.q-name { font-size: 10px; fill: var(--text); }
+.q-corner { font-size: 9px; fill: var(--muted); }
+.q-tick { font-size: 9px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+
 /* ---------- 圖表與統計 ---------- */
 .stat-grid {
   display: grid;

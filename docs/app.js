@@ -919,16 +919,15 @@ function sectorRow(g, maxFlow) {
   </details>`;
 }
 
-async function renderSector(view) {
-  // 兩種分類軸並存，任一邊缺資料就自動退到另一邊
-  let mode = state.grouping;
-  if (mode === 'theme' && !hasThemes()) mode = 'industry';
-  if (mode === 'industry' && !hasIndustry()) mode = 'theme';
-  if (!hasIndustry() && !hasThemes()) {
-    view.innerHTML = '<p class="hint">沒有分類資料，請先執行 scripts/fetch_industry.py。</p>';
-    return;
-  }
+/** 目前有效的分類軸。兩種並存，任一邊缺資料就退到另一邊；兩邊都沒有回傳 null。 */
+function groupingMode() {
+  if (!hasIndustry() && !hasThemes()) return null;
+  if (state.grouping === 'theme') return hasThemes() ? 'theme' : 'industry';
+  return hasIndustry() ? 'industry' : 'theme';
+}
 
+/** 族群頁與流向頁共用的一次計算：當日各族群，以及相對基準日的資金變化。 */
+async function collectFlows(mode) {
   const baseDate = dateBack(state.baseline);
   const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(baseDate)]);
   const topStocks = today.stocks.filter((s) => s.rank <= TOP);
@@ -954,6 +953,35 @@ async function renderSector(view) {
     });
   }
 
+  return {
+    baseDate, base, topStocks, byCode, totalValue, baseTotal, groups,
+    totalFlowPct: baseTotal ? ((totalValue - baseTotal) / baseTotal) * 100 : null,
+    marketChg: weightedChange([...byCode.keys()], byCode),
+  };
+}
+
+/** 兩頁共用的說明文字：分類軸的來源與名單缺口。 */
+function groupingNote(mode, topCount, ungrouped) {
+  const coverage = ungrouped
+    ? `今日榜上 ${topCount} 檔中還有 ${ungrouped} 檔沒歸類。`
+    : `今日榜上 ${topCount} 檔都已歸類。`;
+  return mode === 'theme'
+    ? `題材族群是人工維護的供應鏈視角（<code>data/themes.json</code>${state.themesUpdated ? `，維護於 ${esc(state.themesUpdated)}` : ''}），
+       一檔可以同時屬於多個族群，所以各族群佔比加總會超過 100%。${coverage}`
+    : '產業別採證交所的官方分類，跟著上市櫃公司基本資料自動更新，不會漏掉任何一檔；'
+      + '但它與市場口中的題材族群對不起來時，切到「題材族群」看。分類取自最新一次抓取的結果，並回頭套用到歷史日期。';
+}
+
+async function renderSector(view) {
+  const mode = groupingMode();
+  if (!mode) {
+    view.innerHTML = '<p class="hint">沒有分類資料，請先執行 scripts/fetch_industry.py。</p>';
+    return;
+  }
+
+  const { baseDate, base, topStocks, byCode, totalValue, groups, totalFlowPct, marketChg }
+    = await collectFlows(mode);
+
   const sorters = {
     flow: (a, b) => (b.flow ?? -Infinity) - (a.flow ?? -Infinity),
     shift: (a, b) => (b.shift ?? -Infinity) - (a.shift ?? -Infinity),
@@ -967,21 +995,12 @@ async function renderSector(view) {
   });
   const maxFlow = Math.max(...groups.map((g) => Math.abs(g.flow || 0)));
 
-  const totalFlowPct = baseTotal ? ((totalValue - baseTotal) / baseTotal) * 100 : null;
-  const marketChg = weightedChange([...byCode.keys()], byCode);
   const inflow = groups.filter((g) => g.flow > 0).length;
   const outflow = groups.filter((g) => g.flow < 0).length;
 
   // 名單的缺口要講出來，不然「未分類」看起來只是一個普通族群
   const ungrouped = groups.find((g) => g.name === UNGROUPED_LABEL)?.count || 0;
-  const coverage = ungrouped
-    ? `今日榜上 ${topStocks.length} 檔中還有 ${ungrouped} 檔沒歸類。`
-    : `今日榜上 ${topStocks.length} 檔都已歸類。`;
-  const note = mode === 'theme'
-    ? `題材族群是人工維護的供應鏈視角（<code>data/themes.json</code>${state.themesUpdated ? `，維護於 ${esc(state.themesUpdated)}` : ''}），
-       一檔可以同時屬於多個族群，所以各族群佔比加總會超過 100%。${coverage}`
-    : '產業別採證交所的官方分類，跟著上市櫃公司基本資料自動更新，不會漏掉任何一檔；'
-      + '但它與市場口中的題材族群對不起來時，切到「題材族群」看。分類取自最新一次抓取的結果，並回頭套用到歷史日期。';
+  const note = groupingNote(mode, topStocks.length, ungrouped);
 
   view.innerHTML = `
     <div class="controls">
@@ -1032,6 +1051,232 @@ async function renderSector(view) {
       if (el.open && !box.innerHTML) box.innerHTML = bodyOf(box.dataset.sector);
     });
   });
+}
+
+// --------------------------------------------------------------------------
+// 分頁七：流向（把資金流向畫成圖）
+//
+// 族群頁是一張表，適合查數字；這一頁是兩張圖，適合一眼看出形狀：
+//   資金地圖   面積＝今日成交值、顏色＝相對基準日的增減 → 錢在哪裡、往哪個方向動
+//   量價四象限 橫軸＝成交值增減、縱軸＝加權漲跌       → 這些錢是買上去還是砍下來
+// 兩張都用純 DOM／SVG 畫，不依賴 Chart.js：離線時也要看得到。
+// --------------------------------------------------------------------------
+
+/** squarified treemap（Bruls et al.）：回傳每塊的 x/y/w/h，單位與傳入的矩形相同。 */
+function squarify(items, rect, out = []) {
+  if (!items.length || rect.w <= 0 || rect.h <= 0) return out;
+  const total = items.reduce((n, it) => n + it.value, 0);
+  if (total <= 0) return out;
+
+  const scale = (rect.w * rect.h) / total;
+  const side = Math.min(rect.w, rect.h);
+  // 一列裡最方正的那組長寬比；越接近 1 越好看
+  const worst = (areas) => {
+    const s = areas.reduce((a, b) => a + b, 0);
+    return Math.max((side * side * Math.max(...areas)) / (s * s),
+      (s * s) / (side * side * Math.min(...areas)));
+  };
+
+  const row = [];
+  let best = Infinity;
+  for (const it of items) {
+    const ratio = worst([...row, it].map((r) => r.value * scale));
+    if (row.length && ratio > best) break;      // 再加一塊只會更扁，這一列就到這裡
+    row.push(it);
+    best = ratio;
+  }
+
+  const rowArea = row.reduce((n, it) => n + it.value, 0) * scale;
+  const rest = items.slice(row.length);
+  if (rect.w >= rect.h) {                        // 短邊是高 -> 這一列直排在左側
+    const w = Math.min(rect.w, rowArea / rect.h);
+    let y = rect.y;
+    for (const it of row) {
+      const h = (it.value * scale) / w;
+      out.push({ ...it, x: rect.x, y, w, h });
+      y += h;
+    }
+    return squarify(rest, { x: rect.x + w, y: rect.y, w: rect.w - w, h: rect.h }, out);
+  }
+  const h = Math.min(rect.h, rowArea / rect.w);   // 短邊是寬 -> 這一列橫排在上方
+  let x = rect.x;
+  for (const it of row) {
+    const w = (it.value * scale) / h;
+    out.push({ ...it, x, y: rect.y, w, h });
+    x += w;
+  }
+  return squarify(rest, { x: rect.x, y: rect.y + h, w: rect.w, h: rect.h - h }, out);
+}
+
+// 地圖以百分比定位，實際像素依螢幕而定。用手機寬度（約 360px × 這個比例）估一下
+// 塊夠不夠大能放字，估錯了也只是字被 overflow 切掉，不會排版壞掉。
+const MAP_RATIO = 0.78;
+const MAP_MIN_PX = 360;
+
+/**
+ * 資金地圖。面積是今日成交值，顏色深淺是相對基準日的增減幅度。
+ * 用增減「幅度」而不是「金額」上色：小族群翻倍也該看得出來，
+ * 不然顏色會被半導體那種量體整片洗掉。
+ */
+function treemap(groups) {
+  const items = groups
+    .filter((g) => g.value > 0)
+    .map((g) => ({ ...g, value: g.value }))
+    .sort((a, b) => b.value - a.value);
+  if (!items.length) return '<p class="hint">這一天沒有資料。</p>';
+
+  const tiles = squarify(items, { x: 0, y: 0, w: 100, h: 100 });
+  return `<div class="treemap">${tiles.map((t) => {
+    const cls = t.flow === null ? 'flat' : trend(t.flow);
+    // 增減幅度對到 0.12～0.68 的底色濃度；60% 以上一律最濃
+    const ink = t.flowPct === null ? 0.1 : 0.12 + Math.min(1, Math.abs(t.flowPct) / 60) * 0.56;
+    const px = { w: (t.w / 100) * MAP_MIN_PX, h: (t.h / 100) * MAP_MIN_PX * MAP_RATIO };
+    const room = px.w > 54 && px.h > 26;
+    const roomy = px.w > 54 && px.h > 46;
+    const amount = t.flow === null ? 'NEW' : `${t.flow > 0 ? '+' : ''}${okuText(t.flow)}`;
+    return `<div class="tile ${cls}" style="left:${t.x.toFixed(2)}%;top:${t.y.toFixed(2)}%;
+        width:${t.w.toFixed(2)}%;height:${t.h.toFixed(2)}%;--ink:${ink.toFixed(2)}"
+        title="${esc(t.name)}｜${okuText(t.value)}｜${amount}">
+      ${room ? `<b>${esc(t.name)}</b>` : ''}
+      ${roomy ? `<span>${amount}</span>` : ''}
+    </div>`;
+  }).join('')}</div>`;
+}
+
+// 四象限圖的畫布。viewBox 的單位刻意接近手機的實際像素，
+// 這樣字級寫 10 在手機上就是 10px，放到寬螢幕才等比放大。
+const Q = { w: 360, h: 300, l: 30, r: 14, t: 14, b: 30 };
+
+/**
+ * 座標軸上限。取第 85 百分位而不是最大值：一兩檔冷門族群成交值翻三倍是常有的事，
+ * 拿它當上限會把其餘二十幾族全擠在中間一坨。超出範圍的點貼在邊緣，數字仍在 tooltip 裡。
+ * 另給一個下限，免得沒什麼波動的日子被放大成雜訊。
+ */
+function axisMax(values, floor) {
+  const sorted = values.map((v) => Math.abs(v)).sort((a, b) => a - b);
+  const p85 = sorted[Math.min(sorted.length - 1, Math.floor(0.85 * sorted.length))];
+  return Math.max(floor, p85) * 1.15;
+}
+
+/**
+ * 量價四象限。橫軸是成交值增減（量），縱軸是成交值加權漲跌（價），
+ * 泡泡大小是成交值，顏色是佔比位移——四個維度都是同一天的同一批數字。
+ */
+function quadrant(groups) {
+  const pts = groups.filter((g) => g.flowPct !== null && g.chg !== null && g.value > 0);
+  if (pts.length < 2) return '<p class="hint">可比較的族群太少，畫不出四象限。</p>';
+
+  const maxX = axisMax(pts.map((p) => p.flowPct), 25);
+  const maxY = axisMax(pts.map((p) => p.chg), 2);
+  const maxV = Math.max(...pts.map((p) => p.value));
+  const innerW = Q.w - Q.l - Q.r;
+  const innerH = Q.h - Q.t - Q.b;
+  const clamp = (v, max) => Math.max(-1, Math.min(1, v / max)) * 0.9;   // 0.9：貼邊的泡泡不要被切一半
+  const px = (v) => Q.l + ((clamp(v, maxX) + 1) / 2) * innerW;
+  const py = (v) => Q.t + ((1 - clamp(v, maxY)) / 2) * innerH;
+  const cx = px(0);
+  const cy = py(0);
+
+  // 只有大的才標名字，不然字疊字反而讀不出來
+  const named = new Set(pts.slice().sort((a, b) => b.value - a.value).slice(0, 6).map((p) => p.name));
+  const corners = [
+    { x: Q.w - Q.r - 3, y: Q.t + 11, anchor: 'end', text: '量增價漲 · 資金進駐' },
+    { x: Q.l + 3, y: Q.t + 11, anchor: 'start', text: '量縮價漲 · 惜售' },
+    { x: Q.w - Q.r - 3, y: Q.h - Q.b - 4, anchor: 'end', text: '量增價跌 · 出貨' },
+    { x: Q.l + 3, y: Q.h - Q.b - 4, anchor: 'start', text: '量縮價跌 · 棄守' },
+  ];
+
+  const dots = pts.slice().sort((a, b) => b.value - a.value).map((p) => {
+    const r = 3 + Math.sqrt(p.value / maxV) * 13;
+    const x = px(p.flowPct);
+    const y = py(p.chg);
+    const cls = p.shift === null ? 'flat' : trend(p.shift);
+    // 名字寫在泡泡正上方；貼著邊的往內縮，才不會被畫布切掉。
+    // 太靠上的改寫在下方，否則會壓到象限名稱。
+    const lx = Math.max(Q.l + 22, Math.min(Q.w - Q.r - 22, x));
+    const ly = y > Q.t + innerH * 0.22 ? y - r - 3 : y + r + 9;
+    const label = named.has(p.name)
+      ? `<text class="q-name" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}"
+           text-anchor="middle">${esc(p.name)}</text>`
+      : '';
+    const shiftText = p.shift === null ? '—' : `${p.shift > 0 ? '+' : ''}${p.shift.toFixed(2)}pp`;
+    return `<g class="q-dot ${cls}"><title>${esc(p.name)}｜成交值 ${signedPct(p.flowPct)}｜`
+      + `加權 ${signedPct(p.chg, 2)}｜佔比 ${shiftText}</title>`
+      + `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}"/>${label}</g>`;
+  }).join('');
+
+  return `<svg class="quad" viewBox="0 0 ${Q.w} ${Q.h}" role="img" aria-label="量價四象限散佈圖">
+    <rect class="q-plot" x="${Q.l}" y="${Q.t}" width="${innerW}" height="${innerH}" rx="6"/>
+    ${corners.map((c) => `<text class="q-corner" x="${c.x}" y="${c.y}" text-anchor="${c.anchor}">${c.text}</text>`).join('')}
+    <line class="q-axis" x1="${Q.l}" y1="${cy}" x2="${Q.w - Q.r}" y2="${cy}"/>
+    <line class="q-axis" x1="${cx}" y1="${Q.t}" x2="${cx}" y2="${Q.h - Q.b}"/>
+    ${dots}
+    <text class="q-tick" x="${Q.w - Q.r}" y="${Q.h - Q.b + 12}" text-anchor="end">成交值 +${maxX.toFixed(0)}%</text>
+    <text class="q-tick" x="${Q.l}" y="${Q.h - Q.b + 12}" text-anchor="start">−${maxX.toFixed(0)}%</text>
+    <text class="q-tick" x="${Q.l - 4}" y="${Q.t + 8}" text-anchor="end">+${maxY.toFixed(1)}%</text>
+    <text class="q-tick" x="${Q.l - 4}" y="${Q.h - Q.b}" text-anchor="end">−${maxY.toFixed(1)}%</text>
+    <text class="q-tick" x="${Q.w / 2}" y="${Q.h - 4}" text-anchor="middle">橫軸：成交值增減　縱軸：成交值加權漲跌</text>
+  </svg>`;
+}
+
+async function renderFlow(view) {
+  const mode = groupingMode();
+  if (!mode) {
+    view.innerHTML = '<p class="hint">沒有分類資料，請先執行 scripts/fetch_industry.py。</p>';
+    return;
+  }
+
+  const { baseDate, topStocks, totalValue, groups, totalFlowPct, marketChg }
+    = await collectFlows(mode);
+  if (!baseDate) {
+    view.innerHTML = '<p class="hint">這是最早的一天，沒有可以比較的基準日。</p>';
+    return;
+  }
+
+  // 只有比得出增減的才排得出「流入／流出最多」；新進榜的沒有基準，不參與
+  const ranked = groups.filter((g) => g.flow !== null).sort((a, b) => b.flow - a.flow);
+  const top = ranked[0];
+  const bottom = ranked[ranked.length - 1];
+  const gone = groups.filter((g) => g.gone);
+  const fresh = groups.filter((g) => g.flow === null);
+  const ungrouped = groups.find((g) => g.name === UNGROUPED_LABEL)?.count || 0;
+
+  view.innerHTML = `
+    <div class="controls">
+      ${hasIndustry() && hasThemes() ? pills('grouping', GROUPINGS, mode) : ''}
+      ${pills('baseline', BASELINES, state.baseline)}
+    </div>
+    <section class="card">
+      <h2>資金地圖 <small>${state.date} vs ${baseDate} · 面積＝成交值，顏色＝資金增減</small></h2>
+      <div class="map-box">${treemap(groups)}</div>
+      <p class="note">整體 ${signedPct(totalFlowPct)}（${okuText(totalValue)}）。
+        紅＝資金流入、綠＝流出，顏色越濃代表增減幅度越大——用幅度不用金額上色，
+        小族群翻倍才不會被大族群的量體洗掉。整族退出前 ${TOP} 大的族群面積是 0，地圖上看不到，
+        ${gone.length ? `今天有 ${gone.map((g) => esc(g.name)).join('、')}。` : '今天沒有。'}
+        ${mode === 'theme' ? '題材族群一檔可屬多個族群，重疊的部分兩邊都算，所以地圖總面積會大於榜上總額——比的是彼此的相對大小，不是切分同一塊餅。' : ''}</p>
+    </section>
+    <section class="card">
+      <h2>量價四象限 <small>泡泡大小＝成交值，顏色＝佔比位移</small></h2>
+      <div class="map-box">${quadrant(groups)}</div>
+      <p class="note">右邊是量增、上面是價漲。右上角是量價齊揚的資金進駐，右下角是爆量下殺的出貨，
+        兩者的成交值都在變大，方向卻相反——這就是為什麼光看成交值不能當成「買盤」。
+        泡泡的紅綠是佔榜上比重的位移，紅色代表錢確實往這一族集中。
+        座標軸取第 85 百分位當上限，超出範圍的族群貼在邊緣（真實數字在長按／滑過的提示裡）。
+        ${fresh.length ? `新進榜的 ${fresh.map((g) => esc(g.name)).join('、')}沒有比較基準，不在圖上。` : ''}</p>
+    </section>
+    <section class="card">
+      <h2>一句話 <small>${state.date} 前 ${TOP} 大</small></h2>
+      <div class="stat-grid">
+        <div class="stat"><b class="sm ${trend(totalFlowPct)}">${signedPct(totalFlowPct)}</b><span>榜上整體增減</span></div>
+        <div class="stat"><b class="sm ${trend(marketChg)}">${signedPct(marketChg, 2)}</b><span>成交值加權漲跌</span></div>
+        <div class="stat"><b class="sm ${trend(top.flow)}">${esc(top.name)}</b>
+          <span>${top.flow > 0 ? '流入最多 +' : '減少最少 '}${okuText(top.flow)}</span></div>
+        <div class="stat"><b class="sm ${trend(bottom.flow)}">${esc(bottom.name)}</b>
+          <span>${bottom.flow < 0 ? '流出最多 ' : '增加最少 +'}${okuText(bottom.flow)}</span></div>
+      </div>
+      <p class="note">${groupingNote(mode, topStocks.length, ungrouped)}
+        要看每一族的細項與成分股，切到「族群」分頁。</p>
+    </section>`;
 }
 
 // --------------------------------------------------------------------------
@@ -1195,6 +1440,7 @@ async function render() {
     }
     if (route.view === 'market') await renderMarket(view);
     else if (route.view === 'sector') await renderSector(view);
+    else if (route.view === 'flow') await renderFlow(view);
     else if (route.view === 'streak') await renderStreak(view);
     else if (route.view === 'moves') await renderMoves(view);
     else if (route.view === 'stock') await renderStock(view, route.arg);
