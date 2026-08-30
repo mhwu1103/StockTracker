@@ -294,12 +294,23 @@ select, input, button {
 /* ---------- 流向頁：資金地圖與量價四象限 ---------- */
 .map-box { padding: 10px; }
 
+/*
+ * 全站的原則是手機優先、寬螢幕只做置中限寬，這裡是唯一的例外：
+ * 地圖的塊夠不夠大放得下字，看的是「面積」不是寬度。手機寬度窄，就得靠高度
+ * 把面積補回來，所以手機用直的、桌機用寬的——桌機本來就有寬度，不必再吃高度。
+ */
 .treemap {
   position: relative;
   width: 100%;
-  aspect-ratio: 1 / 0.78;
+  aspect-ratio: 1 / 1.1;
   min-height: 240px;
   overflow: hidden;
+}
+
+@media (min-width: 560px) {
+  .treemap { aspect-ratio: 1 / 0.66; }
+  /* 四象限是等比縮放的 SVG，放到整個寬螢幕字會跟著變得很大，限個寬 */
+  .quad { max-width: 540px; margin: 0 auto; }
 }
 
 .tile {
@@ -328,8 +339,22 @@ select, input, button {
   text-overflow: ellipsis;
 }
 
-.tile b { color: var(--text); font-size: 12px; }
-.tile span { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+/* 字級由 fitTiles() 照每一塊量到的大小算出來，塞得下多大就用多大 */
+.tile b { color: var(--text); font-size: var(--name-size, 12px); }
+.tile span {
+  font-size: var(--num-size, 12px);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 夠高的塊讓名字折兩行，第三行以後才切掉 */
+.tile.wrap b {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  line-height: 1.15;
+}
 
 /* 塞不下就收起來，只留 title 的提示；由 fitTiles() 量了實際大小後掛上 */
 .tile.no-text b, .tile.no-text span, .tile.no-num span { display: none; }

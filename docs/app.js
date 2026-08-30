@@ -1147,14 +1147,73 @@ function treemap(groups) {
 function fitTiles(root) {
   root.querySelectorAll('.tile').forEach((el) => {
     const { width, height } = el.getBoundingClientRect();
-    el.classList.toggle('no-text', width < 48 || height < 24);
-    el.classList.toggle('no-num', height < 42);
+    const name = el.querySelector('b');
+    const num = el.querySelector('span');
+    // 夠高就讓名字折兩行。「功率元件 · 第三代半導體」這種長名字擠成一行一定會被切，
+    // 折成兩行反而放得下比較大的字——樹狀圖本來就是這樣處理的。
+    const wrap = height >= 42;
+    el.classList.toggle('wrap', wrap);
+    el.classList.toggle('no-text', width < 34 || height < 18);
+    // 名字被切成「軍工 · 航太…」還讀得懂，金額被切成「+120…」卻會被誤讀成別的數字，
+    // 所以金額只有在最小字級也塞得下時才顯示，塞不下就整個不出現。
+    const numEm = emWidth(num.textContent);
+    el.classList.toggle('no-num', height < 32 || (width - TILE_PAD) / numEm < 9);
+
+    const nameEm = emWidth(name.textContent) / (wrap ? 2 : 1);
+    el.style.setProperty('--name-size', `${fitFont(width, height, nameEm, 13, wrap ? 4.6 : 3.4)}px`);
+    el.style.setProperty('--num-size', `${fitFont(width, height, numEm, 11, 3.4)}px`);
   });
+}
+
+/**
+ * 粗估一串字佔幾個「字寬」。中日韓字元算一個，英數與半形符號約 0.55 個——
+ * 「-244 億」全照中文字寬算會比實際寬一倍，窄格子上的金額就會被誤判成放不下。
+ */
+const TILE_PAD = 12;      // .tile 的左右內距 5px 加上外框 1px，兩邊共 12px
+
+function emWidth(text) {
+  let em = 0;
+  for (const ch of text) em += /[　-〿㐀-鿿＀-￯]/.test(ch) ? 1 : 0.55;
+  return em || 1;
+}
+
+/**
+ * 讓 em 個字寬剛好塞得進 width 的字級，再受格子高度與 9～max 的上下限節制。
+ * rows 是高度要分給幾「份」（名字一行還是兩行，加上金額那行與行距）。
+ *
+ * 寧可字小一點，也不要「光通訊 · CPO · 矽光子」被切成「光通訊 · CPO · 矽…」。
+ * 真的連 9px 都塞不下時就讓它 ellipsis，完整名稱在 title 裡。
+ */
+function fitFont(width, height, em, max, rows) {
+  const byWidth = (width - TILE_PAD) / em;
+  const byHeight = height / rows;
+  return Math.max(9, Math.min(max, Math.floor(Math.min(byWidth, byHeight))));
+}
+
+/**
+ * 盯著地圖的大小重新量字。
+ *
+ * 用 ResizeObserver 而不是 window 的 resize：地圖變大變小不只在改視窗寬度時發生
+ * （分頁切換、面板收合、字體縮放都會），而且 observe() 一掛上就會先送一次，
+ * 初次量測與後續變化用同一條路徑，不會有「量到 0 寬之後就再也沒重量」的狀況。
+ */
+let tileObserver = null;
+
+function watchTiles(view) {
+  if (tileObserver) tileObserver.disconnect();     // 上一次 render 的觀察對象已經不在了
+  const map = $('.treemap', view);
+  if (!map) return;
+  // 先自己量一次：背景分頁不會跑 ResizeObserver（連 rAF 都不跑），
+  // 但 getBoundingClientRect() 照樣算得出來，切回來時才不會是一片沒有字的方塊。
+  fitTiles(view);
+  if (!window.ResizeObserver) return;
+  tileObserver = new ResizeObserver(() => fitTiles(view));
+  tileObserver.observe(map);
 }
 
 // 四象限圖的畫布。viewBox 的單位刻意接近手機的實際像素，
 // 這樣字級寫 10 在手機上就是 10px，放到寬螢幕才等比放大。
-const Q = { w: 360, h: 300, l: 30, r: 14, t: 14, b: 30 };
+const Q = { w: 360, h: 300, l: 30, r: 14, t: 14, b: 30, name: 10 };  // name 是 .q-name 的字級
 
 /**
  * 座標軸上限。取第 85 百分位而不是最大值：一兩檔冷門族群成交值翻三倍是常有的事，
@@ -1188,6 +1247,19 @@ function quadrant(groups) {
 
   // 只有大的才標名字，不然字疊字反而讀不出來
   const named = new Set(pts.slice().sort((a, b) => b.value - a.value).slice(0, 6).map((p) => p.name));
+
+  /**
+   * 標籤佔位。泡泡是照成交值由大到小畫的，所以先搶先贏＝大的族群優先標名字；
+   * 會疊到已經放好的標籤就乾脆不標——兩個名字疊在一起等於兩個都讀不到。
+   */
+  const placed = [];
+  const claim = (x, y, text) => {
+    const half = (emWidth(text) * Q.name) / 2;
+    const box = { x1: x - half, x2: x + half, y1: y - Q.name, y2: y + 3 };
+    if (placed.some((p) => box.x1 < p.x2 && box.x2 > p.x1 && box.y1 < p.y2 && box.y2 > p.y1)) return false;
+    placed.push(box);
+    return true;
+  };
   const corners = [
     { x: Q.w - Q.r - 3, y: Q.t + 11, anchor: 'end', text: '量增價漲 · 資金進駐' },
     { x: Q.l + 3, y: Q.t + 11, anchor: 'start', text: '量縮價漲 · 惜售' },
@@ -1204,7 +1276,7 @@ function quadrant(groups) {
     // 太靠上的改寫在下方，否則會壓到象限名稱。
     const lx = Math.max(Q.l + 22, Math.min(Q.w - Q.r - 22, x));
     const ly = y > Q.t + innerH * 0.22 ? y - r - 3 : y + r + 9;
-    const label = named.has(p.name)
+    const label = named.has(p.name) && claim(lx, ly, p.name)
       ? `<text class="q-name" x="${lx.toFixed(1)}" y="${ly.toFixed(1)}"
            text-anchor="middle">${esc(p.name)}</text>`
       : '';
@@ -1287,7 +1359,7 @@ async function renderFlow(view) {
         要看每一族的細項與成分股，切到「族群」分頁。</p>
     </section>`;
 
-  fitTiles(view);
+  watchTiles(view);
 }
 
 // --------------------------------------------------------------------------
@@ -1501,10 +1573,6 @@ function bindGlobalControls() {
   });
 
   window.addEventListener('hashchange', render);
-
-  // 轉螢幕方向或改視窗寬度會讓地圖的塊變大變小，字塞不塞得下要重量一次。
-  // 頁面上沒有地圖時這是個空操作，不必判斷現在在哪一頁。
-  window.addEventListener('resize', () => fitTiles($('#view')));
 }
 
 async function start() {
