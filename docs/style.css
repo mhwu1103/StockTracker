@@ -121,13 +121,20 @@ select, input, button {
   display: flex;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
+  /* 分頁夠多時（現在是九個）窄螢幕會排不下，讓它橫向捲，
+     不要把兩個字折成上下兩行——那比捲動難讀得多。捲軸本身藏起來。 */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
+.tabs::-webkit-scrollbar { display: none; }
+
 .tabs a {
-  flex: 1;
-  padding: 12px 4px;
+  flex: 1 0 auto;               /* 不准縮到比字還窄，寧可整排捲 */
+  padding: 12px 3px;
   text-align: center;
   font-size: 14px;
+  white-space: nowrap;
   color: var(--muted);
   border-bottom: 2px solid transparent;
 }
@@ -224,7 +231,10 @@ select, input, button {
   line-height: 1.4;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
+  /* 一行寫不下就切掉，不能讓它把右邊的數字擠出畫面 */
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .figures { text-align: right; line-height: 1.3; font-variant-numeric: tabular-nums; }
@@ -324,8 +334,7 @@ select, input, button {
 
 @media (min-width: 560px) {
   .treemap { aspect-ratio: 1 / 0.66; }
-  /* 四象限是等比縮放的 SVG，放到整個寬螢幕字會跟著變得很大，限個寬 */
-  .quad { max-width: 540px; margin: 0 auto; }
+  .quad-box { aspect-ratio: 1 / 0.62; }
 }
 
 /*
@@ -335,7 +344,7 @@ select, input, button {
 @media (min-width: 900px) {
   .view.wide { max-width: none; }
   .view.wide .note { max-width: 92ch; }      /* 但說明文字拉到 1900px 寬就沒人讀得下去 */
-  .view.wide .quad { max-width: 620px; }
+  .view.wide .quad-box { aspect-ratio: 1 / 0.5; }
 }
 
 .tile {
@@ -386,7 +395,21 @@ select, input, button {
 /* 塞不下就收起來，只留 title 的提示；由 fitTiles() 量了實際大小後掛上 */
 .tile.no-text b, .tile.no-text span, .tile.no-num span { display: none; }
 
-.quad { display: block; width: 100%; height: auto; }
+/*
+ * 四象限也是「盒子給多少就用多少」（見 quadGeom）：盒子定長寬，圖在盒子的
+ * 真實像素裡畫，所以這裡只管它該有多大。SVG 絕對定位是必要的——正常流的話
+ * 它會反過來把盒子撐高，ResizeObserver 量到自己畫出來的高度就無止境地重畫。
+ */
+.quad-box {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 0.83;
+  min-height: 240px;
+  /* 螢幕再寬，圖也不該高到要捲兩次才看得完 */
+  max-height: 72vh;
+}
+.quad-box.empty { aspect-ratio: auto; min-height: 0; }    /* 畫不出來時只剩一行提示 */
+.quad { position: absolute; inset: 0; width: 100%; height: 100%; }
 
 /*
  * 畫布做成一塊儀表：底色由上往下沉、鋪一層細網格、四角切出瞄準框。
@@ -459,16 +482,16 @@ select, input, button {
 
 /* 前幾大的族群名字會壓在泡泡上，描一圈底色當白邊才讀得出來（paint-order 讓邊在字下面） */
 .q-name {
-  font-size: 10px;
+  font-size: var(--q-fs, 10px);
   fill: var(--text);
   paint-order: stroke;
   stroke: var(--q-halo);        /* 取面板漸層的中間色，白邊才隱形 */
-  stroke-width: 2.5px;
+  stroke-width: .25em;          /* 跟著字級走，字大了白邊才不會變成一條細線 */
   stroke-linejoin: round;
   letter-spacing: .2px;
 }
-.q-corner { font-size: 8.5px; fill: var(--muted); letter-spacing: 1px; opacity: .8; }
-.q-tick { font-size: 8.5px; fill: var(--muted); letter-spacing: .4px; font-variant-numeric: tabular-nums; }
+.q-corner { font-size: var(--q-fs-s, 8.5px); fill: var(--muted); letter-spacing: 1px; opacity: .8; }
+.q-tick { font-size: var(--q-fs-s, 8.5px); fill: var(--muted); letter-spacing: .4px; font-variant-numeric: tabular-nums; }
 .q-axis-title { letter-spacing: 1.2px; opacity: .8; }
 
 @media (prefers-color-scheme: dark) {
@@ -476,6 +499,36 @@ select, input, button {
   .q-pip { fill-opacity: 1; }
   .q-hud { opacity: .7; }
 }
+
+/* ---------- 均線頁：穿越矩陣與四線標記 ---------- */
+.matrix-box { padding: 10px 12px 12px; }
+
+.matrix {
+  display: grid;
+  grid-template-columns: 3.4rem repeat(5, 1fr);
+  gap: 4px;
+}
+
+.matrix .head,
+.matrix .rowlab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.matrix .rowlab { justify-content: flex-start; }
+
+.matrix .cell {
+  width: 100%;
+  padding: 8px 2px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ident .ma-chips { display: block; font-size: 11px; line-height: 1.4; }
+.ma-chip { margin-right: 6px; font-variant-numeric: tabular-nums; }
 
 /* ---------- 圖表與統計 ---------- */
 .stat-grid {

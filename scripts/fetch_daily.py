@@ -1,5 +1,7 @@
 """抓取當日上市與上櫃收盤行情，計算成交值排行並寫入 docs/data/daily/。
 
+同時把全市場的收盤價寫進 docs/data/close/，均線分頁要靠它。
+
 「全部」的排行不在這裡產生，而是由 build_history.py 合併兩個市場算出來，
 因為合併後的名次與連續進榜天數都得回頭看歷史才算得準。
 
@@ -35,6 +37,8 @@ def main() -> int:
 
         payload = twse.build_payload(date_iso, source, records)
         path = twse.write_daily(payload, scope)
+        # 均線要全市場的收盤價，daily 只留前 300 名，所以另外存一份
+        twse.write_closes(date_iso, scope, records)
         ok += 1
 
         print(f"{label} {date_iso}：{payload['marketCount']} 檔有成交，"

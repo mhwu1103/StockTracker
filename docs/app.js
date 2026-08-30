@@ -2,6 +2,7 @@
 
 const DATA = 'data';
 const TOP = 200;                       // 排行榜與進出榜的門檻
+const KEPT = 300;                      // daily/*.json 每天留幾名（twse.py 的 TOP_N）
 const CHART_CDN = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';
 
 // 圖表線色。Chart.js 吃不到 CSS 變數，只能寫死；深淺色模式都看得清楚的中間色調。
@@ -46,6 +47,15 @@ const state = {
   floor: 0,            // 排行榜成交值門檻（億）
   watch: new Set(),    // 自選股代號
   streakDays: 3,       // 「站穩」分頁要看的連續進榜天數
+  burstLots: 20000,    // 「爆量」分頁的成交量門檻（張）
+  burstHigh: 60,       // 「爆量」分頁要求量創幾日新高
+  burstRed: 'red',     // 「爆量」分頁要不要只看收紅：red 只看收紅／any 不限漲跌
+  maWindow: 5,         // 「均線」分頁看哪一條線：5／10／20／60 日
+  maDays: 3,           // 「均線」分頁的「近 N 個交易日內穿越」
+  maSide: 'up',        // 「均線」分頁：up 剛站上／down 剛跌破
+  maStack: 'any',      // 「均線」分頁的四線篩選：any 不限／up 四線全上／down 四線全下
+  macdSide: 'up',      // 「MACD」分頁：up 黃金交叉／down 死亡交叉
+  macdWhen: '3',       // 「MACD」分頁的時點：近 N 日已交叉，或 d1 明天／d2 後天
   daily: new Map(),    // date -> Promise<payload>
   history: new Map(),  // year -> Promise<payload>
   charts: [],
@@ -594,6 +604,510 @@ async function renderMoves(view) {
   const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(baseDate)]);
   view.innerHTML = `<div class="controls">${pills('baseline', BASELINES, state.baseline)}</div>
     ${diffSections(today, base, baseDate, state.date)}`;
+}
+
+// --------------------------------------------------------------------------
+// 分頁：爆量（量放大、量創新高、而且收紅的股票）
+//
+// 三個條件是「同時成立」：成交量夠大（絕對量）、量創 N 日新高（相對自己的過去）、
+// 收盤價高於開盤價（當天這根 K 是紅的）。前兩個講的是量，第三個講的是那些量
+// 有沒有把價格推上去——只看量會把爆量下殺的出貨也算進來。
+// --------------------------------------------------------------------------
+const BURST_LOTS = [
+  { value: 5000, label: '5 千張' },
+  { value: 10000, label: '1 萬張' },
+  { value: 20000, label: '2 萬張' },
+  { value: 50000, label: '5 萬張' },
+];
+
+const BURST_HIGHS = [
+  { value: 20, label: '20 日新高' },
+  { value: 60, label: '60 日新高' },
+  { value: 120, label: '120 日新高' },
+];
+
+const BURST_REDS = [
+  { value: 'red', label: '只看收紅' },
+  { value: 'any', label: '不限漲跌' },
+];
+
+// build_history.py 的 VOL_HIGH_MAX：再往前算對「爆量」已經沒有分辨力
+const VOL_HIGH_MAX = 250;
+
+/** 成交量新高天數。build_history.py 省略了 1（連昨天都沒超過），讀不到就是 1。 */
+const volHigh = (stock) => stock.vh || 1;
+
+const volHighLabel = (n) => `創 ${n >= VOL_HIGH_MAX ? `${VOL_HIGH_MAX}+` : n} 日新高`;
+
+/** 成交量從股數換成張，取整數——零股湊出來的個位數在這裡沒有意義 */
+const lots = (volume) => Math.round(volume / 1000);
+
+function burstRow(stock, base) {
+  const pct = stock.changePct;
+  const pctText = pct === null || pct === undefined ? '' : `<em class="${trend(pct)}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</em>`;
+  const price = stock.open === null || stock.open === undefined
+    ? `${stock.close === null ? '' : num(stock.close, 2)} ${pctText}`
+    : `開 ${num(stock.open, 2)} → 收 ${num(stock.close, 2)} ${pctText}`;
+  return `<a class="row" href="#/stock/${stock.code}">
+    <div class="rank"><span class="no">${stock.rank}</span>${deltaBadge(stock.rank, base ? base.rank : null)}</div>
+    <div class="ident"><span class="name">${state.watch.has(stock.code) ? '<span class="star">★</span>' : ''}${esc(stock.name)}</span>
+      <span class="code">${stock.code}${stock.m ? ` · ${esc(MARKET_TAGS[stock.m])}` : ''}${hasIndustry() ? ` · ${esc(industryOf(stock.code))}` : ''}</span>
+      <span class="streak">${volHighLabel(volHigh(stock))}</span></div>
+    <div class="figures"><span class="value">${num(lots(stock.volume), 0)} 張</span>
+      <span class="price">${price}</span></div>
+  </a>`;
+}
+
+async function renderBurst(view) {
+  const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(dateBack(1))]);
+  const baseMap = rankMap(base);
+  const minLots = state.burstLots;
+  const minHigh = state.burstHigh;
+
+  // 開盤價是後來才加的欄位，加欄位之前抓的日子沒有——那些日子分不出紅黑，
+  // 收紅這個選項就不該出現在畫面上，免得看起來有篩其實沒篩。
+  const hasOpen = today.stocks.some((s) => s.open !== null && s.open !== undefined);
+  const onlyRed = hasOpen && state.burstRed === 'red';
+  const isRed = (s) => s.open !== null && s.open !== undefined && s.close !== null && s.close > s.open;
+
+  const big = today.stocks.filter((s) => lots(s.volume) > minLots);
+  const fresh = big.filter((s) => volHigh(s) >= minHigh);
+  const red = hasOpen ? fresh.filter(isRed) : [];
+  const hits = (onlyRed ? red : fresh).slice().sort((a, b) => b.volume - a.volume);
+
+  const conditions = `成交量 > ${num(minLots, 0)} 張 · 量創 ${minHigh} 日新高${onlyRed ? ' · 收盤價 > 開盤價' : ''}`;
+
+  view.innerHTML = `
+    <div class="controls">${pills('burstlots', BURST_LOTS, minLots)}${pills('bursthigh', BURST_HIGHS, minHigh)}
+      ${hasOpen ? pills('burstred', BURST_REDS, state.burstRed) : ''}</div>
+    ${hasOpen ? '' : `<p class="hint">${state.date} 的資料沒有開盤價（這個欄位是後來才加的），
+      分不出收紅收黑，所以這一天只能篩「量夠大」與「量創新高」兩個條件。
+      要補齊請執行 <code>python scripts/backfill.py --from ${state.date} --to ${state.date} --force</code>，
+      再跑一次 <code>python scripts/build_history.py</code>。</p>`}
+    <div class="card"><div class="stat-grid">
+      <div class="stat"><b class="up">${hits.length}</b><span>符合條件</span></div>
+      <div class="stat"><b>${big.length}</b><span>量 &gt; ${num(minLots, 0)} 張</span></div>
+      <div class="stat"><b>${fresh.length}</b><span>其中創 ${minHigh} 日新高</span></div>
+      <div class="stat"><b class="${onlyRed ? 'up' : ''}">${hasOpen ? red.length : '—'}</b>
+        <span>其中收紅${hasOpen && !onlyRed ? '（未篩）' : ''}</span></div>
+    </div></div>
+    ${listCard(`${state.date} ${onlyRed ? '爆量收紅' : '爆量'}`, `${conditions}　依成交量排序`,
+      hits.map((s) => burstRow(s, baseMap.get(s.code))),
+      `${state.date} 沒有符合這${onlyRed ? '三' : '兩'}個條件的股票，把門檻放寬看看`)}
+    <section class="card">
+      <h2>這些條件在看什麼</h2>
+      <p class="note">「量 &gt; ${num(minLots, 0)} 張」是絕對量的門檻，濾掉小型股平常的碎量；
+        「創 ${minHigh} 日新高」是拿它跟自己的過去比，同一檔股票天天都有量不算，要比前 ${minHigh} 個交易日都大才算。
+        這兩個講的都是量。</p>
+      <p class="note">「收盤價 &gt; 開盤價」則是另一件事：要求這些量有把價格推上去。
+        量價四象限那張圖裡的右下角（爆量下殺）量也很大，但那是出貨不是進場。
+        ${onlyRed
+          ? `現在是<b>只看收紅</b>，這 ${fresh.length - red.length} 檔收黑的爆量股沒有列出來——
+             切到「不限漲跌」就看得到，量一樣大、方向相反。`
+          : `現在是<b>不限漲跌</b>，收紅與收黑的爆量股都在名單上${hasOpen ? `（其中 ${red.length} 檔收紅）` : ''}。
+             切到「只看收紅」可以把爆量下殺的那一群濾掉。`}</p>
+      <p class="note">⚠ 量的歷史只看得到「當天成交值前 ${KEPT} 名」的資料，沒進榜的日子一律當成量比今天小。
+        對突然爆量的股票這個假設是對的（它先前連成交值前 ${KEPT} 名都排不上），
+        但低價高量股平常就算量大也排不進成交值前 ${KEPT} 名，新高天數會被高估。
+        新高天數最多算到 ${VOL_HIGH_MAX} 天，顯示成 ${VOL_HIGH_MAX}+ 的實際可能更長。</p>
+      <p class="note">名次與 NEW／▲▼ 是成交值在${esc(scopeLabel())}裡的排名與對比前一交易日的變化，
+        跟這些條件無關，只是拿來對照這檔在榜上的位置。這是條件篩選的結果，不是買賣訊號。</p>
+    </section>`;
+}
+// --------------------------------------------------------------------------
+// 分頁：均線（剛站上／剛跌破 5／10／20／60 日線）
+// --------------------------------------------------------------------------
+// daily 檔裡 ma／mav 兩個陣列的順序，與 build_history.py 的 MA_WINDOWS 一致
+const MA_WINDOWS = [5, 10, 20, 60];
+const MA_STREAK_MAX = 60;              // build_history.py 的同名常數：天數最多算到這裡
+// 「近 N 個交易日內剛穿越」；0 是特例，代表不看天數、現在在那一側就算
+const MA_LOOKBACKS = [1, 3, 5, 10, 0];
+
+const MA_SIDES = [
+  { value: 'up', label: '剛站上' },
+  { value: 'down', label: '剛跌破' },
+];
+
+// 四條線的位置：不限／四條都收在線上／四條都收在線下
+const MA_STACKS = [
+  { value: 'any', label: '不限' },
+  { value: 'up', label: '四線全上' },
+  { value: 'down', label: '四線全下' },
+];
+
+function maAt(stock, key, win) {
+  const arr = stock[key];
+  const i = MA_WINDOWS.indexOf(win);
+  if (!arr || i < 0 || arr[i] === undefined || arr[i] === null) return null;
+  return arr[i];
+}
+
+/** 已連續站上（正）或跌破（負）幾個交易日；null 代表收盤價不連續、算不出來 */
+const maRun = (stock, win) => maAt(stock, 'ma', win);
+const maPrice = (stock, win) => maAt(stock, 'mav', win);
+
+/**
+ * 收在這條線之上（true）／之下（false）；null 代表這條線算不出來。
+ *
+ * 位置只要有均線價就判斷得出來，比「連續幾天」寬鬆——天數在資料剛好夠算均線、
+ * 卻不夠往回數的日子會是 null，位置那時候仍然是確定的。
+ */
+function maAbove(stock, win) {
+  const line = maPrice(stock, win);
+  if (line === null || stock.close === null || stock.close === undefined) return null;
+  return stock.close > line;
+}
+
+/** 四條線是不是全都收在同一側（dir：up 全上／down 全下）；有一條算不出來就不算 */
+const maStacked = (stock, dir) => MA_WINDOWS.every((w) => maAbove(stock, w) === (dir === 'up'));
+
+/** 這一檔是不是在近 days 個交易日內剛穿越；days 為 0 代表不限天數，只看現在在哪一側 */
+function maHit(stock, win, side, days) {
+  if (!days) {
+    const above = maAbove(stock, win);
+    return above === null ? false : above === (side === 'up');
+  }
+  const run = maRun(stock, win);
+  if (run === null) return false;
+  return side === 'up' ? run >= 1 && run <= days : run <= -1 && run >= -days;
+}
+
+// 線別已經寫在卡片標題與右側，這裡只講「第幾天」，長度才塞得進一行
+function maRunLabel(run) {
+  if (run === null) return '資料不足';
+  const days = Math.abs(run);
+  const verb = run > 0 ? '站上' : '跌破';
+  if (days === 1) return `今天剛${verb}`;
+  return `${verb}第 ${days >= MA_STREAK_MAX ? `${MA_STREAK_MAX}+` : days} 天`;
+}
+
+/** 四條線的一覽：▲ 收在線上、▼ 收在線下、· 資料不足 */
+const maChips = (stock) =>
+  MA_WINDOWS.map((w) => {
+    const above = maAbove(stock, w);
+    const mark = above === null ? '·' : above ? '▲' : '▼';
+    return `<span class="ma-chip ${above === null ? 'flat' : above ? 'up' : 'down'}">${w}${mark}</span>`;
+  }).join('');
+
+function maRow(stock, base, win) {
+  const pct = stock.changePct;
+  const pctText = pct === null || pct === undefined ? '' : `<em class="${trend(pct)}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</em>`;
+  const line = maPrice(stock, win);
+  const bias = line ? (stock.close / line - 1) * 100 : null;
+  return `<a class="row" href="#/stock/${stock.code}">
+    <div class="rank"><span class="no">${stock.rank}</span>${deltaBadge(stock.rank, base ? base.rank : null)}</div>
+    <div class="ident"><span class="name">${state.watch.has(stock.code) ? '<span class="star">★</span>' : ''}${esc(stock.name)}</span>
+      <span class="code">${stock.code}${stock.m ? ` · ${esc(MARKET_TAGS[stock.m])}` : ''}${hasIndustry() ? ` · ${esc(industryOf(stock.code))}` : ''}</span>
+      <span class="streak">${maRunLabel(maRun(stock, win))}</span>
+      <span class="ma-chips">${maChips(stock)}</span></div>
+    <div class="figures"><span class="value">${num(stock.close, 2)} ${pctText}</span>
+      <span class="price">${win} 日線 ${num(line, 2)}${bias === null ? '' : ` · 乖離 <em class="${trend(bias)}">${signed(bias)}</em>`}</span></div>
+  </a>`;
+}
+
+/**
+ * 四條線 ×「近 1／3／5／10 日」的檔數矩陣，每一格都是可以按的選擇鈕。
+ * 一眼看得出「今天是誰在穿越」——某一格特別多，那條線就是今天的分水嶺。
+ */
+function maMatrix(pool, side) {
+  const verb = side === 'up' ? '站上' : '跌破';
+  const head = MA_LOOKBACKS.map((d) => `<div class="head">${maSpanLabel(d)}</div>`).join('');
+  const body = MA_WINDOWS.map((w) => {
+    const cells = MA_LOOKBACKS.map((d) => {
+      const on = w === state.maWindow && d === state.maDays;
+      const count = pool.filter((s) => maHit(s, w, side, d)).length;
+      return `<button class="pill cell ${on ? 'active' : ''}" data-maline="${w}" data-madays="${d}"
+        aria-label="${maSpanLabel(d)}${verb} ${w} 日線">${count}</button>`;
+    }).join('');
+    return `<div class="rowlab">${w} 日線</div>${cells}`;
+  }).join('');
+  return `<div class="matrix"><div class="rowlab"></div>${head}${body}</div>`;
+}
+
+/** 矩陣欄名：0 是「不限天數、現在就在那一側」 */
+const maSpanLabel = (days) => (days ? `近 ${days} 日` : '不限');
+
+/** 同一件事寫成句子時的說法：「近 3 日站上」／「目前站上」 */
+const maSpanText = (days) => (days ? `近 ${days} 日` : '目前');
+
+async function renderMa(view) {
+  const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(dateBack(1))]);
+  const baseMap = rankMap(base);
+  const win = state.maWindow;
+  const days = state.maDays;
+  const side = state.maSide;
+  const stack = state.maStack;
+  const verb = side === 'up' ? '站上' : '跌破';
+  const span = maSpanText(days);
+
+  const board = today.stocks.filter((s) => s.rank <= TOP);
+  const above = board.filter((s) => maAbove(s, win) === true).length;
+  const below = board.filter((s) => maAbove(s, win) === false).length;
+  const unknown = board.length - above - below;
+  const allUp = board.filter((s) => maStacked(s, 'up')).length;
+
+  // 這一天完全沒有均線資料：多半是收盤價還沒回補到這麼早，講清楚怎麼補
+  if (above + below === 0) {
+    view.innerHTML = `<p class="hint">${state.date} 沒有均線資料。</p>
+      <section class="card"><h2>要怎麼補</h2>
+        <p class="note">均線要連續的收盤價才算得準，用的是 <code>docs/data/close/</code> 底下的全市場收盤價
+          （排行用的 <code>daily/</code> 只留前 ${KEPT} 名，中間掉出榜的日子是空的，湊不出連續的價）。
+          這份檔案是後來才加的，先前回補過的日子只有排行、沒有收盤價。</p>
+        <p class="note">補這一天要連同它之前的 ${Math.max(...MA_WINDOWS) + Math.max(...MA_LOOKBACKS)} 個交易日一起補，
+          60 日線才算得出來：<code>python scripts/backfill.py --to ${state.date} --days 170</code>，
+          再跑一次 <code>python scripts/build_history.py</code>。</p>
+      </section>`;
+    return;
+  }
+
+  // 四線篩選先套在池子上，矩陣的每一格與下面的清單都只算這個池子裡的
+  const pool = stack === 'any' ? board : board.filter((s) => maStacked(s, stack));
+  const stackText = stack === 'any' ? '' : `　${stack === 'up' ? '四線全上' : '四線全下'}`;
+  const hits = pool
+    .filter((s) => maHit(s, win, side, days))
+    .sort((a, b) => Math.abs(maRun(a, win) || MA_STREAK_MAX + 1) - Math.abs(maRun(b, win) || MA_STREAK_MAX + 1)
+      || a.rank - b.rank);
+
+  view.innerHTML = `
+    <div class="controls">${pills('maside', MA_SIDES, side)}${pills('mastack', MA_STACKS, stack)}</div>
+    <section class="card">
+      <h2>${side === 'up' ? '剛站上' : '剛跌破'}${stackText}
+        <small>幾檔在近 N 個交易日內穿越，按數字換清單</small></h2>
+      <div class="matrix-box">${maMatrix(pool, side)}</div>
+    </section>
+    <div class="card"><div class="stat-grid">
+      <div class="stat"><b class="${side === 'up' ? 'up' : 'down'}">${hits.length}</b>
+        <span>${span}${verb} ${win} 日線</span></div>
+      <div class="stat"><b class="up">${above}</b><span>收在 ${win} 日線上</span></div>
+      <div class="stat"><b class="down">${below}</b><span>收在 ${win} 日線下</span></div>
+      <div class="stat"><b class="up">${allUp}</b><span>四線全上</span></div>
+      <div class="stat"><b>${unknown}</b><span>${win} 日線資料不足</span></div>
+    </div></div>
+    ${listCard(`${state.date} ${span}${verb} ${win} 日線${stackText}`,
+      `榜上前 ${TOP} 名　${days ? '穿越越新的排越前面' : '天數短的排前面'}`,
+      hits.map((s) => maRow(s, baseMap.get(s.code), win)),
+      `${state.date} 榜上沒有${stackText ? `${stackText.trim()}、而且` : ''}${span}${verb} ${win} 日線的股票，把天數或線別換一個看看`)}
+    <section class="card">
+      <h2>這一頁在看什麼</h2>
+      <p class="note">均線是收盤價的算術平均：${win} 日線就是含今天在內最近 ${win} 個交易日的收盤均價。
+        「站上」是收盤價高於均線，「跌破」是收盤價不高於均線（剛好相等算在跌破那一側）。
+        「近 N 日」數的是連續站上／跌破的天數：1 是今天剛穿越，3 是今天為穿越後的第 3 天——
+        中間只要收回線的另一側，天數就重新起算。最後一欄的「不限」不看天數，是現在就收在那一側的全部。</p>
+      <p class="note">每一列的 ${MA_WINDOWS.join('／')} 標記是這四條線各自的位置（▲ 收在線上、▼ 收在線下、· 資料不足），
+        上面那排「四線全上／全下」就是拿這四個標記在篩：四個都 ▲ 代表短中長期的均線全在腳下，今天有 ${allUp} 檔。
+        四條線裡只要有一條算不出來就不算數。乖離是收盤價離這條均線幾 %。</p>
+      <p class="note">均線要連續的收盤價才算得準，所以這一頁吃的是 <code>docs/data/close/</code> 的全市場收盤價，
+        不是排行的前 ${KEPT} 名。中間停牌、剛上市、或收盤價還沒回補到那麼早的，一律標成「資料不足」而不硬算——
+        今天榜上的 ${win} 日線有 ${unknown} 檔是這種情況。</p>
+      <p class="note">⚠ 收盤價沒有還原權值。除權息當天價格會跳空往下、均線卻還帶著除息前的價位，
+        那一天的「跌破」可能只是除息造成的。</p>
+      <p class="note">名次與 NEW／▲▼ 是成交值在${esc(scopeLabel())}裡的排名與對比前一交易日的變化，跟均線無關。
+        這是條件篩選的結果，不是買賣訊號。</p>
+    </section>`;
+}
+
+// --------------------------------------------------------------------------
+// 分頁：MACD（黃金交叉／死亡交叉，以及明後天要收在多少才會交叉）
+// --------------------------------------------------------------------------
+// 平滑係數，與 build_history.py 的 MACD_FAST／MACD_SLOW／MACD_SIGNAL 一致
+const MACD_A_FAST = 2 / (12 + 1);
+const MACD_A_SLOW = 2 / (26 + 1);
+const MACD_A_SIGNAL = 2 / (9 + 1);
+
+// 台股單日漲跌幅上限。明天再怎麼走也只能走這麼多，要價超過這個幅度才交叉的就不必列
+const PRICE_LIMIT = 10;
+
+const MACD_SIDES = [
+  { value: 'up', label: '黃金交叉' },
+  { value: 'down', label: '死亡交叉' },
+];
+
+// 時點：數字是「已經交叉，且在近 N 個交易日內」，d1／d2 是還沒交叉的明天與後天
+const MACD_WHENS = [
+  { value: '1', label: '近 1 日' },
+  { value: '3', label: '近 3 日' },
+  { value: '5', label: '近 5 日' },
+  { value: '10', label: '近 10 日' },
+  { value: 'd1', label: '明天' },
+  { value: 'd2', label: '後天' },
+];
+
+/** 柱狀值不是百分比，signed() 會多一個 % —— 這裡自己帶正負號 */
+const macdNum = (v) => `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
+
+function macdOf(stock) {
+  const m = stock.macd;
+  if (!m) return null;
+  return { fast: m[0], slow: m[1], dea: m[2], run: m[3] === undefined ? null : m[3] };
+}
+
+const macdDif = (m) => m.fast - m.slow;
+const macdHist = (m) => macdDif(m) - m.dea;
+/** 柱在零軸上＝DIF 在 DEA 之上；等於零算在下面那一側，與均線的處理一致 */
+const macdAbove = (m) => macdHist(m) > 0;
+
+/** 把 MACD 往後推一天，假設那天收在 price */
+function macdAdvance(m, price) {
+  const fast = m.fast + MACD_A_FAST * (price - m.fast);
+  const slow = m.slow + MACD_A_SLOW * (price - m.slow);
+  return { fast, slow, dea: m.dea + MACD_A_SIGNAL * (fast - slow - m.dea) };
+}
+
+/**
+ * 下一個交易日收在多少，DIF 會剛好等於 DEA——也就是交叉的臨界價。
+ *
+ * 這不是預測，是解一條一元一次方程式：三條 EMA 都是「舊值 × 常數 ＋ 新收盤價 × 常數」，
+ * 所以 DIF − DEA 對明天的收盤價是線性的，臨界價直接寫得出來。
+ */
+function macdCrossPrice(m) {
+  const carried = (1 - MACD_A_FAST) * m.fast - (1 - MACD_A_SLOW) * m.slow;
+  return (m.dea - carried) / (MACD_A_FAST - MACD_A_SLOW);
+}
+
+/**
+ * 還沒交叉的股票，第 step 個交易日（1 明天、2 後天）要收在多少才會交叉。
+ * 後天那一版把明天當成平盤，不然兩個未知數解不出一個答案。
+ * 回傳 null 代表：沒有 MACD、今天已經在那一側了，或要價超過漲跌停。
+ */
+function macdOutlook(stock, side, step) {
+  const m = macdOf(stock);
+  if (!m || stock.close === null || stock.close === undefined) return null;
+  const want = side === 'up';
+  if (macdAbove(m) === want) return null;              // 今天就已經在那一側
+
+  let cur = m;
+  if (step === 2) {
+    cur = macdAdvance(m, stock.close);
+    if (macdAbove(cur) === want) return null;          // 明天平盤就會交叉，那是「明天」的事
+  }
+  const target = macdCrossPrice(cur);
+  const need = (target / stock.close - 1) * 100;
+  if (want ? need > PRICE_LIMIT : need < -PRICE_LIMIT) return null;
+  return { target, need };
+}
+
+/** 已經交叉，而且是在近 days 個交易日內 */
+function macdCrossed(stock, side, days) {
+  const m = macdOf(stock);
+  if (!m || m.run === null) return false;
+  return side === 'up' ? m.run >= 1 && m.run <= days : m.run <= -1 && m.run >= -days;
+}
+
+/** 某個時點的選股結果，清單與 pill 上的檔數都用它 */
+function macdPick(pool, side, when) {
+  if (when === 'd1' || when === 'd2') {
+    const step = when === 'd1' ? 1 : 2;
+    return pool
+      .map((s) => ({ stock: s, outlook: macdOutlook(s, side, step) }))
+      .filter((x) => x.outlook)
+      // 要走的幅度越小越前面：黃金交叉是越小越容易，死亡交叉則是越接近 0 越容易
+      .sort((a, b) => (side === 'up' ? a.outlook.need - b.outlook.need : b.outlook.need - a.outlook.need))
+      .map((x) => ({ ...x.stock, outlook: x.outlook }));
+  }
+  const days = Number(when);
+  return pool
+    .filter((s) => macdCrossed(s, side, days))
+    .sort((a, b) => Math.abs(macdOf(a).run) - Math.abs(macdOf(b).run) || a.rank - b.rank);
+}
+
+function macdStateLabel(stock, side) {
+  const m = macdOf(stock);
+  if (!m) return '資料不足';
+  if (stock.outlook) return `尚未交叉 · 柱 ${macdNum(macdHist(m))}`;
+  if (m.run === null) return `柱 ${macdNum(macdHist(m))} · 天數不足`;
+  const days = Math.abs(m.run);
+  const name = m.run > 0 ? '黃金交叉' : '死亡交叉';
+  if (days === 1) return `今天剛${name}`;
+  return `${name}第 ${days >= MA_STREAK_MAX ? `${MA_STREAK_MAX}+` : days} 天`;
+}
+
+function macdRow(stock, base, side, when) {
+  const m = macdOf(stock);
+  const pct = stock.changePct;
+  const pctText = pct === null || pct === undefined ? '' : `<em class="${trend(pct)}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</em>`;
+  const detail = stock.outlook
+    ? `${when === 'd1' ? '明天' : '後天'}收${side === 'up' ? ' ≥ ' : ' ≤ '}${num(stock.outlook.target, 2)}
+       · <em class="${trend(stock.outlook.need)}">${signed(stock.outlook.need)}</em>`
+    : `DIF ${num(macdDif(m), 2)} · DEA ${num(m.dea, 2)}`;
+  return `<a class="row" href="#/stock/${stock.code}">
+    <div class="rank"><span class="no">${stock.rank}</span>${deltaBadge(stock.rank, base ? base.rank : null)}</div>
+    <div class="ident"><span class="name">${state.watch.has(stock.code) ? '<span class="star">★</span>' : ''}${esc(stock.name)}</span>
+      <span class="code">${stock.code}${stock.m ? ` · ${esc(MARKET_TAGS[stock.m])}` : ''}${hasIndustry() ? ` · ${esc(industryOf(stock.code))}` : ''}</span>
+      <span class="streak">${macdStateLabel(stock, side)}</span>
+      <span class="ma-chips">${maChips(stock)}</span></div>
+    <div class="figures"><span class="value">${num(stock.close, 2)} ${pctText}</span>
+      <span class="price">${detail}</span></div>
+  </a>`;
+}
+
+async function renderMacd(view) {
+  const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(dateBack(1))]);
+  const baseMap = rankMap(base);
+  const side = state.macdSide;
+  const when = state.macdWhen;
+  const name = side === 'up' ? '黃金交叉' : '死亡交叉';
+
+  const board = today.stocks.filter((s) => s.rank <= TOP);
+  const withMacd = board.filter((s) => macdOf(s));
+  const above = withMacd.filter((s) => macdAbove(macdOf(s))).length;
+
+  if (!withMacd.length) {
+    view.innerHTML = `<p class="hint">${state.date} 沒有 MACD 資料。</p>
+      <section class="card"><h2>要怎麼補</h2>
+        <p class="note">MACD 是三條 EMA 疊出來的，EMA 沒有真正的起點，得從連續的收盤價一路遞推。
+          連續資料少於 60 個交易日就不出數字，寧可空著也不給一個還帶著起點味道的值。</p>
+        <p class="note">補收盤價：<code>python scripts/backfill.py --to ${state.date} --days 170</code>，
+          再跑一次 <code>python scripts/build_history.py</code>。要看更早的日期就把天數再加大。</p>
+      </section>`;
+    return;
+  }
+
+  const whens = MACD_WHENS.map((w) => ({
+    ...w,
+    label: `${w.label} ${macdPick(withMacd, side, w.value).length}`,
+  }));
+  const hits = macdPick(withMacd, side, when);
+  const forecast = when === 'd1' || when === 'd2';
+  const title = forecast
+    ? `${when === 'd1' ? '明天' : '後天'}可能${name}`
+    : `近 ${when} 日${name}`;
+
+  view.innerHTML = `
+    <div class="controls">${pills('macdside', MACD_SIDES, side)}</div>
+    <div class="controls">${pills('macdwhen', whens, when)}</div>
+    <div class="card"><div class="stat-grid">
+      <div class="stat"><b class="${side === 'up' ? 'up' : 'down'}">${hits.length}</b><span>${title}</span></div>
+      <div class="stat"><b class="up">${above}</b><span>柱在零軸上</span></div>
+      <div class="stat"><b class="down">${withMacd.length - above}</b><span>柱在零軸下</span></div>
+      <div class="stat"><b>${board.length - withMacd.length}</b><span>資料不足</span></div>
+    </div></div>
+    ${listCard(`${state.date} ${title}`,
+      forecast
+        ? `榜上前 ${TOP} 名　${when === 'd2' ? '明天以平盤計　' : ''}要走的幅度小的排前面`
+        : `榜上前 ${TOP} 名　交叉越新的排越前面`,
+      hits.map((s) => macdRow(s, baseMap.get(s.code), side, when)),
+      forecast
+        ? `${state.date} 榜上沒有一檔在漲跌停範圍內${when === 'd1' ? '明天' : '後天'}就會${name}的`
+        : `${state.date} 榜上沒有近 ${when} 日${name}的股票，把天數放寬看看`)}
+    <section class="card">
+      <h2>這一頁在看什麼</h2>
+      <p class="note">DIF 是 12 日與 26 日 EMA 的差，DEA 是 DIF 的 9 日 EMA，柱狀圖是 DIF − DEA。
+        柱由負轉正就是黃金交叉、由正轉負就是死亡交叉；柱剛好為 0 算在死亡交叉那一側。
+        「近 N 日」與均線頁同一套算法：1 是今天剛交叉，3 是交叉後的第 3 天。</p>
+      <p class="note"><b>「明天」「後天」不是預測，是解方程式。</b>三條 EMA 都是「舊值 × 常數 ＋ 新收盤價 × 常數」，
+        所以「明天的柱要等於 0」是一條一元一次方程式，臨界價直接算得出來——清單上的
+        「明天收 ≥ 某價」就是那個解，右邊的百分比是它離今天收盤價多遠。
+        負的代表<b>連平盤或下跌都會交叉</b>，那是最接近成真的一群。</p>
+      <p class="note">後天那一版多了一個假設：<b>明天以平盤計</b>。兩天有兩個未知數，不假設一個就解不出來。
+        兩邊都只列漲跌停 ±${PRICE_LIMIT}% 走得到的，走不到的當作明天不可能發生。
+        ETF 與部分商品沒有 ${PRICE_LIMIT}% 的限制，這個門檻對它們是保守了一點。</p>
+      <p class="note">MACD 是三條 EMA 疊出來的，EMA 沒有真正的起點，要連續的收盤價跑夠久才穩，
+        所以連續資料少於 60 個交易日的不出數字——今天榜上有 ${board.length - withMacd.length} 檔是這種情況。
+        ⚠ 收盤價沒有還原權值，除權息當天的跳空會直接反映在 EMA 上。</p>
+      <p class="note">每一列的 ${MA_WINDOWS.join('／')} 標記是四條均線的位置，拿來對照用（▲ 收在線上、▼ 收在線下）。
+        名次與 NEW／▲▼ 是成交值在${esc(scopeLabel())}裡的排名與對比前一交易日的變化。
+        這是條件篩選與算術的結果，不是買賣訊號。</p>
+    </section>`;
 }
 
 // --------------------------------------------------------------------------
@@ -1212,27 +1726,36 @@ function fitName(width, height, em, showNum) {
 }
 
 /**
- * 盯著地圖的大小，尺寸一變就照新的長寬重排。
+ * 盯著兩張圖的盒子，尺寸一變就照新的長寬重畫。
  *
- * 排版與字級都跟盒子的長寬有關，所以不能只在第一次畫的時候算：手機轉向、視窗拉寬、
- * 側邊欄收合都會換一個長寬比，得整張重排。用 ResizeObserver 而不是 window 的 resize，
- * 因為盒子變大變小不一定是視窗造成的，而且 observe() 一掛上就會先送一次。
+ * 地圖的排版、四象限的字級與泡泡都是拿盒子的真實長寬算出來的，所以不能只在
+ * 第一次畫的時候算：手機轉向、視窗拉寬、側邊欄收合都會換一個長寬比，得整張重畫。
+ * 用 ResizeObserver 而不是 window 的 resize，因為盒子變大變小不一定是視窗造成的，
+ * 而且 observe() 一掛上就會先送一次。
  */
-let tileObserver = null;
+let chartObserver = null;
 
-function watchTreemap(view, groups) {
-  if (tileObserver) tileObserver.disconnect();     // 上一次 render 的觀察對象已經不在了
-  const box = $('.treemap', view);
-  if (!box) return;
+function watchFlowCharts(view, groups) {
+  if (chartObserver) chartObserver.disconnect();     // 上一次 render 的觀察對象已經不在了
+  const charts = [
+    [$('.treemap', view), (box, w, h) => paintTreemap(box, groups, w, h)],
+    [$('.quad-box', view), (box, w, h) => {
+      const svg = quadrant(groups, w, h);
+      // 畫不出來時只剩一行提示，這時候別讓盒子還撐著半個螢幕高的空白
+      box.classList.toggle('empty', svg[0] !== '<' || svg[1] !== 's');
+      box.innerHTML = svg;
+    }],
+  ].filter(([box]) => box);
+  if (!charts.length) return;
 
-  let last = '';
-  const paint = () => {
+  const last = new Map();
+  const paint = () => charts.forEach(([box, draw]) => {
     const { width, height } = box.getBoundingClientRect();
     const size = `${Math.round(width)}x${Math.round(height)}`;
-    if (!width || !height || size === last) return;   // 沒變就不重排，也擋掉自己觸發自己
-    last = size;
-    paintTreemap(box, groups, width, height);
-  };
+    if (!width || !height || size === last.get(box)) return;   // 沒變就不重畫，也擋掉自己觸發自己
+    last.set(box, size);
+    draw(box, width, height);
+  });
 
   // 尺寸有時候會分兩步到位（媒體查詢換了長寬比、手機轉向的中間狀態），
   // 只認第一次量到的就會定在中間那個尺寸上。下一幀再確認一次，沒變就是空操作。
@@ -1245,14 +1768,44 @@ function watchTreemap(view, groups) {
   // 但 getBoundingClientRect() 照樣算得出來，切回來時才不會是一片空白。
   settle();
   if (!window.ResizeObserver) return;
-  tileObserver = new ResizeObserver(settle);
-  tileObserver.observe(box);
+  chartObserver = new ResizeObserver(settle);
+  charts.forEach(([box]) => chartObserver.observe(box));
 }
 
-// 四象限圖的畫布。viewBox 的單位刻意接近手機的實際像素，
-// 這樣字級寫 10 在手機上就是 10px，放到寬螢幕才等比放大。
-const Q = { w: 360, h: 300, l: 30, r: 14, t: 14, b: 30, name: 10 };  // name 是 .q-name 的字級
+/*
+ * 四象限的畫布就是盒子的真實像素，1 單位＝1px：字級寫 11 畫出來就是 11px。
+ *
+ * 原本是固定 360×300 的 viewBox 交給 CSS 等比拉大，桌機上字、泡泡、瞄準框
+ * 會一起脹成 1.7 倍，所以只好限寬 620px 擺在正中間，右邊一整片螢幕空著。
+ * 改成 1:1 之後，多出來的寬度全變成散開的空間：泡泡不再擠成一坨，
+ * 標得出名字的族群也跟著變多——那正是這張圖最想給的東西。
+ */
+const QUAD_BASE = { w: 360, h: 300 };   // 手機的基準畫布，字級與泡泡都以它當 1 倍
 const NAMED_ALWAYS = 6;   // 前幾大的族群一定要有名字，就算得把字壓在泡泡上
+
+/**
+ * 畫布多大，字、留白、泡泡就該多大——但三者放大的速度不一樣。
+ *
+ * 字幾乎不動（10→14 就到頂，桌機的字再大會變成海報），留白跟著字走
+ * （它存在的理由就是放得下刻度），泡泡照面積開根號放大：泡泡是用面積在講話，
+ * 畫布大了還維持手機的尺寸，滿版的桌機看起來會像沒有資料。
+ */
+function quadGeom(w, h) {
+  // 用面積開根號當「畫布有多大」，不能用寬或高：桌機的圖又寬又扁，
+  // 拿高度算會判成小畫布，拿寬度算又會在 800px 的平板上就直接頂到最大。
+  const side = Math.sqrt(w * h) / Math.sqrt(QUAD_BASE.w * QUAD_BASE.h);
+  const name = Math.min(14, Math.max(10, Math.round(10 + (side - 1) * 2)));   // 每大半個手機加 1px
+  const small = Math.round(name * 0.85 * 10) / 10;
+  return {
+    w, h, name, small,
+    u: name / 10,                       // 瞄準框、箭頭、間距這類裝飾尺寸的縮放
+    dot: Math.min(2.4, Math.max(1, side)),
+    l: Math.round(small * 3.6),         // 左邊留給縱軸刻度
+    r: Math.round(small * 1.7),
+    t: Math.round(small * 1.7),
+    b: Math.round(small * 3.5),         // 底下兩行：橫軸刻度與軸名
+  };
+}
 
 /**
  * 座標軸上限。取第 85 百分位而不是最大值：一兩檔冷門族群成交值翻三倍是常有的事，
@@ -1269,20 +1822,22 @@ function axisMax(values, floor) {
  * 一段文字實際佔掉的方框。y 是 baseline，字往上長，往下只留一點給標點的收尾；
  * 兩側各留 1px，免得兩個標籤剛好切齊時看起來黏在一起。
  */
-function labelBox(x, y, text, anchor) {
-  const w = emWidth(text) * Q.name;
+function labelBox(x, y, text, anchor, size) {
+  const w = emWidth(text) * size;
   const left = anchor === 'start' ? x : anchor === 'end' ? x - w : x - w / 2;
-  return { x1: left - 1, x2: left + w + 1, y1: y - Q.name * 0.8, y2: y + Q.name * 0.25 };
+  return { x1: left - 1, x2: left + w + 1, y1: y - size * 0.8, y2: y + size * 0.25 };
 }
 
 /**
  * 量價四象限。橫軸是成交值增減（量），縱軸是成交值加權漲跌（價），
  * 泡泡大小是成交值，顏色是佔比位移——四個維度都是同一天的同一批數字。
+ * w、h 是盒子量出來的真實像素，由 watchFlowCharts() 餵進來。
  */
-function quadrant(groups) {
+function quadrant(groups, w, h) {
   const pts = groups.filter((g) => g.flowPct !== null && g.chg !== null && g.value > 0);
   if (pts.length < 2) return '<p class="hint">可比較的族群太少，畫不出四象限。</p>';
 
+  const Q = quadGeom(w, h);
   const maxX = axisMax(pts.map((p) => p.flowPct), 25);
   const maxY = axisMax(pts.map((p) => p.chg), 2);
   const maxV = Math.max(...pts.map((p) => p.value));
@@ -1294,16 +1849,17 @@ function quadrant(groups) {
   const cx = px(0);
   const cy = py(0);
 
-  // 四角的字往內縮 16px，把最外圈讓給瞄準框
+  // 四角的字往內縮，把最外圈讓給瞄準框
+  const inset = 16 * Q.u;
   const corners = [
-    { x: Q.w - Q.r - 16, y: Q.t + 14, anchor: 'end', text: '量增價漲 · 資金進駐' },
-    { x: Q.l + 16, y: Q.t + 14, anchor: 'start', text: '量縮價漲 · 惜售' },
-    { x: Q.w - Q.r - 16, y: Q.h - Q.b - 8, anchor: 'end', text: '量增價跌 · 出貨' },
-    { x: Q.l + 16, y: Q.h - Q.b - 8, anchor: 'start', text: '量縮價跌 · 棄守' },
+    { x: Q.w - Q.r - inset, y: Q.t + Q.small * 1.65, anchor: 'end', text: '量增價漲 · 資金進駐' },
+    { x: Q.l + inset, y: Q.t + Q.small * 1.65, anchor: 'start', text: '量縮價漲 · 惜售' },
+    { x: Q.w - Q.r - inset, y: Q.h - Q.b - Q.small, anchor: 'end', text: '量增價跌 · 出貨' },
+    { x: Q.l + inset, y: Q.h - Q.b - Q.small, anchor: 'start', text: '量縮價跌 · 棄守' },
   ];
 
   const marks = pts.slice().sort((a, b) => b.value - a.value).map((p) => ({
-    p, x: px(p.flowPct), y: py(p.chg), r: 3 + Math.sqrt(p.value / maxV) * 13,
+    p, x: px(p.flowPct), y: py(p.chg), r: (3 + Math.sqrt(p.value / maxV) * 13) * Q.dot,
   }));
 
   /**
@@ -1313,7 +1869,7 @@ function quadrant(groups) {
    * 例外是前 NAMED_ALWAYS 大的族群，它們擠在一坨裡永遠找不到乾淨的位置，
    * 但少了名字整張圖就沒有錨點，所以放寬成「只要不壓到別人的字」，靠字的白邊讀出來。
    */
-  const placed = corners.map((c) => labelBox(c.x, c.y, c.text, c.anchor));
+  const placed = corners.map((c) => labelBox(c.x, c.y, c.text, c.anchor, Q.small));
   const clearOfText = (box) => box.x1 >= Q.l + 2 && box.x2 <= Q.w - Q.r - 2
     && box.y1 >= Q.t + 2 && box.y2 <= Q.h - Q.b - 2
     && !placed.some((q) => box.x1 < q.x2 && box.x2 > q.x1 && box.y1 < q.y2 && box.y2 > q.y1);
@@ -1324,14 +1880,14 @@ function quadrant(groups) {
   });
 
   const nameOf = (m, i) => {
-    const gap = m.r + 4;
+    const gap = m.r + 4 * Q.u;
     const candidates = [
       { x: m.x, y: m.y - gap, anchor: 'middle' },
       { x: m.x, y: m.y + gap + Q.name * 0.8, anchor: 'middle' },
       { x: m.x + gap, y: m.y + Q.name * 0.35, anchor: 'start' },
       { x: m.x - gap, y: m.y + Q.name * 0.35, anchor: 'end' },
     ];
-    const boxes = candidates.map((c) => ({ c, box: labelBox(c.x, c.y, m.p.name, c.anchor) }));
+    const boxes = candidates.map((c) => ({ c, box: labelBox(c.x, c.y, m.p.name, c.anchor, Q.name) }));
     const pick = boxes.find((b) => clearOfText(b.box) && clearOfDots(b.box))
       || (i < NAMED_ALWAYS ? boxes.find((b) => clearOfText(b.box)) : null);
     if (!pick) return '';
@@ -1350,8 +1906,8 @@ function quadrant(groups) {
     const cls = p.shift === null ? 'flat' : trend(p.shift);
     const shiftText = p.shift === null ? '—' : `${p.shift > 0 ? '+' : ''}${p.shift.toFixed(2)}pp`;
     const c = `cx="${m.x.toFixed(1)}" cy="${m.y.toFixed(1)}"`;
-    const ring = m.r >= 7 ? `<circle class="q-ring" ${c} r="${(m.r + 2.8).toFixed(1)}"/>` : '';
-    const pip = m.r >= 6 ? `<circle class="q-pip" ${c} r="1.15"/>` : '';
+    const ring = m.r >= 7 * Q.dot ? `<circle class="q-ring" ${c} r="${(m.r + 2.8 * Q.u).toFixed(1)}"/>` : '';
+    const pip = m.r >= 6 * Q.dot ? `<circle class="q-pip" ${c} r="${(1.15 * Q.u).toFixed(2)}"/>` : '';
     return `<g class="q-dot ${cls}" style="--d:${(i * 26).toFixed(0)}ms">`
       + `<title>${esc(p.name)}｜成交值 ${signedPct(p.flowPct)}｜`
       + `加權 ${signedPct(p.chg, 2)}｜佔比 ${shiftText}</title>`
@@ -1362,17 +1918,20 @@ function quadrant(groups) {
   const gx = innerW / 8;
   const gy = innerH / 8;
 
-  // 四角的瞄準框。往內縮 4px 避開圓角，兩支腳各 9px，指向框內。
-  const bracket = (x, y, sx, sy) => `<path class="q-hud" d="M${(x + sx * 9).toFixed(1)} ${y}`
-    + ` H${x} V${(y + sy * 9).toFixed(1)}"/>`;
-  const bx0 = Q.l + 4;
-  const bx1 = Q.w - Q.r - 4;
-  const by0 = Q.t + 4;
-  const by1 = Q.h - Q.b - 4;
+  // 四角的瞄準框。往內縮避開圓角，兩支腳各 9px（跟著畫布縮放），指向框內。
+  const arm = 9 * Q.u;
+  const bracket = (x, y, sx, sy) => `<path class="q-hud" d="M${(x + sx * arm).toFixed(1)} ${y.toFixed(1)}`
+    + ` H${x.toFixed(1)} V${(y + sy * arm).toFixed(1)}"/>`;
+  const bx0 = Q.l + 4 * Q.u;
+  const bx1 = Q.w - Q.r - 4 * Q.u;
+  const by0 = Q.t + 4 * Q.u;
+  const by1 = Q.h - Q.b - 4 * Q.u;
+  const ah = 2.6 * Q.u;         // 箭頭的半高，也是原點圈的半徑
 
   // 兩個角落的暈色：右上是資金進駐、左下是棄守，讓人不必讀完角落的字也知道哪邊是哪邊。
   // 淡到只剩暗示的程度——泡泡的紅綠是另一件事（佔比位移），不能讓底色搶了它的話。
-  return `<svg class="quad" viewBox="0 0 ${Q.w} ${Q.h}" role="img" aria-label="量價四象限散佈圖">
+  return `<svg class="quad" viewBox="0 0 ${Q.w.toFixed(1)} ${Q.h.toFixed(1)}"
+    style="--q-fs:${Q.name}px;--q-fs-s:${Q.small}px" role="img" aria-label="量價四象限散佈圖">
     <defs>
       <clipPath id="q-clip"><rect x="${Q.l}" y="${Q.t}" width="${innerW}" height="${innerH}" rx="8"/></clipPath>
       <linearGradient id="q-panel" x1="0" y1="0" x2="0" y2="1">
@@ -1398,19 +1957,19 @@ function quadrant(groups) {
     </g>
     ${bracket(bx0, by0, 1, 1)}${bracket(bx1, by0, -1, 1)}
     ${bracket(bx0, by1, 1, -1)}${bracket(bx1, by1, -1, -1)}
-    ${corners.map((c) => `<text class="q-corner" x="${c.x}" y="${c.y}" text-anchor="${c.anchor}">${c.text}</text>`).join('')}
+    ${corners.map((c) => `<text class="q-corner" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}" text-anchor="${c.anchor}">${c.text}</text>`).join('')}
     <line class="q-axis" x1="${Q.l}" y1="${cy}" x2="${Q.w - Q.r}" y2="${cy}"/>
     <line class="q-axis" x1="${cx}" y1="${Q.t}" x2="${cx}" y2="${Q.h - Q.b}"/>
-    <path class="q-arrow" d="M${Q.w - Q.r - 4.5} ${cy - 2.6} L${Q.w - Q.r} ${cy} L${Q.w - Q.r - 4.5} ${cy + 2.6} Z"/>
-    <path class="q-arrow" d="M${cx - 2.6} ${Q.t + 4.5} L${cx} ${Q.t} L${cx + 2.6} ${Q.t + 4.5} Z"/>
-    <circle class="q-origin" cx="${cx}" cy="${cy}" r="2.6"/>
+    <path class="q-arrow" d="M${Q.w - Q.r - ah * 1.7} ${cy - ah} L${Q.w - Q.r} ${cy} L${Q.w - Q.r - ah * 1.7} ${cy + ah} Z"/>
+    <path class="q-arrow" d="M${cx - ah} ${Q.t + ah * 1.7} L${cx} ${Q.t} L${cx + ah} ${Q.t + ah * 1.7} Z"/>
+    <circle class="q-origin" cx="${cx}" cy="${cy}" r="${ah.toFixed(1)}"/>
     ${dots}
-    <text class="q-tick" x="${Q.l - 4}" y="${cy + 3}" text-anchor="end">0</text>
-    <text class="q-tick" x="${Q.w - Q.r}" y="${Q.h - Q.b + 12}" text-anchor="end">成交值 +${maxX.toFixed(0)}%</text>
-    <text class="q-tick" x="${Q.l}" y="${Q.h - Q.b + 12}" text-anchor="start">−${maxX.toFixed(0)}%</text>
-    <text class="q-tick" x="${Q.l - 4}" y="${Q.t + 8}" text-anchor="end">+${maxY.toFixed(1)}%</text>
-    <text class="q-tick" x="${Q.l - 4}" y="${Q.h - Q.b}" text-anchor="end">−${maxY.toFixed(1)}%</text>
-    <text class="q-tick q-axis-title" x="${Q.w / 2}" y="${Q.h - 4}" text-anchor="middle">橫軸：成交值增減　縱軸：成交值加權漲跌</text>
+    <text class="q-tick" x="${Q.l - Q.small * 0.5}" y="${cy + Q.small * 0.35}" text-anchor="end">0</text>
+    <text class="q-tick" x="${Q.w - Q.r}" y="${Q.h - Q.b + Q.small * 1.4}" text-anchor="end">成交值 +${maxX.toFixed(0)}%</text>
+    <text class="q-tick" x="${Q.l}" y="${Q.h - Q.b + Q.small * 1.4}" text-anchor="start">−${maxX.toFixed(0)}%</text>
+    <text class="q-tick" x="${Q.l - Q.small * 0.5}" y="${Q.t + Q.small}" text-anchor="end">+${maxY.toFixed(1)}%</text>
+    <text class="q-tick" x="${Q.l - Q.small * 0.5}" y="${Q.h - Q.b}" text-anchor="end">−${maxY.toFixed(1)}%</text>
+    <text class="q-tick q-axis-title" x="${Q.w / 2}" y="${Q.h - Q.small * 0.45}" text-anchor="middle">橫軸：成交值增減　縱軸：成交值加權漲跌</text>
   </svg>`;
 }
 
@@ -1452,7 +2011,7 @@ async function renderFlow(view) {
     </section>
     <section class="card">
       <h2>量價四象限 <small>泡泡大小＝成交值，顏色＝佔比位移</small></h2>
-      <div class="map-box">${quadrant(groups)}</div>
+      <div class="map-box"><div class="quad-box"></div></div>
       <p class="note">右邊是量增、上面是價漲。右上角是量價齊揚的資金進駐，右下角是爆量下殺的出貨，
         兩者的成交值都在變大，方向卻相反——這就是為什麼光看成交值不能當成「買盤」。
         泡泡的紅綠是佔榜上比重的位移，紅色代表錢確實往這一族集中。
@@ -1473,7 +2032,7 @@ async function renderFlow(view) {
         要看每一族的細項與成分股，切到「族群」分頁。</p>
     </section>`;
 
-  watchTreemap(view, groups);
+  watchFlowCharts(view, groups);
 }
 
 // --------------------------------------------------------------------------
@@ -1642,6 +2201,9 @@ async function render() {
     else if (route.view === 'flow') await renderFlow(view);
     else if (route.view === 'streak') await renderStreak(view);
     else if (route.view === 'moves') await renderMoves(view);
+    else if (route.view === 'burst') await renderBurst(view);
+    else if (route.view === 'ma') await renderMa(view);
+    else if (route.view === 'macd') await renderMacd(view);
     else if (route.view === 'stock') await renderStock(view, route.arg);
     else if (route.view === 'compare') await renderCompare(view, route.params);
     else await renderRank(view);
@@ -1675,6 +2237,15 @@ function bindGlobalControls() {
     if (pill.dataset.baseline) state.baseline = Number(pill.dataset.baseline);
     if (pill.dataset.span) state.span = Number(pill.dataset.span);
     if (pill.dataset.streak) state.streakDays = Number(pill.dataset.streak);
+    if (pill.dataset.burstlots) state.burstLots = Number(pill.dataset.burstlots);
+    if (pill.dataset.bursthigh) state.burstHigh = Number(pill.dataset.bursthigh);
+    if (pill.dataset.burstred) state.burstRed = pill.dataset.burstred;
+    if (pill.dataset.maline) state.maWindow = Number(pill.dataset.maline);
+    if (pill.dataset.madays) state.maDays = Number(pill.dataset.madays);
+    if (pill.dataset.maside) state.maSide = pill.dataset.maside;
+    if (pill.dataset.mastack) state.maStack = pill.dataset.mastack;
+    if (pill.dataset.macdside) state.macdSide = pill.dataset.macdside;
+    if (pill.dataset.macdwhen) state.macdWhen = pill.dataset.macdwhen;
     if (pill.dataset.sectorsort) state.sectorSort = pill.dataset.sectorsort;
     if (pill.dataset.grouping) {
       state.grouping = pill.dataset.grouping;

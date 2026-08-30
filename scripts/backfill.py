@@ -52,10 +52,12 @@ FETCHERS = {
 def backfill_scope(scope, days, sleep_sec, force) -> int:
     label = twse.SCOPE_NAMES[scope]
     source, fetch = FETCHERS[scope]
-    existing = set(twse.existing_dates(scope))
+    # 排行與收盤價都齊了才算補過：收盤價是後來才加的檔案，先前補過的日子只有排行，
+    # 這樣重跑一次就會把缺的那半邊補上，不必動用 --force 把整段重抓
+    existing = set(twse.existing_dates(scope)) & set(twse.existing_close_dates(scope))
     todo = [d for d in days if force or d.isoformat() not in existing]
     print(f"\n=== {label} ===")
-    print(f"平日 {len(days)} 天，需抓取 {len(todo)} 天（已存在 {len(days) - len(todo)} 天）")
+    print(f"平日 {len(days)} 天，需抓取 {len(todo)} 天（已完整 {len(days) - len(todo)} 天）")
 
     fetched = holidays = 0
     for i, day in enumerate(todo, start=1):
@@ -73,6 +75,7 @@ def backfill_scope(scope, days, sleep_sec, force) -> int:
             date_iso, records = result
             payload = twse.build_payload(date_iso, source, records)
             twse.write_daily(payload, scope)
+            twse.write_closes(date_iso, scope, records)
             fetched += 1
             top = payload["stocks"][0]
             print(f"{prefix} 共 {payload['marketCount']} 檔，"

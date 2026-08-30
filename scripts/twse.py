@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SITE_DIR = ROOT / "docs"
 DATA_DIR = SITE_DIR / "data"
 DAILY_DIR = DATA_DIR / "daily"
+CLOSE_DIR = DATA_DIR / "close"
 HISTORY_DIR = DATA_DIR / "history"
 INDEX_PATH = DATA_DIR / "index.json"
 
@@ -124,8 +125,12 @@ def fetch_json(url, params=None, *, retries=3, timeout=30, backoff=3.0):
 # --------------------------------------------------------------------------- #
 # 紀錄組裝
 # --------------------------------------------------------------------------- #
-def make_record(code, name, volume, value, close, change):
-    """把任一來源的一列資料轉成統一格式；不該追蹤或無成交者回傳 None。"""
+def make_record(code, name, volume, value, close, change, open_=None):
+    """把任一來源的一列資料轉成統一格式；不該追蹤或無成交者回傳 None。
+
+    open_（開盤價）是後來才加的欄位，四個來源都拿得到。這一天的資料若是在加欄位
+    之前抓的，檔案裡就沒有 open，前端要能容忍它不存在（見 docs/app.js 的爆量分頁）。
+    """
     code = str(code).strip()
     if not is_tracked_code(code):
         return None
@@ -139,6 +144,7 @@ def make_record(code, name, volume, value, close, change):
         "value": int(trade_value),
         "volume": int(clean_number(volume) or 0),
         "close": close_price,
+        "open": clean_number(open_),
         "changePct": change_pct(close_price, clean_number(change)),
     }
 
@@ -163,6 +169,10 @@ def daily_path(date_iso: str, scope: str = "twse") -> Path:
     return DAILY_DIR / scope / f"{date_iso}.json"
 
 
+def close_path(date_iso: str, scope: str = "twse") -> Path:
+    return CLOSE_DIR / scope / f"{date_iso}.json"
+
+
 def history_path(year, scope: str = "twse") -> Path:
     return HISTORY_DIR / scope / f"{year}.json"
 
@@ -178,6 +188,20 @@ def write_json(path: Path, payload) -> Path:
 
 def write_daily(payload: dict, scope: str = "twse") -> Path:
     return write_json(daily_path(payload["date"], scope), payload)
+
+
+def write_closes(date_iso: str, scope: str, records: list) -> Path:
+    """把當日「全市場」的收盤價另存一份，給均線用。
+
+    daily/ 只留成交值前 300 名，算均線卻需要連續 N 個交易日的收盤價——
+    一檔只要有幾天掉出前 300，那段就是空的，均線就算不出來（60 日線只有一半的
+    榜上股票湊得齊）。所以收盤價要全市場都留，檔案也才不到 daily 的一半大。
+    """
+    closes = {r["code"]: r["close"] for r in records if r["close"] is not None}
+    return write_json(
+        close_path(date_iso, scope),
+        {"date": date_iso, "c": {c: closes[c] for c in sorted(closes)}},
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -197,6 +221,7 @@ def fetch_stock_day_all():
             row.get("TradeValue"),
             row.get("ClosingPrice"),
             row.get("Change"),
+            row.get("OpeningPrice"),
         )
         if rec:
             records.append(rec)
@@ -233,6 +258,7 @@ def fetch_mi_index(day: date):
     i_code, i_name = idx("證券代號"), idx("證券名稱")
     i_volume, i_value = idx("成交股數"), idx("成交金額")
     i_close, i_diff, i_sign = idx("收盤價"), idx("漲跌價差"), idx("漲跌(+/-)")
+    i_open = idx("開盤價")
     if None in (i_code, i_name, i_volume, i_value, i_close, i_diff):
         raise RuntimeError(f"MI_INDEX 欄位格式已改變：{fields}")
 
@@ -241,7 +267,8 @@ def fetch_mi_index(day: date):
         diff = clean_number(row[i_diff])
         if diff is not None and i_sign is not None and strip_tags(row[i_sign]).startswith("-"):
             diff = -diff
-        rec = make_record(row[i_code], row[i_name], row[i_volume], row[i_value], row[i_close], diff)
+        rec = make_record(row[i_code], row[i_name], row[i_volume], row[i_value], row[i_close], diff,
+                          row[i_open] if i_open is not None else None)
         if rec:
             records.append(rec)
 
@@ -267,6 +294,7 @@ def fetch_tpex_quotes():
             row.get("TransactionAmount"),
             row.get("Close"),
             row.get("Change"),          # 這裡的漲跌已自帶正負號
+            row.get("Open"),
         )
         if rec:
             records.append(rec)
@@ -303,13 +331,15 @@ def fetch_tpex_daily(day: date):
     i_code, i_name = idx("代號"), idx("名稱")
     i_volume, i_value = idx("成交股數"), idx("成交金額")
     i_close, i_diff = idx("收盤"), idx("漲跌")
+    i_open = idx("開盤")
     if None in (i_code, i_name, i_volume, i_value, i_close, i_diff):
         raise RuntimeError(f"TPEx dailyQuotes 欄位格式已改變：{fields}")
 
     records = []
     for row in table["data"]:
         rec = make_record(row[i_code], row[i_name], row[i_volume], row[i_value],
-                          row[i_close], row[i_diff])
+                          row[i_close], row[i_diff],
+                          row[i_open] if i_open is not None else None)
         if rec:
             records.append(rec)
 
@@ -322,7 +352,14 @@ def fetch_tpex_daily(day: date):
 # 既有資料查詢
 # --------------------------------------------------------------------------- #
 def existing_dates(scope: str = "twse") -> list:
-    folder = DAILY_DIR / scope
+    return _stems(DAILY_DIR / scope)
+
+
+def existing_close_dates(scope: str = "twse") -> list:
+    return _stems(CLOSE_DIR / scope)
+
+
+def _stems(folder: Path) -> list:
     if not folder.exists():
         return []
     return sorted(p.stem for p in folder.glob("*.json"))
