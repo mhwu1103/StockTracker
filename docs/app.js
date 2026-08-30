@@ -1159,28 +1159,30 @@ function fitTiles(root) {
     const { width, height } = el.getBoundingClientRect();
     const name = el.querySelector('b');
     const num = el.querySelector('span');
-    // 夠高就讓名字折兩行。「功率元件 · 第三代半導體」這種長名字擠成一行一定會被切，
-    // 折成兩行反而放得下比較大的字——樹狀圖本來就是這樣處理的。
-    const wrap = height >= 42;
-    el.classList.toggle('wrap', wrap);
-    el.classList.toggle('no-text', width < 34 || height < 18);
+
     // 名字被切成「軍工 · 航太…」還讀得懂，金額被切成「+120…」卻會被誤讀成別的數字，
     // 所以金額只有在最小字級也塞得下時才顯示，塞不下就整個不出現。
     const numEm = emWidth(num.textContent);
-    el.classList.toggle('no-num', height < 32 || (width - TILE_PAD) / numEm < 9);
+    const numSize = Math.min(NAME_MAX - 2, Math.floor((width - TILE_PAD) / numEm), Math.floor(height / 3.4));
+    const showNum = numSize >= 9;
+    el.classList.toggle('no-num', !showNum);
 
-    const nameEm = emWidth(name.textContent) / (wrap ? 2 : 1);
-    el.style.setProperty('--name-size', `${fitFont(width, height, nameEm, 13, wrap ? 4.6 : 3.4)}px`);
-    el.style.setProperty('--num-size', `${fitFont(width, height, numEm, 11, 3.4)}px`);
+    const fit = fitName(width, height, emWidth(name.textContent), showNum);
+    el.classList.toggle('no-text', fit.size < NAME_MIN);
+    el.style.setProperty('--name-size', `${fit.size}px`);
+    el.style.setProperty('--lines', fit.lines);
+    el.style.setProperty('--num-size', `${Math.max(9, numSize)}px`);
   });
 }
+
+const TILE_PAD = 12;      // .tile 的左右內距 5px 加上外框 1px，兩邊共 12px
+const NAME_MAX = 13;      // 再大就跟卡片標題搶戲了
+const NAME_MIN = 8;       // 比這小就不如不顯示，讓 title 去講
 
 /**
  * 粗估一串字佔幾個「字寬」。中日韓字元算一個，英數與半形符號約 0.55 個——
  * 「-244 億」全照中文字寬算會比實際寬一倍，窄格子上的金額就會被誤判成放不下。
  */
-const TILE_PAD = 12;      // .tile 的左右內距 5px 加上外框 1px，兩邊共 12px
-
 function emWidth(text) {
   let em = 0;
   for (const ch of text) em += /[　-〿㐀-鿿＀-￯]/.test(ch) ? 1 : 0.55;
@@ -1188,16 +1190,25 @@ function emWidth(text) {
 }
 
 /**
- * 讓 em 個字寬剛好塞得進 width 的字級，再受格子高度與 9～max 的上下限節制。
- * rows 是高度要分給幾「份」（名字一行還是兩行，加上金額那行與行距）。
+ * 找塞得下的最大字級，以及那個字級需要折幾行。
  *
- * 寧可字小一點，也不要「光通訊 · CPO · 矽光子」被切成「光通訊 · CPO · 矽…」。
- * 真的連 9px 都塞不下時就讓它 ellipsis，完整名稱在 title 裡。
+ * 同一個名字折一行、兩行、三行，能用的字級差很多，哪一種最好完全看塊的形狀：
+ * 「文化創意業」在 43x38 的塊裡擠一行只能用 9px 還會被切，折兩行可以用 10px；
+ * 「電器電纜」在 25x47 這種高瘦的塊裡，一個字一行直著排反而讀得到。
+ *
+ * 由大到小試，行數一定要用「一行塞得下幾個字」回推——直接拿寬度除以字數會算出
+ * 小數個字，然後 CSS 實際折出來的行數比算的多，多出來的那行就被 line-clamp 切掉。
  */
-function fitFont(width, height, em, max, rows) {
-  const byWidth = (width - TILE_PAD) / em;
-  const byHeight = height / rows;
-  return Math.max(9, Math.min(max, Math.floor(Math.min(byWidth, byHeight))));
+function fitName(width, height, em, showNum) {
+  const usableW = width - TILE_PAD;
+  const usableH = height - (showNum ? 13 : 0) - 4;      // 扣掉金額那行與上下內距
+  for (let size = NAME_MAX; size >= NAME_MIN; size--) {
+    const perLine = Math.floor(usableW / size);         // 一行放得下幾個字
+    if (perLine < 1) continue;
+    const lines = Math.ceil(em / perLine);
+    if (lines <= 4 && lines * size * 1.2 <= usableH) return { size, lines };
+  }
+  return { size: NAME_MIN - 1, lines: 1 };              // 連最小字級都塞不下
 }
 
 /**
