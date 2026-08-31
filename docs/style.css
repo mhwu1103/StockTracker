@@ -244,6 +244,8 @@ select, input, button {
 .up { color: var(--up); }
 .down { color: var(--down); }
 .flat { color: var(--flat); }
+/* 紅綠已經被漲跌佔滿了，要在句子裡把某一項挑出來只能用第三個顏色 */
+.accent { color: var(--accent); }
 .badge-new { color: var(--accent); font-weight: 700; }
 
 /* ---------- 自選股 ---------- */
@@ -344,6 +346,7 @@ select, input, button {
 @media (min-width: 900px) {
   .view.wide { max-width: none; }
   .view.wide .note { max-width: 92ch; }      /* 但說明文字拉到 1900px 寬就沒人讀得下去 */
+  .view.wide .lede { max-width: 92ch; }      /* 一句話也一樣，一行太長就不成一句話了 */
   .view.wide .quad-box { aspect-ratio: 1 / 0.5; }
 }
 
@@ -556,7 +559,34 @@ select, input, button {
   border-top: 1px solid var(--line);
 }
 
+/* ---------- 一句話 ----------
+ * 每一頁最上面的導讀。字級比說明文字大一級、顏色用正文色：
+ * 它不是註腳，是要先讀的那一句。
+ */
+.lede {
+  margin: 0;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.lede b { font-weight: 600; }
+.lede em { font-style: normal; font-variant-numeric: tabular-nums; }
+/* 一句話下面還接著統計格，中間要有一條線隔開 */
+.lede:not(:last-child) { border-bottom: 1px solid var(--line); }
+
+/*
+ * 統計格是「底色鋪成線的顏色、格子之間留 1px 縫隙露出底色」畫出來的，
+ * 所以格數填不滿一整排時，尾巴那塊空位會直接露出線的顏色，變成一塊灰。
+ * 一句話卡改用陰影畫格線（陰影往外 1px，正好填滿縫隙，外緣被卡片裁掉），
+ * 空位就跟卡片同色了。其他分頁的統計格維持原樣，不順手改動它們。
+ */
+.takeaway .stat-grid { background: var(--surface); }
+.takeaway .stat { box-shadow: 0 0 0 1px var(--line); }
+
 .chart-box { padding: 10px 8px 14px; height: 220px; }
+/* K 線要看得出實體與影線的差別，220px 太擠 */
+.chart-box.tall { height: 300px; }
 
 .foot {
   max-width: 720px;

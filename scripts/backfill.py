@@ -52,8 +52,9 @@ FETCHERS = {
 def backfill_scope(scope, days, sleep_sec, force) -> int:
     label = twse.SCOPE_NAMES[scope]
     source, fetch = FETCHERS[scope]
-    # 排行與收盤價都齊了才算補過：收盤價是後來才加的檔案，先前補過的日子只有排行，
-    # 這樣重跑一次就會把缺的那半邊補上，不必動用 --force 把整段重抓
+    # 排行與四價都齊了才算補過：close/ 是後來才加的檔案，先前補過的日子只有排行，
+    # 這樣重跑一次就會把缺的那半邊補上，不必動用 --force 把整段重抓。
+    # 但「有 close/ 檔」不代表裡面有高低價——那更晚才加，補舊檔要 --force。
     existing = set(twse.existing_dates(scope)) & set(twse.existing_close_dates(scope))
     todo = [d for d in days if force or d.isoformat() not in existing]
     print(f"\n=== {label} ===")

@@ -13,6 +13,8 @@
     daily/{scope}/*.json 裡的 streak／vh／ma／mav／macd 欄位（就地補寫）
     docs/data/index.json                   交易日清單 + 三種範圍的每日成交值
     docs/data/history/{scope}/YYYY.json     該範圍「個股 -> 每日 (名次, 成交值)」轉置表
+    docs/data/kline/{market}/{code}/YYYY-MM.json
+                                            個股日 K 線（開高低收），由 close/ 轉置
 
 用法：
     python scripts/build_history.py
@@ -246,11 +248,68 @@ class MaTracker:
         }
 
 
-def load_closes(date_iso: str, scope: str):
-    path = twse.close_path(date_iso, scope)
+def load_prices(date_iso: str, market: str):
+    """讀當日全市場四價，回傳 code -> [開, 高, 低, 收]；沒有這個檔就回 None。
+
+    收盤價一定有（沒成交的個股在抓取端就被濾掉了），開高低則可能是 None——
+    close/ 檔是加 K 線之前就存在的，那時候只存了收盤價一張表。
+    """
+    path = twse.close_path(date_iso, market)
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))["c"]
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    opens, highs, lows = (raw.get(k) or {} for k in ("o", "h", "l"))
+    return {code: [opens.get(code), highs.get(code), lows.get(code), close]
+            for code, close in raw["c"].items()}
+
+
+def trim(price):
+    """2420.0 -> 2420、9.8400 -> 9.84。K 線檔逐日逐檔存四個數，小數點後多一位就是多幾十 KB。"""
+    if price is None:
+        return None
+    return int(price) if float(price).is_integer() else round(price, 2)
+
+
+def write_klines(market: str, series: dict, codes: set) -> tuple:
+    """把逐日的全市場四價轉置成「一檔一個月一個檔」的 K 線，回傳 (寫出檔數, 重寫檔數)。
+
+    只出 `codes` 裡的個股——那是曾經進過這個市場前 300 名的代號，也就是前端唯一
+    走得到個股頁的那些。全市場都出的話檔數與體積都要翻倍，而且多出來的永遠沒人讀。
+
+    檔案格式 {"code","month","d":[日],"q":[[開,高,低,收]]}：日期只存「幾號」，
+    月份已經在檔名與 month 欄位裡，不必每天再重複一次年月。
+    """
+    folder = twse.KLINE_DIR / market
+    written = rewritten = 0
+    wanted = {}                                  # code -> 該檔應該存在的月份檔名
+    for code in sorted(codes):
+        months = series.get(code)
+        if not months:
+            continue
+        wanted[code] = {f"{month}.json" for month in months}
+        for month, rows in sorted(months.items()):
+            payload = {
+                "code": code,
+                "month": month,
+                "d": [int(date_iso[8:]) for date_iso, _ in rows],
+                "q": [[trim(v) for v in price] for _, price in rows],
+            }
+            written += 1
+            if write_if_changed(twse.kline_path(code, month, market), payload):
+                rewritten += 1
+
+    # 個股改代號、月份被回補洗掉時留下的舊檔要清掉，不然前端會讀到對不上的資料
+    if folder.exists():
+        for code_dir in folder.iterdir():
+            if not code_dir.is_dir():
+                continue
+            keep = wanted.get(code_dir.name)
+            for stale in code_dir.glob("*.json"):
+                if keep is None or stale.name not in keep:
+                    stale.unlink()
+            if keep is None:
+                code_dir.rmdir()
+    return written, rewritten
 
 
 # 這三個欄位由 stamp_ma 就地補進 daily 檔，算不出來就整個拿掉，不留半截舊值
@@ -309,16 +368,25 @@ def main() -> int:
     series = {s: {"marketValues": [], "top200Values": [], "top10Values": []} for s in twse.SCOPES}
     missing = defaultdict(list)
     rewritten = defaultdict(int)
+    # K 線：market -> code -> "YYYY-MM" -> [(日期, [開,高,低,收])]。全市場先照收，
+    # 最後只寫出曾經進過榜的那些（前端唯一走得到個股頁的代號）。
+    klines = {m: defaultdict(lambda: defaultdict(list)) for m in ("twse", "tpex")}
+    kline_days = {m: [] for m in ("twse", "tpex")}   # 這個市場有四價的交易日
+    board_codes = {m: set() for m in ("twse", "tpex")}
 
     for day_index, date_iso in enumerate(dates):
-        # 均線與 MACD 吃的是全市場收盤價（docs/data/close/），跟排行的前 300 名無關
+        # 均線、MACD 與 K 線吃的都是全市場四價（docs/data/close/），跟排行的前 300 名無關
         tech_today = {}
         for market, tracker in ma_trackers.items():
-            closes = load_closes(date_iso, market)
-            if closes is None:
+            prices = load_prices(date_iso, market)
+            if prices is None:
                 tracker.reset()
-            else:
-                tech_today.update(tracker.feed(closes))
+                continue
+            tech_today.update(tracker.feed({c: p[3] for c, p in prices.items()}))
+            kline_days[market].append(date_iso)
+            month = date_iso[:7]
+            for code, price in prices.items():
+                klines[market][code][month].append((date_iso, price))
 
         days = {scope: load_day(date_iso, scope) for scope in ("twse", "tpex")}
         both = days["twse"] and days["tpex"]
@@ -343,6 +411,8 @@ def main() -> int:
                     rewritten[scope] += 1
 
             stocks = payload["stocks"]
+            if scope in board_codes:
+                board_codes[scope].update(stock["code"] for stock in stocks)
             series[scope]["marketValues"].append(round(payload["marketValue"] / 1e8, 2))
             series[scope]["top200Values"].append(
                 round(sum(s["value"] for s in stocks if s["rank"] <= twse.STREAK_RANK) / 1e8, 2))
@@ -375,6 +445,17 @@ def main() -> int:
                 stale.unlink()
                 print(f"  移除過期檔案 {scope}/{stale.name}")
 
+    for market in ("twse", "tpex"):
+        written, changed = write_klines(market, klines[market], board_codes[market])
+        days = kline_days[market]
+        span = f"{days[0]} ~ {days[-1]}" if days else "無"
+        print(f"  kline/{market}/：{len(board_codes[market])} 檔曾進榜、{written} 個月檔"
+              f"（{span}，本次重寫 {changed} 個）")
+
+    # 前端要知道 K 線涵蓋到哪，才不會為了畫不出來的日子去抓一堆不存在的月檔
+    kline_range = {m: {"from": kline_days[m][0], "to": kline_days[m][-1]}
+                   for m in ("twse", "tpex") if kline_days[m]}
+
     twse.write_json(
         twse.INDEX_PATH,
         {
@@ -382,6 +463,7 @@ def main() -> int:
             "latest": dates[-1],
             "years": sorted({d[:4] for d in dates}, reverse=True),
             "dates": dates,
+            "kline": kline_range,
             "scopes": {s: series[s] for s in twse.SCOPES},
         },
     )

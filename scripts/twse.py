@@ -26,6 +26,7 @@ DATA_DIR = SITE_DIR / "data"
 DAILY_DIR = DATA_DIR / "daily"
 CLOSE_DIR = DATA_DIR / "close"
 HISTORY_DIR = DATA_DIR / "history"
+KLINE_DIR = DATA_DIR / "kline"
 INDEX_PATH = DATA_DIR / "index.json"
 
 # 多存 100 名，前端才能正確判斷前 200 名的「進榜／掉出榜」
@@ -125,11 +126,18 @@ def fetch_json(url, params=None, *, retries=3, timeout=30, backoff=3.0):
 # --------------------------------------------------------------------------- #
 # 紀錄組裝
 # --------------------------------------------------------------------------- #
-def make_record(code, name, volume, value, close, change, open_=None):
+# 四價裡的最高／最低只有 close/ 用得到（個股 K 線是由那邊轉置出來的）。
+# daily/ 每天 300 筆全塞進去就是白白多一成體積，排行相關的分頁一個都用不上，
+# 所以統一在 build_payload 這裡拿掉——normalize 的地方仍然照收，不必分兩套來源。
+DAILY_DROP = ("high", "low")
+
+
+def make_record(code, name, volume, value, close, change, open_=None, high=None, low=None):
     """把任一來源的一列資料轉成統一格式；不該追蹤或無成交者回傳 None。
 
     open_（開盤價）是後來才加的欄位，四個來源都拿得到。這一天的資料若是在加欄位
     之前抓的，檔案裡就沒有 open，前端要能容忍它不存在（見 docs/app.js 的爆量分頁）。
+    high／low 更晚才加，而且只寫進 close/，daily/ 裡不會出現。
     """
     code = str(code).strip()
     if not is_tracked_code(code):
@@ -145,6 +153,8 @@ def make_record(code, name, volume, value, close, change, open_=None):
         "volume": int(clean_number(volume) or 0),
         "close": close_price,
         "open": clean_number(open_),
+        "high": clean_number(high),
+        "low": clean_number(low),
         "changePct": change_pct(close_price, clean_number(change)),
     }
 
@@ -153,7 +163,7 @@ def build_payload(date_iso: str, source: str, records: list, top_n: int = TOP_N)
     ordered = sorted(records, key=lambda r: r["value"], reverse=True)
     top = []
     for rank, rec in enumerate(ordered[:top_n], start=1):
-        item = dict(rec)
+        item = {k: v for k, v in rec.items() if k not in DAILY_DROP}
         item["rank"] = rank
         top.append(item)
     return {
@@ -177,6 +187,17 @@ def history_path(year, scope: str = "twse") -> Path:
     return HISTORY_DIR / scope / f"{year}.json"
 
 
+def kline_path(code: str, month: str, market: str = "twse") -> Path:
+    """個股 K 線切到「一檔一個月一個檔」。
+
+    K 線是逐日資料的轉置，轉置過的檔案每天都得整個重寫——切得愈粗，
+    每天重寫的量就愈大（切成一年一檔的話，每天要重寫十幾 MB，一年就把倉庫撐爆）。
+    切到月：只有當月那批會變，前面的月份寫完就凍住；前端要 120 個交易日
+    也才抓 6～7 個小檔，而且過去的月份內容永不改變，快取可以一直留著。
+    """
+    return KLINE_DIR / market / code / f"{month}.json"
+
+
 def write_json(path: Path, payload) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -190,18 +211,28 @@ def write_daily(payload: dict, scope: str = "twse") -> Path:
     return write_json(daily_path(payload["date"], scope), payload)
 
 
+# close/ 檔裡四張「代號 -> 價」的表，鍵名對應 make_record 的欄位。
+# c（收）是最早就有的，均線只讀它；o／h／l 是加個股 K 線時才補的，
+# 在那之前抓的日子檔案裡只有 c，讀的人要能容忍另外三張表不存在。
+PRICE_TABLES = (("c", "close"), ("o", "open"), ("h", "high"), ("l", "low"))
+
+
 def write_closes(date_iso: str, scope: str, records: list) -> Path:
-    """把當日「全市場」的收盤價另存一份，給均線用。
+    """把當日「全市場」的四價另存一份，給均線與個股 K 線用。
 
     daily/ 只留成交值前 300 名，算均線卻需要連續 N 個交易日的收盤價——
     一檔只要有幾天掉出前 300，那段就是空的，均線就算不出來（60 日線只有一半的
-    榜上股票湊得齊）。所以收盤價要全市場都留，檔案也才不到 daily 的一半大。
+    榜上股票湊得齊）。K 線更是如此：一根都不能缺，缺的那天圖上就是個洞。
+    所以四價要全市場都留，檔案也才不到 daily 的一半大。
+
+    沒有收盤價的（當天完全沒成交）整檔不收，四張表的代號因此一致；
+    但個別的開高低仍可能是 null（來源給 `--`），四價不保證都填得滿。
     """
-    closes = {r["code"]: r["close"] for r in records if r["close"] is not None}
-    return write_json(
-        close_path(date_iso, scope),
-        {"date": date_iso, "c": {c: closes[c] for c in sorted(closes)}},
-    )
+    traded = sorted((r for r in records if r["close"] is not None), key=lambda r: r["code"])
+    payload = {"date": date_iso}
+    for key, field in PRICE_TABLES:
+        payload[key] = {r["code"]: r[field] for r in traded if r.get(field) is not None}
+    return write_json(close_path(date_iso, scope), payload)
 
 
 # --------------------------------------------------------------------------- #
@@ -222,6 +253,8 @@ def fetch_stock_day_all():
             row.get("ClosingPrice"),
             row.get("Change"),
             row.get("OpeningPrice"),
+            row.get("HighestPrice"),
+            row.get("LowestPrice"),
         )
         if rec:
             records.append(rec)
@@ -258,7 +291,7 @@ def fetch_mi_index(day: date):
     i_code, i_name = idx("證券代號"), idx("證券名稱")
     i_volume, i_value = idx("成交股數"), idx("成交金額")
     i_close, i_diff, i_sign = idx("收盤價"), idx("漲跌價差"), idx("漲跌(+/-)")
-    i_open = idx("開盤價")
+    i_open, i_high, i_low = idx("開盤價"), idx("最高價"), idx("最低價")
     if None in (i_code, i_name, i_volume, i_value, i_close, i_diff):
         raise RuntimeError(f"MI_INDEX 欄位格式已改變：{fields}")
 
@@ -268,7 +301,7 @@ def fetch_mi_index(day: date):
         if diff is not None and i_sign is not None and strip_tags(row[i_sign]).startswith("-"):
             diff = -diff
         rec = make_record(row[i_code], row[i_name], row[i_volume], row[i_value], row[i_close], diff,
-                          row[i_open] if i_open is not None else None)
+                          *(None if i is None else row[i] for i in (i_open, i_high, i_low)))
         if rec:
             records.append(rec)
 
@@ -295,6 +328,8 @@ def fetch_tpex_quotes():
             row.get("Close"),
             row.get("Change"),          # 這裡的漲跌已自帶正負號
             row.get("Open"),
+            row.get("High"),
+            row.get("Low"),
         )
         if rec:
             records.append(rec)
@@ -331,7 +366,7 @@ def fetch_tpex_daily(day: date):
     i_code, i_name = idx("代號"), idx("名稱")
     i_volume, i_value = idx("成交股數"), idx("成交金額")
     i_close, i_diff = idx("收盤"), idx("漲跌")
-    i_open = idx("開盤")
+    i_open, i_high, i_low = idx("開盤"), idx("最高"), idx("最低")
     if None in (i_code, i_name, i_volume, i_value, i_close, i_diff):
         raise RuntimeError(f"TPEx dailyQuotes 欄位格式已改變：{fields}")
 
@@ -339,7 +374,7 @@ def fetch_tpex_daily(day: date):
     for row in table["data"]:
         rec = make_record(row[i_code], row[i_name], row[i_volume], row[i_value],
                           row[i_close], row[i_diff],
-                          row[i_open] if i_open is not None else None)
+                          *(None if i is None else row[i] for i in (i_open, i_high, i_low)))
         if rec:
             records.append(rec)
 
