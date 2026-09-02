@@ -5,6 +5,16 @@
 「全部」的排行不在這裡產生，而是由 build_history.py 合併兩個市場算出來，
 因為合併後的名次與連續進榜天數都得回頭看歷史才算得準。
 
+## 上櫃為什麼不用那支 openapi
+
+`tpex_mainboard_quotes` 一次請求就給當日全部上櫃，看起來正是為這件事準備的，
+但它**只有整股**：成交股數永遠是 1,000 的倍數，盤中零股完全不在裡面，
+全市場合計少 5%（實測 2026-09-02 少 123 億）。排行本身就是比成交值，
+少 5% 不是可以忽略的誤差，所以這裡走跟歷史回補同一支 `dailyQuotes`。
+
+代價是那支要指定日期、回應大得多（一萬多列、約 1.4 MB），而且收盤後要等久一點
+才出得來。真的還沒出來就是抓不到，隔天排程的 `backfill.py --days 14` 會補上。
+
 用法：
     python scripts/fetch_daily.py
 """
@@ -15,9 +25,15 @@ import sys
 
 import twse
 
+def fetch_tpex_today():
+    """上櫃當日行情。走 dailyQuotes 而不是 openapi，理由見模組說明。"""
+    got = twse.fetch_tpex_daily(twse.taipei_today())
+    return got if got else (twse.taipei_today().isoformat(), [])
+
+
 SOURCES = [
     ("twse", "STOCK_DAY_ALL", twse.fetch_stock_day_all),
-    ("tpex", "TPEX_QUOTES", twse.fetch_tpex_quotes),
+    ("tpex", "TPEX_DAILY", fetch_tpex_today),
 ]
 
 

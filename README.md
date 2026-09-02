@@ -51,8 +51,7 @@ localStorage，不會上傳，換裝置或清除瀏覽資料就會消失。
 |---|---|
 | 當日收盤（每日排程） | `https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL` |
 | 指定日期（歷史回補） | `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=YYYYMMDD&type=ALLBUT0999&response=json` |
-| 上櫃當日（每日排程） | `https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes` |
-| 上櫃指定日期（歷史回補） | `https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=YYYY/MM/DD&type=EW&response=json` |
+| 上櫃（每日排程與歷史回補共用） | `https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=YYYY/MM/DD&type=EW&response=json` |
 | 集保股權分散（每週，全市場） | `https://opendata.tdcc.com.tw/getOD.ashx?id=1-5` |
 | 集保股權分散（逐檔補歷史） | `https://www.tdcc.com.tw/portal/zh/smWeb/qryStock` |
 | 產業別對照 | `https://openapi.twse.com.tw/v1/opendata/t187ap03_L`、`https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O` |
@@ -60,8 +59,27 @@ localStorage，不會上傳，換裝置或清除瀏覽資料就會消失。
 | 原物料與指數 | `https://query1.finance.yahoo.com/v8/finance/chart/{HG=F,GC=F,SI=F,PA=F,ALI=F,BZ=F,^SOX,TWD=X}` |
 | 報價與集保歷史回補 | `http://web.archive.org/cdx/search/cdx` + `https://web.archive.org/web/{時間戳}id_/…` |
 
-四個行情來源產出的資料格式已統一，同一天用當日或歷史路徑抓取結果完全一致。
 涵蓋普通股、特別股與 ETF／ETN，已排除權證、牛熊證等商品。
+
+上市有「當日」與「指定日期」兩支，同一天抓出來完全一致 —— 實測 2026-09-01 的
+1,346 檔，成交量與成交值 100% 相同，所以當日排程走輕便的那支、缺漏由歷史那支回補。
+
+**上櫃兩支則對不起來，所以一律走歷史那支。** 櫃買的 openapi
+（`tpex_mainboard_quotes`）**只有整股**：它的成交股數永遠是 1,000 的倍數，
+盤中零股完全不在裡面。拿 2026-09-02 逐檔比對：
+
+| | 整股（openapi） | 完整（dailyQuotes） |
+|---|---|---|
+| 3293 鈊象 | 3,850,000 股 · 3,250 筆 | 4,034,186 股 · 10,152 筆 |
+| 6640 均華 | 1,280,000 股 · 1,057 筆 | 1,391,072 股 · 6,810 筆 |
+| 全市場成交值 | 2,162 億 | **2,285 億** |
+
+差額換算成「每筆幾股」是 19~79 股，正是零股的大小。收盤與開高低兩邊完全相同，
+所以只影響成交量與成交值 —— 偏偏那就是本站排行在比的東西，少 5% 不是可以忽略的
+誤差。除此之外，來源切換的隔天還會冒出假的爆量訊號（`vh` 拿整股的昨天比完整的今天）。
+
+代價是 `dailyQuotes` 要指定日期、回應大得多（一萬多列、約 1.4 MB），收盤後也要等
+久一點才出得來。真的還沒出來就是抓不到，隔天排程的 `backfill.py --days 14` 會補上。
 
 「全部」不需要另外抓：某檔若排得進合併後的前 300 名，它在自己市場裡必然也在前 300 名內，
 所以用兩邊各自的前 300 名就能還原出正確的合併排行，由 `build_history.py` 算出來。
