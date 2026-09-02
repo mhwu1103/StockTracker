@@ -72,6 +72,16 @@ const state = {
   macdSide: 'up',      // 「MACD」分頁：up 黃金交叉／down 死亡交叉
   macdWhen: '3',       // 「MACD」分頁的時點：近 N 日已交叉，或 d1 明天／d2 後天
   macdStack: 'any',    // 「MACD」分頁的四線篩選：沿用均線頁的 any／up／down
+  holderLots: 400,     // 「大戶」分頁的大戶門檻（張），HOLDER_LOTS 的 value
+  holderSpan: 'q1',    // 「大戶」分頁拿哪一段當基準（HOLDER_SPANS 的 value）
+  holders: null,       // Promise<holders/index.json>，進到大戶頁才載
+  holderWeek: new Map(),// 集保資料日 -> Promise<holders/weekly/{日期}.json>
+  holderStock: new Map(),// 代號 -> Promise<holders/stock/{代號}.json|null>
+  quoteCat: 'all',     // 「報價」分頁的品類篩選；'all' 代表全部
+  quoteSpan: 'm1',     // 「報價」分頁看哪一個期間的變化（QUOTE_SPANS 的 value）
+  quoteChart: 365,     // 「報價」個別品項的圖表要顯示幾天；0 代表全部
+  quotes: null,        // Promise<quotes/index.json>，進到報價頁才載
+  quoteSeries: new Map(),// 品類 -> Promise<quotes/series/{cat}.json|null>
   daily: new Map(),    // date -> Promise<payload>
   history: new Map(),  // year -> Promise<payload>
   kline: new Map(),    // market/code/month -> Promise<payload|null>
@@ -1686,7 +1696,8 @@ async function renderStock(view, code) {
     <section class="card">
       <h2>成交值走勢 <small>億元</small></h2>
       <div class="chart-box"><canvas id="c-value"></canvas></div>
-    </section>`;
+    </section>
+    <p class="hint"><a class="linky" href="#/holders/${code}">看這一檔的大股東持股趨勢 →</a></p>`;
 
   try {
     const Chart = await loadChartJs();
@@ -1698,6 +1709,574 @@ async function renderStock(view, code) {
       box.innerHTML = `<p class="hint">${esc(err.message)}</p>`;
     });
   }
+}
+
+// --------------------------------------------------------------------------
+// 分頁：大戶（集保股權分散）
+//
+// 集保結算所每週五結算一次，把每一檔的股東依持股張數分級。這一頁只問一件事：
+// 這一段時間，籌碼是往大戶那邊集中，還是散到散戶手上。
+//
+// 「大戶」從幾張算起是可以選的。市場上 400 張與 1,000 張兩種說法都有人用，
+// 而且看的東西不一樣：400 張以上含了不少中實戶，1,000 張以上幾乎只剩法人與公司派。
+// 官方那張表的級距就是 100／200／400／600／800／1,000 張，門檻只能從這裡挑 ——
+// 中間的數字（比如 500 張）官方沒有分，硬給只會是假的精確。
+//
+// 兩件事一定要先講清楚，不然這一頁很容易被讀成「主力在買」：
+//   1. 集保分的是「帳戶」不是實質股東。外資的持股掛在保管銀行底下，一家保管銀行
+//      就是一個千張大戶；公司派、董監與庫藏股同樣落在大戶級距。台積電的千張大戶
+//      常年在八成以上，那是外資與國發基金，不是有人在偷偷吃貨。
+//   2. 這是一週一次的存量快照，不是買賣紀錄。看得出集中度往哪邊移動，
+//      看不出是誰買的、什麼價位買的。
+// --------------------------------------------------------------------------
+const HOLDER_SPANS = [
+  { value: 'w1', label: '較前一週', days: 7, min: 4, max: 21 },
+  { value: 'm1', label: '近一月', days: 30, min: 15, max: 60 },
+  { value: 'q1', label: '近一季', days: 90, min: 45, max: 200 },
+  { value: 'y1', label: '近一年', days: 365, min: 200, max: 600 },
+];
+
+// 快照裡每一檔的 17 個數字，順序即 scripts/holders.py 的 FIELDS，兩邊必須一致：
+// cum1..cum15 是「第 N 級（含）以上佔集保庫存數的比例」，再加股東人數與庫存張數。
+const H_CUM = 0;         // cum1 的位置；第 N 級以上就在 H_CUM + N - 1
+const H_HEADS = 15;      // p10 的位置；第 N 級以上的戶數就在 H_HEADS + N - HEADS_BASE
+const HEADS_BASE = 10;   // 只有大戶那六層（第 10~15 級）留了戶數
+const H_PEOPLE = 21;     // 股東人數（集保帳戶數，十五級合計）
+const H_LOTS = 22;       // 集保庫存張數
+
+// 大戶門檻。官方的級距就這個解析度，選單只能從這些張數裡挑。
+const HOLDER_LOTS = [
+  { value: 100, label: '100 張' },
+  { value: 200, label: '200 張' },
+  { value: 400, label: '400 張' },
+  { value: 600, label: '600 張' },
+  { value: 800, label: '800 張' },
+  { value: 1000, label: '1000 張' },
+];
+// 張數 -> 級距編號，與 scripts/holders.py 的 LEVEL_OF_LOTS 是同一套定義
+const LOT_LEVEL = { 100: 10, 200: 11, 400: 12, 600: 13, 800: 14, 1000: 15 };
+const SMALL_LEVEL = 10;        // 散戶＝不到 100 張，也就是 cum1 減 cum10
+const TOP_LEVEL = 15;          // 千張大戶
+const HOLDER_LOTS_KEY = 'stocktracker.holderlots';
+
+const HOLDER_TOP = 20;         // 每張榜取前幾名
+const HOLDER_ROWS = 26;        // 個股頁的逐週明細最多列幾個資料日（約半年的週資料）
+const HOLDER_MOVE_MIN = 0.01;  // 小於這個 pp 的變化只是四捨五入的雜訊，不算加碼或減碼
+
+// 三條比例線與一條人數線。與 K 線那組均線的顏色分開，免得看起來像同一種東西。
+const HLINE = { big: '#d92d20', top: '#7b61ff', small: '#0d9145', people: '#2f6fed' };
+
+function loadHolderIndex() {
+  // 集保一週才動一次，與交易日無關，所以目錄一律抓最新的；
+  // 每週快照與個股序列都是「同一個網址內容不再變」的檔案，照常吃快取。
+  if (!state.holders) state.holders = getJSON(`${DATA}/holders/index.json`, { cache: 'reload' });
+  return state.holders;
+}
+
+function loadHolderWeek(date) {
+  if (!state.holderWeek.has(date)) {
+    state.holderWeek.set(date, getJSON(`${DATA}/holders/weekly/${date}.json`));
+  }
+  return state.holderWeek.get(date);
+}
+
+function loadHolderStock(code) {
+  if (!state.holderStock.has(code)) {
+    state.holderStock.set(code, getJSON(`${DATA}/holders/stock/${code}.json`).catch(() => null));
+  }
+  return state.holderStock.get(code);
+}
+
+const daysBetween = (from, to) => Math.round((new Date(to) - new Date(from)) / 86400000);
+
+const holderSpanSpec = () => HOLDER_SPANS.find((s) => s.value === state.holderSpan) || HOLDER_SPANS[2];
+
+/** 第 N 級（含）以上的持股比例。索引就是級距編號減一。 */
+const cumAt = (row, level) => row[H_CUM + level - 1];
+
+/** 目前選定的門檻以上的比例，例如「400 張以上」。 */
+const bigAt = (row) => cumAt(row, LOT_LEVEL[state.holderLots]);
+
+/**
+ * 散戶（100 張以下）。cum1 是十五個級距的合計、cum10 是 100 張以上，兩者相減
+ * 就是不到 100 張的那一段 —— 不用 100 減，因為 cum1 已經把「差異數調整」那一列
+ * 排除在外了，拿 100 去減會把它算進散戶頭上。
+ */
+const smallAt = (row) => cumAt(row, 1) - cumAt(row, SMALL_LEVEL);
+
+/**
+ * 第 N 級（含）以上有幾個集保帳戶。
+ *
+ * 這個數字是用來拆穿比例的：級距是門檻不是連續的尺，一個原本持有 900 張的帳戶
+ * 買到 1,100 張，他整個部位會一次跳到千張那一層 —— 比例搬動一大塊、戶數只多一個。
+ * 小型股上這是常態（一檔七萬張的股票，一個千張帳戶就佔 1.3 個百分點），
+ * 只看比例會把「原本就在的人跨過了那條線」讀成「有人從市場上大買」。
+ */
+const headsAt = (row, level) => row[H_HEADS + level - HEADS_BASE];
+
+/** 目前選定門檻以上有幾戶。 */
+const bigHeads = (row) => headsAt(row, LOT_LEVEL[state.holderLots]);
+
+const headsText = (n) => (n === null || n === undefined ? '—' : `${n.toLocaleString('zh-TW')} 戶`);
+
+/**
+ * 這一層握有幾張。比例乘上集保庫存換算而來 —— 比例只留兩位小數，所以尾數有幾張的
+ * 誤差，看的是量級不是精確值。
+ *
+ * 之所以要把它換算出來：比例的分母（集保庫存）自己會變，減資或增資之後「比例上升」
+ * 與「張數增加」可以是相反的兩件事。張數是那一層真正握著的東西，沒有分母問題。
+ */
+const lotsHeld = (row, pick) => Math.round((pick(row) / 100) * row[H_LOTS]);
+
+/**
+ * 戶數的變化是整數，寫成 +4 就好，不要跟比例的 pp 混在一起。
+ * 沒變的寫 ±0 而不是 0 —— 一排 +2、+3 之間夾一個光禿禿的 0，會被讀成「只有 0 戶」。
+ */
+const headsDelta = (v) => (v === null || v === undefined ? '' : v === 0 ? '±0' : `${v > 0 ? '+' : ''}${v}`);
+
+const lotsText = () => `${state.holderLots} 張以上`;
+
+const pctText = (v) => (v === null || v === undefined ? '—' : `${v.toFixed(2)}%`);
+
+/** 比例的變化用「百分點」不是「百分比」：87.5% 變 88.0% 是 +0.5pp，不是 +0.5%。 */
+const ppText = (v) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}pp`);
+
+const peopleText = (n) =>
+  (n === null || n === undefined ? '—'
+    : n >= 10000 ? `${(n / 10000).toFixed(1)} 萬人` : `${n.toLocaleString('zh-TW')} 人`);
+
+function mid(values) {
+  if (!values.length) return null;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const half = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[half] : (sorted[half - 1] + sorted[half]) / 2;
+}
+
+/** 目前選定的交易日往回找，最近一份集保資料是哪一週。都比它晚就回 null。 */
+function holderWeekAt(weeks, date) {
+  let found = null;
+  for (const w of weeks) {
+    if (w.d > date) break;
+    found = w;
+  }
+  return found;
+}
+
+/**
+ * 拿來比的那一份。集保是週資料，往前回補的那一段又稀疏到半年才一份，所以只接受
+ * 落在 [min, max] 天之內的快照，並取最接近目標天數的那一份；湊不出來就回 null。
+ *
+ * 少了這個下限，「較前一週」會拿半年前那一筆去比 —— 算出來的數字是真的，
+ * 標籤卻是假的。寧可顯示「—」，也不要給一個看起來很像上週的數字。
+ */
+function holderBaseWeek(weeks, cur, spec) {
+  let best = null;
+  let bestGap = Infinity;
+  for (const w of weeks) {
+    if (w.d >= cur.d) break;
+    const gap = daysBetween(w.d, cur.d);
+    if (gap < spec.min || gap > spec.max) continue;
+    if (Math.abs(gap - spec.days) < bestGap) {
+      best = w;
+      bestGap = Math.abs(gap - spec.days);
+    }
+  }
+  return best;
+}
+
+/** 一檔的某個數字變化；沒有基準就回 null（不是 0 —— 那是「沒得比」不是「沒有變」）。 */
+const holderDelta = (entry, pick) => (entry.prev ? pick(entry.cur) - pick(entry.prev) : null);
+
+/** 股東人數的變化用百分比：一檔 3 萬人、一檔 300 萬人，差幾個人不能放在一起比。 */
+const peopleChange = (entry) =>
+  (entry.prev && entry.prev[H_PEOPLE] ? (entry.cur[H_PEOPLE] / entry.prev[H_PEOPLE] - 1) * 100 : null);
+
+function holderRow(entry) {
+  const { stock, cur, prev } = entry;
+  const chip = (label, text, delta, fmt) =>
+    `<span class="chip">${label} ${text}${
+      delta === null ? '' : ` <em class="${trend(delta)}">${fmt(delta)}</em>`}</span>`;
+  const chips = [
+    // 門檻已經選在千張時，再放一個千張的小字就是把同一個數字寫兩次
+    ...(state.holderLots === 1000 ? [] : [
+      chip('千張', pctText(cumAt(cur, TOP_LEVEL)),
+        holderDelta(entry, (r) => cumAt(r, TOP_LEVEL)), ppText),
+    ]),
+    chip('散戶', pctText(smallAt(cur)), holderDelta(entry, smallAt), ppText),
+    chip('股東', peopleText(cur[H_PEOPLE]), peopleChange(entry), (v) => signedPct(v, 1)),
+  ].join('');
+  const dBig = holderDelta(entry, bigAt);
+  const dHeads = holderDelta(entry, bigHeads);
+  return `<a class="row" href="#/holders/${stock.code}">
+    <div class="rank"><span class="no">${stock.rank}</span><span class="delta flat">名次</span></div>
+    <div class="ident">
+      <span class="name">${state.watch.has(stock.code) ? '<span class="star">★</span>' : ''}${esc(stock.name)}</span>
+      <span class="code">${stock.code}${stock.m ? ` · ${esc(MARKET_TAGS[stock.m])}` : ''}${
+        hasIndustry() ? ` · ${esc(industryOf(stock.code))}` : ''}</span>
+      <span class="chips">${chips}</span>
+    </div>
+    <div class="figures">
+      <span class="value">${pctText(bigAt(cur))}</span>
+      <span class="price">${esc(lotsText())}${prev ? ` <em class="${trend(dBig)}">${ppText(dBig)}</em>` : ''}</span>
+      <span class="price">${headsText(bigHeads(cur))}${
+        prev ? ` <em class="${trend(dHeads)}">${headsDelta(dHeads)}</em>` : ''}</span>
+    </div>
+  </a>`;
+}
+
+/** 這一頁共用的一段話：這些數字能講什麼、不能講什麼。 */
+const HOLDER_CAVEAT = `集保分的是<b>帳戶</b>不是實質股東：外資持股掛在保管銀行底下，
+  一家保管銀行就是一個千張大戶，公司派、董監與庫藏股同樣落在大戶級距 ——
+  台積電的千張大戶常年在八成以上，那是外資與國發基金，不是有人在偷偷吃貨。
+  比例的分母是集保庫存數，未集保的實體股票不在裡面。
+  這是一週一次的<b>存量</b>快照，看得出集中度往哪邊移動，看不出是誰買的、什麼價位買的。`;
+
+/** 門檻選單。散戶那一段固定在 100 張以下，只有大戶這一頭跟著選。 */
+const holderLotsControls = () => `
+  <div class="controls">${pills('holderlots', HOLDER_LOTS, state.holderLots)}</div>
+  <div class="controls">${pills('holderspan', HOLDER_SPANS, state.holderSpan)}</div>`;
+
+async function renderHolderList(view, index) {
+  const weeks = index.weeks || [];
+  const cur = holderWeekAt(weeks, state.date);
+  if (!cur) {
+    view.innerHTML = `${holderLotsControls()}
+      <p class="hint">${state.date} 之前還沒有集保資料，最早一份是 ${esc(weeks[0].d)}。<br>
+      請把日期往後挪，或執行 <code>scripts/backfill_holders.py</code> 往前回補。</p>`;
+    return;
+  }
+
+  const spec = holderSpanSpec();
+  const base = holderBaseWeek(weeks, cur, spec);
+  const [today, curSnap, baseSnap] = await Promise.all([
+    loadDaily(state.date),
+    loadHolderWeek(cur.d),
+    base ? loadHolderWeek(base.d) : Promise.resolve(null),
+  ]);
+
+  // 出發點與其他分頁一樣是「當日成交值前 200 名」，不是集保那三千多檔 ——
+  // 沒進榜的股票在本站沒有成交值、產業與名次可以擺在旁邊對照。
+  const top = today.stocks.filter((s) => s.rank <= TOP);
+  const rows = [];
+  const missing = [];
+  for (const stock of top) {
+    const now = curSnap.stocks[stock.code];
+    if (!now) {
+      missing.push(stock);
+      continue;
+    }
+    rows.push({ stock, cur: now, prev: (baseSnap && baseSnap.stocks[stock.code]) || null });
+  }
+
+  if (!rows.length) {
+    view.innerHTML = `<p class="hint">${esc(cur.d)} 那一份集保資料裡，${state.date}
+      榜上這 ${top.length} 檔一檔都沒有。</p>`;
+    return;
+  }
+
+  const graded = rows.filter((r) => r.prev);
+  const moved = (r) => holderDelta(r, bigAt);
+  const up = graded.filter((r) => moved(r) > HOLDER_MOVE_MIN).sort((a, b) => moved(b) - moved(a));
+  const down = graded.filter((r) => moved(r) < -HOLDER_MOVE_MIN).sort((a, b) => moved(a) - moved(b));
+  const concentrated = rows.slice().sort((a, b) => bigAt(b.cur) - bigAt(a.cur));
+  const shrinking = graded
+    .filter((r) => peopleChange(r) < 0)
+    .sort((a, b) => peopleChange(a) - peopleChange(b));
+
+  const peopleNow = graded.reduce((sum, r) => sum + r.cur[H_PEOPLE], 0);
+  const peopleThen = graded.reduce((sum, r) => sum + r.prev[H_PEOPLE], 0);
+  const peopleAll = peopleThen ? (peopleNow / peopleThen - 1) * 100 : null;
+
+  // 第二格擺的是「另一個參照點」：平常是千張大戶，門檻已經選在千張時改看 400 張，
+  // 否則兩格會是同一個數字，等於白白浪費一格
+  const alt = state.holderLots === 1000
+    ? { level: LOT_LEVEL[400], label: '400 張以上' }
+    : { level: TOP_LEVEL, label: '千張大戶' };
+
+  // 統計格一排三個，所以要嘛三個、要嘛六個 —— 湊四個的話尾巴會露出兩塊灰色空位
+  const stats = [
+    { b: pctText(mid(rows.map((r) => bigAt(r.cur)))), span: `${lotsText()}中位數` },
+    { b: pctText(mid(rows.map((r) => cumAt(r.cur, alt.level)))), span: `${alt.label}中位數` },
+    { b: pctText(mid(rows.map((r) => smallAt(r.cur)))), span: '散戶比例中位數' },
+    { b: graded.length ? pair(up.length, down.length) : '—', span: '加碼／減碼（檔）' },
+    { b: peopleAll === null ? '—' : signedPct(peopleAll, 2), span: '股東人數合計', cls: trend(peopleAll) },
+    { b: `${rows.length}/${top.length}`, span: '榜上查得到集保' },
+  ];
+
+  const baseText = base
+    ? `對比 ${base.d}（${daysBetween(base.d, cur.d)} 天前）`
+    : `${spec.label}湊不出基準`;
+
+  const gapNote = base
+    ? ''
+    : `<p class="note">目前這 ${weeks.length} 份集保資料裡，找不到落在${esc(spec.label)}那個區間
+       （${spec.min}～${spec.max} 天前）的一份，所以這一頁的變化欄全部留白。
+       換一個期間，或等每週的快照累積起來 —— 往前回補的那一段是稀疏的，
+       短期比較本來就湊不出基準。</p>`;
+
+  // 「這一份不是全市場」要講得出理由：是典藏檔案被切斷，還是我們只逐檔補了一批。
+  // 少了這句，那一週查不到的股票看起來就像退出了集保。
+  const partialNote = (week, when) =>
+    (week && week.p
+      ? `<br>⚠ ${when}的 ${week.d} 只涵蓋 ${week.n} 檔${week.w ? `：${esc(week.w)}` : ''}。`
+      : '');
+
+  view.innerHTML = `
+    ${holderLotsControls()}
+    <section class="card">
+      <h2>集保股權分散 <small>資料日 ${esc(cur.d)} · ${esc(baseText)}</small></h2>
+      <div class="stat-grid">${stats
+        .map((s) => `<div class="stat"><b class="${s.cls || ''}">${s.b}</b><span>${s.span}</span></div>`)
+        .join('')}</div>
+      <p class="note">大戶的門檻是選出來的：這一頁現在算的是<b>持股 ${state.holderLots} 張以上</b>
+        （官方的第 ${LOT_LEVEL[state.holderLots]} 級以上）佔集保庫存數的比例。
+        散戶那一頭固定是 100 張以下，不跟著門檻走 —— 兩邊都會動的話，
+        比較的基準就變成兩件事在動，看不出到底是誰交給了誰。</p>
+      <p class="note">${state.date} ${scopeLabel()}前 ${TOP} 名裡有 ${rows.length} 檔查得到集保資料${
+        missing.length ? `，${missing.length} 檔查不到（${missing.slice(0, 5).map((s) => esc(s.code)).join('、')}${
+          missing.length > 5 ? ' 等' : ''}）` : ''}${
+        base ? `，其中 ${graded.length} 檔在 ${base.d} 那一份裡也查得到、算得出變化` : ''}。
+        集保每週五結算一次，所以同一週的每個交易日看到的是同一份資料。
+        ${partialNote(cur, '本期')}${partialNote(base, '基準')}</p>
+      ${gapNote}
+    </section>
+    ${listCard('大戶加碼', `${spec.label}${lotsText()}的比例增加最多 · 取前 ${HOLDER_TOP}`,
+      up.slice(0, HOLDER_TOP).map(holderRow),
+      base ? `這個期間榜上沒有任何一檔的${lotsText()}比例上升` : '沒有基準可比')}
+    ${listCard('大戶減碼', `${spec.label}${lotsText()}的比例減少最多 · 取前 ${HOLDER_TOP}`,
+      down.slice(0, HOLDER_TOP).map(holderRow),
+      base ? `這個期間榜上沒有任何一檔的${lotsText()}比例下降` : '沒有基準可比')}
+    ${listCard('籌碼最集中', `${lotsText()}的比例最高 · 取前 ${HOLDER_TOP}`,
+      concentrated.slice(0, HOLDER_TOP).map(holderRow))}
+    ${listCard('股東人數減少最多', `${spec.label} · 取前 ${HOLDER_TOP}`,
+      shrinking.slice(0, HOLDER_TOP).map(holderRow),
+      base ? '這個期間榜上沒有任何一檔的股東人數減少' : '沒有基準可比')}
+    <section class="card">
+      <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
+      <p class="note">${HOLDER_CAVEAT}</p>
+      <p class="note">「大戶加碼」與「股東人數減少」講的是同一件事的兩面：股數沒有變，
+        持有的人變少，就是有人把零股賣給了大戶。兩張榜重疊的那幾檔，是這個期間籌碼收得
+        最乾淨的。反過來，股東人數暴增配上大戶比例下降，是散戶在接手 ——
+        台積電從 2024 年初的 106 萬股東變成現在的 300 萬，就是這樣一路稀釋掉的。</p>
+      <p class="note">換門檻看到的會是不同的故事：400 張以上還含著不少中實戶，
+        1,000 張以上幾乎只剩法人、公司派與保管銀行。同一檔在 400 張那一層加碼、
+        在 1,000 張那一層卻在減碼，代表籌碼是從最大的手上流到次大的手上。
+        中間的數字（例如 500 張）官方沒有分，所以選單只給得出這六個。</p>
+      <p class="note">資料來自集保結算所的
+        <a class="linky" href="https://opendata.tdcc.com.tw/getOD.ashx?id=1-5" target="_blank" rel="noopener">股權分散表</a>
+        （目前累積 ${weeks.length} 份，${esc(index.first)} 起）。那個網址只給最新一週、
+        下一週就被蓋掉，所以歷史是本站自己累積與回補的：近一年逐週的那一段是從集保官網
+        的個股查詢頁一檔一檔補來的（因此只涵蓋補抓當時榜上那一批），再往前的那幾份來自
+        網頁典藏館、一年只有兩三份。資料日之間的間隔不等寬就是這麼來的。</p>
+    </section>`;
+}
+
+/**
+ * 單一個股的持股趨勢。三條比例線疊在一起才看得出「誰把股票交給了誰」——
+ * 大戶比例往上、散戶比例往下，兩條線是同一件事的兩端。
+ */
+async function renderHolderStock(view, index, code) {
+  const [series, meta] = await Promise.all([loadHolderStock(code), seriesFor(code)]);
+  if (!series || !Array.isArray(series.d) || !series.d.length) {
+    view.innerHTML = `<p class="hint">${esc(code)} 沒有集保資料。<br>
+      只有進過本站排行的個股才有序列，下市或合併的代號在集保那份 CSV 裡也查不到。<br>
+      <a class="linky" href="#/holders">← 回大戶清單</a></p>`;
+    return;
+  }
+
+  const points = series.d.map((d, i) => ({ d, v: series.v[i] }));
+  const last = points[points.length - 1];
+  const baseAt = (spec) => {
+    let best = null;
+    let bestGap = Infinity;
+    for (const p of points) {
+      if (p.d >= last.d) break;
+      const gap = daysBetween(p.d, last.d);
+      if (gap < spec.min || gap > spec.max) continue;
+      if (Math.abs(gap - spec.days) < bestGap) {
+        best = p;
+        bestGap = Math.abs(gap - spec.days);
+      }
+    }
+    return best;
+  };
+  // 六個門檻共用同兩份基準，算一次就好
+  const bases = HOLDER_SPANS.map((spec) => ({ spec, at: baseAt(spec) }));
+  const baseFor = (value) => (bases.find((b) => b.spec.value === value) || {}).at || null;
+  const deltaOver = (value, pick) => {
+    const b = baseFor(value);
+    return b ? pick(last.v) - pick(b.v) : null;
+  };
+  const dWeek = deltaOver('w1', bigAt);
+  const dQuarter = deltaOver('q1', bigAt);
+
+  const first = points[0];
+  const spanPp = bigAt(last.v) - bigAt(first.v);
+  const peoplePct = first.v[H_PEOPLE] ? (last.v[H_PEOPLE] / first.v[H_PEOPLE] - 1) * 100 : null;
+
+  // 與清單頁同一個道理：門檻選在千張時，第二格改看 400 張，不要寫兩次同一個數字
+  const alt = state.holderLots === 1000
+    ? { level: LOT_LEVEL[400], label: '400 張以上' }
+    : { level: TOP_LEVEL, label: '千張大戶' };
+
+  const stats = [
+    { b: pctText(bigAt(last.v)), span: lotsText() },
+    { b: headsText(bigHeads(last.v)), span: `${lotsText()} 有幾戶`, cls: 'sm' },
+    { b: pctText(cumAt(last.v, alt.level)), span: alt.label },
+    { b: pctText(smallAt(last.v)), span: '散戶（100 張以下）' },
+    { b: ppText(dWeek), span: `${lotsText()} 較前一週`, cls: trend(dWeek) },
+    { b: peopleText(last.v[H_PEOPLE]), span: '股東人數', cls: 'sm' },
+  ];
+
+  // 整條梯子攤開來。門檻選單一次只看得到一層，但「哪一層在加、哪一層在減」
+  // 要並排才看得出來 —— 最大的手在減碼、次大的在接，是換手不是出貨。
+  const ladder = HOLDER_LOTS.map((opt) => {
+    const pick = (row) => cumAt(row, LOT_LEVEL[opt.value]);
+    const w1 = deltaOver('w1', pick);
+    const q1 = deltaOver('q1', pick);
+    const on = opt.value === state.holderLots;
+    return `<div class="row row--ladder${on ? ' is-on' : ''}">
+      <div class="ident">
+        <span class="name">${esc(opt.label)}以上${on ? ' <em class="accent">目前</em>' : ''}</span>
+        <span class="code">第 ${LOT_LEVEL[opt.value]} 級以上</span>
+      </div>
+      <div class="figures"><span class="value">${pctText(pick(last.v))}</span>
+        <span class="price">${headsText(headsAt(last.v, LOT_LEVEL[opt.value]))}</span></div>
+      <div class="figures"><span class="value"><em class="${trend(w1)}">${ppText(w1)}</em></span>
+        <span class="price">較前一週</span></div>
+      <div class="figures"><span class="value"><em class="${trend(q1)}">${ppText(q1)}</em></span>
+        <span class="price">近一季</span></div>
+    </div>`;
+  }).join('');
+
+  // 逐週明細：一列一個資料日，跟上一列比。日期軸本來就不等寬，所以每一列都標出
+  // 距離上一列幾天 —— 隔了半年的那一列若不標，讀起來會像是「一週就變這麼多」。
+  const weekly = points.slice().reverse().slice(0, HOLDER_ROWS).map((p, i, arr) => {
+    const older = arr[i + 1] || null;
+    const pp = older ? bigAt(p.v) - bigAt(older.v) : null;
+    // 右邊那個 % 講的是「張數」的變化，不是「比例的相對變化」。兩個理由：
+    // 一、比例的百分比放在比例旁邊，兩個 % 意思不同卻長得一樣，一定會被讀錯；
+    // 二、比例的分母自己會變，減資之後「比例上升、張數下降」是常態，
+    //     拿比例去算相對變化會說出跟事實相反的話。
+    const held = lotsHeld(p.v, bigAt);
+    const heldWas = older ? lotsHeld(older.v, bigAt) : null;
+    const rel = heldWas ? (held / heldWas - 1) * 100 : null;
+    const heads = bigHeads(p.v);
+    const dh = older ? heads - bigHeads(older.v) : null;
+    const gap = older ? daysBetween(older.d, p.d) : null;
+    return `<div class="row row--ladder">
+      <div class="ident">
+        <span class="name">${esc(p.d)}</span>
+        <span class="code">${gap === null ? '最早一筆' : `距上一列 ${gap} 天${gap > 14 ? ' ⚠' : ''}`}</span>
+      </div>
+      <div class="figures"><span class="value">${pctText(bigAt(p.v))}</span>
+        <span class="price">${num(held, 0)} 張</span></div>
+      <div class="figures"><span class="value"><em class="${trend(pp)}">${ppText(pp)}</em></span>
+        <span class="price">張數 ${rel === null ? '—' : `<em class="${trend(rel)}">${signedPct(rel, 1)}</em>`}</span></div>
+      <div class="figures"><span class="value">${headsText(heads)}</span>
+        <span class="price">${dh === null ? '—' : `<em class="${trend(dh)}">${headsDelta(dh)} 戶</em>`}</span></div>
+    </div>`;
+  }).join('');
+
+  view.innerHTML = `
+    <div class="controls">${pills('holderlots', HOLDER_LOTS, state.holderLots)}</div>
+    <section class="card">
+      <h2>${esc(meta.name || code)} <small>${esc(code)} · 集保資料日 ${esc(last.d)}</small></h2>
+      <div class="stat-grid">${stats
+        .map((s) => `<div class="stat"><b class="${s.cls || ''}">${s.b}</b><span>${s.span}</span></div>`)
+        .join('')}</div>
+      <p class="note">集保庫存 ${num(last.v[H_LOTS], 0)} 張 · 共 ${points.length} 個資料日（${esc(first.d)} 起）。
+        整段期間，${esc(lotsText())}的比例${spanPp === 0 ? '沒有變化'
+          : tint(spanPp, `${spanPp > 0 ? '增加' : '減少'} ${Math.abs(spanPp).toFixed(2)}pp`)}、
+        股東人數${peoplePct === null ? '無從比較'
+          : tint(peoplePct, `${peoplePct > 0 ? '增加' : '減少'} ${Math.abs(peoplePct).toFixed(1)}%`)}。</p>
+    </section>
+    <section class="card">
+      <h2>各門檻一次看 <small>佔集保庫存數 %</small></h2>
+      ${ladder}
+      <p class="note">每一列都是「這個張數以上」的累積比例與戶數，所以由上往下一定愈來愈小。
+        看的是哪一層在動：最大的那一層在減、次大的那一層在增，是籌碼在大戶之間換手；
+        六層一起往下掉才是真的往散戶流出去。湊不出基準的期間顯示「—」。</p>
+    </section>
+    <section class="card">
+      <h2>逐週明細 <small>${esc(lotsText())} · 新的在上面</small></h2>
+      ${weekly}
+      ${points.length > HOLDER_ROWS
+        ? `<p class="note">只列最近 ${HOLDER_ROWS} 個資料日，更早的 ${points.length - HOLDER_ROWS}
+           個在上面的圖裡。</p>` : ''}
+      <p class="note">變動一律跟<b>上一列</b>比，不是跟今天比。中間那一欄的兩個數字
+        <b>單位不同、問題也不同</b>：<b>pp</b> 是「佔集保庫存的比例」差了幾個百分點，
+        <b>張數 %</b> 是這一層手上的股票多了或少了幾成。</p>
+      <p class="note">兩者常常一致，但<b>分母會變</b>：集保庫存因為減資、增資而改變時，
+        比例上升與張數下降可以同時發生 —— 那時候只看 pp 會說出跟事實相反的話。
+        張數是比例乘上集保庫存換算的，比例只留兩位小數，所以尾數有幾張的誤差，
+        看的是量級不是精確值。</p>
+      <p class="note">戶數那一欄是用來拆穿比例的：級距是門檻不是連續的尺，一個持有
+        900 張的帳戶買到 1,100 張，整個部位會一次跳進千張那一層 —— 比例搬一大塊、
+        戶數只多一個。比例大動而戶數沒動，多半就是跨門檻，不是有人從市場上大買。</p>
+      <p class="note">資料日之間的間隔不等寬，隔超過 14 天的那幾列標了 ⚠ ——
+        那是回補歷史留下的斷層，不能當成「一週的變化」讀。</p>
+    </section>
+    <section class="card">
+      <h2>持股比例 <small>佔集保庫存數 %</small></h2>
+      <div class="chart-box"><canvas id="c-holder"></canvas></div>
+      <p class="note">${esc(lotsText())}已經把千張大戶算在裡面，所以那兩條線永遠上下夾著；
+        中間 100 張到門檻之間的那一段不畫，它是三條線之外的餘數。
+        ${points.length < 8 ? '目前的資料日還很少，看得出高低但看不出節奏。' : ''}</p>
+    </section>
+    <section class="card">
+      <h2>股東人數 <small>集保帳戶數</small></h2>
+      <div class="chart-box"><canvas id="c-holder-people"></canvas></div>
+      <p class="note">股數不變的前提下，人數變少就是籌碼在集中、人數變多就是在分散。
+        除權息、增資與股票分割會讓人數階梯式跳動，那不是籌碼流動。</p>
+    </section>
+    <section class="card">
+      <h2>要注意的地方</h2>
+      <p class="note">${HOLDER_CAVEAT}</p>
+      <p class="note">橫軸是集保的資料日、不是交易日，而且<b>點距不等寬</b> ——
+        近一年逐週的那一段是一週一點，再往前只剩網頁典藏館那幾份、一年兩三點。
+        中間那幾條很長很直的線是因為那段期間沒有資料，不是那段期間沒有變化。</p>
+    </section>
+    <p class="hint"><a class="linky" href="#/holders">← 回大戶清單</a>
+      <a class="linky" href="#/stock/${esc(code)}">看這一檔的排名與 K 線</a></p>`;
+
+  try {
+    const Chart = await loadChartJs();
+    const labels = points.map((p) => p.d);
+    drawLine(Chart, $('#c-holder'), labels, [
+      { data: points.map((p) => bigAt(p.v)), color: HLINE.big, label: lotsText() },
+      // 門檻已經選在千張時，第二條線會與第一條完全重疊，畫了只是把圖例佔掉
+      ...(state.holderLots === 1000 ? [] : [
+        { data: points.map((p) => cumAt(p.v, TOP_LEVEL)), color: HLINE.top, label: '千張大戶' },
+      ]),
+      { data: points.map((p) => smallAt(p.v)), color: HLINE.small, label: '散戶 100 張以下' },
+    ], { suffix: ' %', emptyText: '無資料' });
+    drawLine(Chart, $('#c-holder-people'), labels, [
+      { data: points.map((p) => p.v[H_PEOPLE]), color: HLINE.people, label: '股東人數' },
+    ], { suffix: ' 人', emptyText: '無資料' });
+  } catch (err) {
+    view.querySelectorAll('.chart-box').forEach((box) => {
+      box.innerHTML = `<p class="hint">${esc(err.message)}</p>`;
+    });
+  }
+}
+
+async function renderHolders(view, code) {
+  let index;
+  try {
+    index = await loadHolderIndex();
+  } catch (err) {
+    view.innerHTML = `<p class="hint">還沒有集保資料（${esc(err.message)}）。<br>
+      請先執行 <code>scripts/fetch_holders.py</code> 與 <code>scripts/build_holders.py</code>；
+      要一次補上一段歷史再加跑 <code>scripts/backfill_holders.py</code>。</p>`;
+    return;
+  }
+  if (!index.weeks || !index.weeks.length) {
+    view.innerHTML = '<p class="hint">集保目錄裡沒有任何資料日，請重跑 scripts/build_holders.py。</p>';
+    return;
+  }
+  if (code) await renderHolderStock(view, index, code);
+  else await renderHolderList(view, index);
 }
 
 // --------------------------------------------------------------------------
@@ -2561,6 +3140,566 @@ async function renderMarket(view) {
 }
 
 // --------------------------------------------------------------------------
+// 分頁：報價
+//
+// 追蹤上游產品的公開報價（記憶體、面板、太陽能、鋰電池材料）、原物料成本
+// （銅、金、銀、鈀、鋁、原油）與大環境（費半、美元台幣），資料由
+// scripts/fetch_quotes.py 抓、scripts/build_quotes.py 算成 data/quotes/。
+//
+// 三件必須寫在畫面上、不能只寫在註解裡的事：
+//   1. 被動元件與功率元件沒有可自動抓的公開成品報價 —— 這一頁給的是它們的上游
+//      原料價（銅、銀、鈀、多晶矽），kind 是 cost 不是 price，兩者不能混為一談。
+//   2. 報價的點距不等寬：現貨一天一點、合約一個月一點。那是報價自己的節奏，
+//      不是資料缺漏，所以每張表都標自己的更新頻率與報價日。
+//   3. 族群成交值只算「當天排進成交值前 300 名」的成分股，不是整族的全貌。
+//
+// 報價與族群要並排看的理由：報價是因，股價與成交值是果，但兩者不會同步——
+// 報價漲了資金沒進來，或資金先進來報價才動，都是這一頁想讓人看見的落差。
+// --------------------------------------------------------------------------
+
+// value 是 index.json 裡 chg 的鍵；days 是族群成交值要往回推幾個交易日。
+// 報價用日曆日算（報價不是每個交易日都動），族群用交易日算，兩者對不齊是必然的，
+// 所以畫面上要把「近一月」與「20 個交易日前」兩種說法都寫出來。
+const QUOTE_SPANS = [
+  { value: 'prev', label: '較前次', days: 1, days_label: '前一個交易日' },
+  { value: 'w1', label: '近一週', days: 5, days_label: '5 個交易日前' },
+  { value: 'm1', label: '近一月', days: 20, days_label: '20 個交易日前' },
+  { value: 'm3', label: '近三月', days: 60, days_label: '60 個交易日前' },
+  { value: 'y1', label: '近一年', days: 240, days_label: '240 個交易日前' },
+];
+
+const QUOTE_CHART_SPANS = [
+  { value: 90, label: '90 天' },
+  { value: 365, label: '一年' },
+  { value: 0, label: '全部' },
+];
+
+// kind 決定這條數字能不能被當成「這一族產品的報價」來讀。
+const QUOTE_KINDS = {
+  price: { label: '成品報價', tag: '' },
+  cost: { label: '成本指標', tag: '成本' },
+  index: { label: '指數／匯率', tag: '大環境' },
+};
+
+const CUR_NAMES = { USD: '美元', RMB: '人民幣', USX: '美分', TWD: '台幣', EUR: '歐元', JPY: '日圓' };
+
+// 報價與族群成交值要疊在同一張圖上，兩條線的顏色不能跟排名／大盤那組撞。
+const QLINE = { quote: '#f79009', theme: '#2f6fed' };
+
+const SPARK_MAX = 60;          // 迷你走勢最多畫幾個點，再多在 68px 寬裡也看不出來
+
+/** 統計格的標籤塞不下整個品項名時切短。切掉的地方要留刪節號，不然看起來像原本就叫那個名字。 */
+const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+function loadQuoteIndex() {
+  // 報價的更新頻率與交易日無關（合約價半個月才動一次），一律抓最新的目錄，
+  // 序列檔則是內容幾乎不變的大檔，照常吃快取。
+  if (!state.quotes) state.quotes = getJSON(`${DATA}/quotes/index.json`, { cache: 'reload' });
+  return state.quotes;
+}
+
+function loadQuoteSeries(cat) {
+  if (!state.quoteSeries.has(cat)) {
+    state.quoteSeries.set(cat, getJSON(`${DATA}/quotes/series/${cat}.json`).catch(() => null));
+  }
+  return state.quoteSeries.get(cat);
+}
+
+/** 報價的位數要跟著級距走：0.33 元的電池片與 4,405 元的黃金不能用同一種格式。 */
+function quoteNum(v) {
+  if (v === null || v === undefined) return '—';
+  const abs = Math.abs(v);
+  const digits = abs >= 1000 ? 0 : abs >= 100 ? 1 : abs >= 10 ? 2 : 3;
+  return v.toLocaleString('zh-TW', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+/** 幣別與單位合成一句。單位裡已經寫了幣別（「美元／顆」）就不要再重複一次。 */
+function quoteUnit(item) {
+  const cur = CUR_NAMES[item.cur] || item.cur || '';
+  if (!item.unit) return cur;
+  if (!cur || item.unit.includes(cur)) return item.unit;
+  return `${cur} ${item.unit}`;
+}
+
+const quoteSpanSpec = () =>
+  QUOTE_SPANS.find((s) => s.value === state.quoteSpan) || QUOTE_SPANS[2];
+
+/** 某個期間的漲跌幅；那個期間湊不出基準（序列還太短）就回 null。 */
+function quoteChg(item, key = state.quoteSpan) {
+  const v = item.chg ? item.chg[key] : undefined;
+  return v === undefined || v === null ? null : v;
+}
+
+/**
+ * 迷你走勢。只有兩個點以上才畫得出線，一個點的品項留白 ——
+ * 畫一條平的假線會讓人以為那個報價這段時間沒有動過。
+ */
+function sparkline(values) {
+  const w = 68;
+  const h = 24;
+  const pts = values.length > SPARK_MAX ? values.slice(-SPARK_MAX) : values;
+  if (pts.length < 2) return `<svg class="spark" viewBox="0 0 ${w} ${h}" aria-hidden="true"></svg>`;
+  const min = Math.min(...pts);
+  const max = Math.max(...pts);
+  const span = max - min || 1;
+  const line = pts
+    .map((v, i) => {
+      const x = 1 + (i / (pts.length - 1)) * (w - 2);
+      const y = h - 1 - ((v - min) / span) * (h - 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+  return `<svg class="spark ${trend(pts[pts.length - 1] - pts[0])}" viewBox="0 0 ${w} ${h}"
+    preserveAspectRatio="none" aria-hidden="true"><polyline points="${line}"/></svg>`;
+}
+
+function quoteRow(item, values, { withTable = true } = {}) {
+  const chg = quoteChg(item);
+  const kind = QUOTE_KINDS[item.kind] || QUOTE_KINDS.price;
+  const sub = [withTable ? item.table : '', quoteUnit(item), kind.tag].filter(Boolean).join(' · ');
+  return `<a class="row row--quote" href="#/quote/${encodeURIComponent(item.id)}">
+    <div class="ident">
+      <span class="name">${esc(item.name)}</span>
+      <span class="code">${esc(sub)}</span>
+    </div>
+    ${sparkline(values)}
+    <div class="figures">
+      <span class="value">${quoteNum(item.last.v)}</span>
+      <span class="price"><em class="${trend(chg)}">${signedPct(chg, 2)}</em> ${esc(quoteSpanSpec().label)}</span>
+    </div>
+  </a>`;
+}
+
+/**
+ * 這一頁的一句話。挑的是「這個期間誰動得最多」——報價的意義在變化，
+ * 不在絕對值（0.33 人民幣的電池片與 4,405 美元的黃金比大小毫無意義）。
+ */
+function quoteSay(items, movers, latest) {
+  const spec = quoteSpanSpec();
+  const graded = items.filter((i) => quoteChg(i) !== null);
+  const up = graded.filter((i) => quoteChg(i) > 0).length;
+  const down = graded.filter((i) => quoteChg(i) < 0).length;
+  const top = movers.up[0] || null;
+  const bottom = movers.down[0] || null;
+  const costs = items.filter((i) => i.kind !== 'price').length;
+
+  const stats = [
+    { b: pair(up, down), span: `${esc(spec.label)}漲／跌（項）` },
+    ...(top ? [{ b: signedPct(quoteChg(top), 1), span: esc(clip(top.name, 18)), cls: 'up' }] : []),
+    ...(bottom ? [{ b: signedPct(quoteChg(bottom), 1), span: esc(clip(bottom.name, 18)), cls: 'down' }] : []),
+    { b: `${items.length - costs} / ${items.length}`, span: '成品報價／全部品項' },
+  ];
+
+  const sentence = graded.length
+    ? `以 ${esc(spec.label)}計，${items.length} 個追蹤品項裡有 ${graded.length} 項算得出變化，
+       ${tint(1, `${up} 項在漲`)}、${tint(-1, `${down} 項在跌`)}${
+        top ? `；漲最多的是 <b>${esc(top.name)}</b> ${tint(quoteChg(top), signedPct(quoteChg(top), 2))}` : ''}${
+        bottom ? `，跌最多的是 <b>${esc(bottom.name)}</b> ${tint(quoteChg(bottom), signedPct(quoteChg(bottom), 2))}` : ''}。`
+    : `${items.length} 個追蹤品項都還算不出 ${esc(spec.label)}的變化 ——
+       TrendForce 的免費頁只給現在那一筆，歷史要靠每天累積（或先跑
+       <code>scripts/backfill_quotes.py</code> 從網頁典藏館補一段）。`;
+
+  const note = `被動元件（MLCC／晶片電阻）與功率元件（MOSFET／IGBT／SiC）沒有可自動抓的
+    公開成品報價，這一頁能給的是它們的上游原料價：銅、銀、鈀與多晶矽，標成「成本」的那些。
+    原料漲不等於成品漲得動 —— 漲價能不能轉嫁出去是另一件事，這一頁不回答那個問題。`;
+
+  return takeaway(sentence, `最新報價日 ${latest}`, stats, note);
+}
+
+function quoteMovers(items) {
+  const graded = items.filter((i) => quoteChg(i) !== null);
+  const sorted = graded.slice().sort((a, b) => quoteChg(b) - quoteChg(a));
+  return {
+    up: sorted.filter((i) => quoteChg(i) > 0),
+    down: sorted.filter((i) => quoteChg(i) < 0).reverse(),
+  };
+}
+
+/**
+ * 報價 × 族群。把每個大族群的「報價變化」與「這一族在台股的資金與價格反應」擺在一起。
+ *
+ * 報價取中位數而不是平均：同一族裡 DDR5 與 DDR3 的漲幅可以差一個數量級，
+ * 平均會被單一品項帶著跑，中位數講的是「這一族大多數品項在做什麼」。
+ *
+ * 族群成交值取當天排進前 300 名的成分股合計 —— 名單外的個股本站沒有資料，
+ * 所以這個數字是「這一族在榜上的部分」，不是整族的全貌。
+ */
+async function quoteThemeRows(items, spec) {
+  if (!hasThemes()) return null;
+
+  const buckets = new Map();
+  for (const item of items) {
+    for (const pair of item.themes || []) {
+      const [group, sub] = pair;
+      let bucket = buckets.get(group);
+      if (!bucket) buckets.set(group, (bucket = { subs: new Set(), items: [] }));
+      bucket.subs.add(sub);
+      bucket.items.push(item);
+    }
+  }
+  if (!buckets.size) return null;
+
+  const baseDate = dateBack(spec.days);
+  const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(baseDate)]);
+  const poolOf = (payload) =>
+    new Map(payload ? payload.stocks.filter((s) => s.rank <= KEPT).map((s) => [s.code, s]) : []);
+  const pool = poolOf(today);
+  const basePool = poolOf(base);
+
+  const rows = [];
+  for (const [group, bucket] of buckets) {
+    const codes = new Set();
+    for (const sub of bucket.subs) for (const code of themeCodes(group, sub)) codes.add(code);
+    const onBoard = [...codes].filter((c) => pool.has(c));
+    const value = onBoard.reduce((n, c) => n + pool.get(c).value, 0);
+    const baseOn = [...codes].filter((c) => basePool.has(c));
+    const baseValue = baseOn.reduce((n, c) => n + basePool.get(c).value, 0);
+    const moves = bucket.items
+      .map((i) => quoteChg(i))
+      .filter((v) => v !== null)
+      .sort((a, b) => a - b);
+    rows.push({
+      group,
+      quotes: bucket.items.length,
+      graded: moves.length,
+      mid: moves.length ? moves[(moves.length - 1) >> 1] : null,
+      kinds: new Set(bucket.items.map((i) => i.kind)),
+      value,
+      // 金額增減而不是百分比：基準日沒進榜的成分股讓分母變得很小，
+      // 百分比會被「進榜」本身放大成 +4700%，那不是資金真的變成 48 倍。
+      flow: baseOn.length ? value - baseValue : null,
+      chg: weightedChange(onBoard, pool),
+      onBoard: onBoard.length,
+      baseOn: baseOn.length,
+      codes: codes.size,
+    });
+  }
+
+  rows.sort((a, b) => {
+    if (a.mid === null) return 1;
+    if (b.mid === null) return -1;
+    return Math.abs(b.mid) - Math.abs(a.mid);
+  });
+  return { rows, baseDate };
+}
+
+function quoteThemeCard(pack, spec) {
+  if (!pack || !pack.rows.length) return '';
+  const rows = pack.rows.map((r) => {
+    const onlyCost = !r.kinds.has('price');
+    return `<div class="row row--theme">
+      <div class="ident">
+        <span class="name">${esc(r.group)}</span>
+        <span class="code">${r.quotes} 個品項${onlyCost ? '（只有成本指標）' : ''}
+          · 榜上 ${r.onBoard}／${r.codes} 檔${r.baseOn === r.onBoard ? '' : `（基準日 ${r.baseOn} 檔）`}</span>
+      </div>
+      <div class="figures">
+        <span class="value"><em class="${trend(r.mid)}">${signedPct(r.mid, 2)}</em></span>
+        <span class="price">報價中位數</span>
+      </div>
+      <div class="figures">
+        <span class="value"><em class="${trend(r.flow)}">${
+          r.flow === null ? '—' : `${r.flow > 0 ? '+' : '-'}${okuText(Math.abs(r.flow))}`}</em></span>
+        <span class="price">成交值 ${okuText(r.value)}</span>
+      </div>
+      <div class="figures">
+        <span class="value"><em class="${trend(r.chg)}">${signedPct(r.chg, 2)}</em></span>
+        <span class="price">加權漲跌</span>
+      </div>
+    </div>`;
+  });
+  return `<section class="card">
+    <h2>報價 × 族群 <small>${esc(spec.label)}</small></h2>
+    ${rows.join('')}
+    <p class="note">左邊是報價（${esc(spec.label)}，取該族群所有品項的中位數），
+      右邊三格是這一族在台股的反應：對比 ${esc(pack.baseDate || '—')}（${esc(spec.days_label)}）的
+      成交值增減、${state.date} 的成交值，以及成交值加權漲跌幅。
+      增減用金額不用百分比：成交值只含當天排進前 300 名的成分股，基準日在榜的檔數
+      不一樣時（括號裡標出來的那些），百分比會被「進榜」本身放大成幾千 %。
+      報價與成交值的期間也對不齊 —— 報價按日曆日算、成交值按交易日算，
+      而報價本身不是每個交易日都會更新。</p>
+  </section>`;
+}
+
+async function renderQuoteList(view, index) {
+  const spec = quoteSpanSpec();
+  const catPills = [
+    { value: 'all', label: '全部' },
+    ...index.cats.map((c) => ({ value: c.key, label: c.name })),
+  ];
+  const known = new Set(index.cats.map((c) => c.key));
+  if (state.quoteCat !== 'all' && !known.has(state.quoteCat)) state.quoteCat = 'all';
+  const inCat = state.quoteCat === 'all'
+    ? index.items
+    : index.items.filter((i) => i.cat === state.quoteCat);
+  // stale 是「已經不在最新那張表上」的品項（見 build_quotes.py 的 mark_stale）。
+  // 回補歷史一定會撈到一批停止報價的舊規格，混在清單裡看起來就像今天的數字。
+  const picked = inCat.filter((i) => !i.stale);
+  const retired = inCat.filter((i) => i.stale);
+
+  // 迷你走勢要序列，序列一個品類一個檔；篩掉的品類就不必抓
+  const cats = [...new Set(picked.map((i) => i.cat))];
+  const loaded = await Promise.all(cats.map((c) => loadQuoteSeries(c)));
+  const seriesByCat = new Map(cats.map((c, i) => [c, loaded[i]]));
+  const valuesOf = (item) => {
+    const series = seriesByCat.get(item.cat);
+    if (!series || !series.items[item.id]) return [];
+    return series.items[item.id].map((p) => p[1]);
+  };
+
+  const movers = quoteMovers(picked);
+  const themePack = await quoteThemeRows(picked, spec);
+
+  // 一張表一張卡：同一張表的所有品項共用報價日與更新頻率，寫在卡片標題上就好
+  const byTable = new Map();
+  for (const item of picked) {
+    const key = `${item.cat}|${item.table}`;
+    if (!byTable.has(key)) byTable.set(key, []);
+    byTable.get(key).push(item);
+  }
+
+  const catName = (key) => (index.cats.find((c) => c.key === key) || {}).name || key;
+  const tableCards = [...byTable.entries()].map(([key, group]) => {
+    const [cat, table] = key.split('|');
+    const asof = group.reduce((a, b) => (b.last.d > a ? b.last.d : a), group[0].last.d);
+    const rows = group
+      .slice()
+      .sort((a, b) => (quoteChg(b) ?? -Infinity) - (quoteChg(a) ?? -Infinity))
+      .map((item) => quoteRow(item, valuesOf(item), { withTable: false }));
+    // 金屬與指數的「表」就是品類本身（一個品類一張卡），不要印成「金屬原料 · 金屬原料」
+    const title = table === catName(cat) ? table : `${catName(cat)} · ${table}`;
+    return listCard(title,
+      `報價日 ${asof} · ${group[0].freq}更新 · ${group.length} 項`, rows);
+  });
+
+  const moverRows = (list, n = 6) => list.slice(0, n).map((i) => quoteRow(i, valuesOf(i)));
+
+  view.innerHTML = `
+    <div class="controls">${pills('quotecat', catPills, state.quoteCat)}</div>
+    <div class="controls">${pills('quotespan', QUOTE_SPANS, state.quoteSpan)}</div>
+    ${quoteSay(picked, movers, index.latest)}
+    ${quoteThemeCard(themePack, spec)}
+    ${listCard('漲最多', `${spec.label} · 取前 6 項`, moverRows(movers.up), '這個期間沒有品項在漲')}
+    ${listCard('跌最多', `${spec.label} · 取前 6 項`, moverRows(movers.down), '這個期間沒有品項在跌')}
+    ${tableCards.join('')}
+    ${retired.length ? `<section class="card">
+      <h2>已停止報價 <small>${retired.length} 個品項</small></h2>
+      ${retired.slice().sort((a, b) => (a.last.d < b.last.d ? 1 : -1))
+        .map((item) => quoteRow(item, valuesOf(item))).join('')}
+      <p class="note">這些品項在最新的表上已經找不到（規格換代或下架），最後一筆報價
+        停在各自標的日期。序列還留著，點進去看得到當時的走勢，但它們不列入上面的漲跌
+        統計 —— 停更的數字混進「今天在漲的有幾項」就沒有意義了。</p>
+    </section>` : ''}
+    <section class="card">
+      <h2>資料來源 <small>都是可公開瀏覽的頁面</small></h2>
+      ${index.cats.map((c) => `<div class="row row--quote">
+        <div class="ident">
+          <span class="name">${esc(c.name)}</span>
+          <span class="code">${esc(c.source)} · ${c.n} 項${
+            c.retired ? `（另 ${c.retired} 項已停更）` : ''} · 最新 ${esc(c.latest)}</span>
+        </div>
+        <div class="figures"><span class="price">${esc((QUOTE_KINDS[c.kind] || {}).label || '')}</span></div>
+      </div>`).join('')}
+      <p class="note">記憶體、面板、太陽能與鋰電池材料取自 TrendForce 的免費價格頁；
+        金屬、能源與指數取自 Yahoo Finance 的日線。免費頁只顯示最新一筆，
+        所以歷史是本站自己每天累積的，起點就是開始追蹤的那一天。
+        目錄更新於 ${esc((index.updated || '').slice(0, 16).replace('T', ' '))}。</p>
+    </section>`;
+}
+
+/**
+ * 單一品項。上面是報價自己的走勢，下面把它與對應族群的成交值疊在一起。
+ *
+ * 兩條線都換算成「以區間第一天為 100」的指數才疊得起來：一邊是美元／顆，
+ * 一邊是億元，共用一個縱軸只會讓其中一條變成貼著軸的直線。
+ */
+async function renderQuoteItem(view, index, rawId) {
+  const id = decodeURIComponent(rawId);
+  const item = (index.items || []).find((i) => i.id === id);
+  if (!item) {
+    view.innerHTML = `<p class="hint">找不到這個報價品項。<br><a class="linky" href="#/quote">回報價清單</a></p>`;
+    return;
+  }
+
+  const series = await loadQuoteSeries(item.cat);
+  const raw = series && series.items[id] ? series.items[id] : [];
+  const all = raw.map(([i, v]) => ({ d: series.dates[i], v }));
+  const span = state.quoteChart;
+  const floor = span && all.length
+    ? new Date(new Date(all[all.length - 1].d).getTime() - span * 86400000).toISOString().slice(0, 10)
+    : '';
+  const points = floor ? all.filter((p) => p.d >= floor) : all;
+
+  const values = points.map((p) => p.v);
+  const high = values.length ? Math.max(...values) : null;
+  const low = values.length ? Math.min(...values) : null;
+  const kind = QUOTE_KINDS[item.kind] || QUOTE_KINDS.price;
+  const cat = (index.cats || []).find((c) => c.key === item.cat) || {};
+
+  const stats = [
+    { b: quoteNum(item.last.v), span: `最新（${esc(item.last.d)}）` },
+    { b: signedPct(quoteChg(item, 'prev'), 2), span: '較前次', cls: trend(quoteChg(item, 'prev')) },
+    { b: signedPct(quoteChg(item, 'm1'), 2), span: '近一月', cls: trend(quoteChg(item, 'm1')) },
+    { b: signedPct(quoteChg(item, 'y1'), 2), span: '近一年', cls: trend(quoteChg(item, 'y1')) },
+  ];
+
+  const themeText = (item.themes || []).map(([g, s]) => `${g}／${s}`).join('、');
+
+  view.innerHTML = `
+    <section class="card">
+      <h2>${esc(item.name)} <small>${esc(cat.name || item.cat)} · ${esc(item.table)}</small></h2>
+      <div class="stat-grid">${stats
+        .map((s) => `<div class="stat"><b class="${s.cls || ''}">${s.b}</b><span>${s.span}</span></div>`)
+        .join('')}</div>
+      <p class="note">單位 ${esc(quoteUnit(item))} · ${esc(item.freq)}更新 ·
+        ${item.n} 個報價日（${esc(item.first)} 起）· ${esc(kind.label)}
+        ${item.why ? `<br>${esc(item.why)}。` : ''}
+        ${themeText ? `<br>對應族群：${esc(themeText)}` : ''}</p>
+    </section>
+    <div class="controls">${pills('quotechart', QUOTE_CHART_SPANS, state.quoteChart)}</div>
+    <section class="card">
+      <h2>報價走勢 <small>${esc(quoteUnit(item))}</small></h2>
+      <div class="chart-box"><canvas id="c-quote"></canvas></div>
+      <p class="note">${points.length >= 2
+        ? `區間高 ${quoteNum(high)}、低 ${quoteNum(low)}，目前在區間的 ${
+            high === low ? '—' : `${(((item.last.v - low) / (high - low)) * 100).toFixed(0)}%`} 位置。
+           點距不等寬：${esc(item.freq)}更新的報價就是${esc(item.freq)}一個點。`
+        : '只有一個報價日，畫不出走勢。TrendForce 的免費頁只給最新一筆，歷史要靠每天累積。'}</p>
+    </section>
+    <section class="card" id="quote-vs">
+      <h2>報價 × 族群成交值 <small>以區間首日為 100</small></h2>
+      <div class="chart-box"><canvas id="c-quote-vs"></canvas></div>
+      <p class="note">兩條線的單位不同（一邊是報價、一邊是億元），所以都換算成
+        以區間第一天為 100 的指數。報價在下一次更新之前維持不變（畫成水平段），
+        族群成交值只含當天排進前 300 名的成分股，沒進榜的日子斷線。</p>
+    </section>
+    <p class="hint"><a class="linky" href="#/quote">← 回報價清單</a>
+      ${cat.url ? `<a class="linky" href="${esc(cat.url)}" target="_blank" rel="noopener">來源頁</a>` : ''}</p>`;
+
+  let Chart;
+  try {
+    Chart = await loadChartJs();
+  } catch (err) {
+    view.querySelectorAll('.chart-box').forEach((box) => {
+      box.innerHTML = `<p class="hint">${esc(err.message)}</p>`;
+    });
+    return;
+  }
+
+  drawLine(Chart, $('#c-quote'), points.map((p) => p.d), [
+    { data: values, color: QLINE.quote, label: item.name },
+  ], { emptyText: '無報價' });
+
+  await drawQuoteVsTheme(Chart, item, points);
+}
+
+/** 把報價與族群成交值疊在交易日軸上。族群對不起來時整張卡收起來，不要留一張空圖。 */
+async function drawQuoteVsTheme(Chart, item, points) {
+  const box = $('#quote-vs');
+  if (!box) return;
+  const all = item.themes || [];
+  if (!all.length || !hasThemes() || points.length < 2) {
+    box.hidden = true;
+    return;
+  }
+  // 一個報價可以對應到好幾個族群（白銀既是 MLCC 端電極也是太陽能銀漿），
+  // 但圖上只畫一條線 —— 那就只能是第一個大族群，而且加總的範圍要跟圖例上寫的一致。
+  const primary = all[0][0];
+  const themes = all.filter(([group]) => group === primary);
+  const others = [...new Set(all.map(([group]) => group))].filter((g) => g !== primary);
+
+  const dates = state.index.dates;
+  const from = points[0].d;
+  const axis = dates.filter((d) => d >= from && d <= state.date);
+  if (axis.length < 2) {
+    box.hidden = true;
+    return;
+  }
+
+  const totals = await themeTotalsOnAxis(themes, axis);
+  if (!totals || !totals.some((v) => v !== null)) {
+    box.hidden = true;
+    return;
+  }
+
+  const quoteLine = indexTo100(stepOnto(axis, points.map((p) => p.d), points.map((p) => p.v)));
+  drawLine(Chart, $('#c-quote-vs'), axis, [
+    { data: quoteLine, color: QLINE.quote, label: `${item.name}（報價）` },
+    { data: indexTo100(totals), color: QLINE.theme, label: `${primary} 成交值` },
+  ], { emptyText: '無資料' });
+
+  if (others.length) {
+    const note = box.querySelector('.note');
+    if (note) {
+      note.insertAdjacentHTML('beforeend',
+        `<br>這個報價也對應到 ${esc(others.join('、'))}，圖上只畫第一個（${esc(primary)}）。`);
+    }
+  }
+}
+
+/** 該族群（含所有對應子族群）在指定交易日軸上的成交值合計，單位億元。 */
+async function themeTotalsOnAxis(themes, axis) {
+  const codes = new Set();
+  for (const [group, sub] of themes) for (const code of themeCodes(group, sub)) codes.add(code);
+  if (!codes.size) return null;
+
+  const want = new Set(axis);
+  const totals = new Map();
+  const years = [...new Set(axis.map((d) => d.slice(0, 4)))].sort();
+  for (const year of years) {
+    const hist = await loadHistory(year);
+    for (const code of codes) {
+      const entry = hist.stocks[code];
+      if (!entry) continue;
+      for (const [i, , value] of entry.p) {
+        const date = hist.dates[i];
+        if (want.has(date)) totals.set(date, (totals.get(date) || 0) + value);
+      }
+    }
+  }
+  return axis.map((d) => (totals.has(d) ? Math.round(totals.get(d) * 10) / 10 : null));
+}
+
+/**
+ * 把稀疏的報價鋪到交易日軸上：每一天取「當天或之前最後一筆」。
+ * 合約價一個月才動一次，不鋪的話一年只有 12 個點、跟成交值那條完全對不起來。
+ */
+function stepOnto(axis, days, values) {
+  const out = [];
+  let at = -1;
+  for (const date of axis) {
+    while (at + 1 < days.length && days[at + 1] <= date) at += 1;
+    out.push(at >= 0 ? values[at] : null);
+  }
+  return out;
+}
+
+/** 換算成「以第一個有值的點為 100」的指數，兩種單位才疊得起來。 */
+function indexTo100(arr) {
+  const first = arr.find((v) => v !== null && v !== undefined);
+  if (!first) return arr.map(() => null);
+  return arr.map((v) => (v === null || v === undefined ? null : Math.round((v / first) * 1000) / 10));
+}
+
+async function renderQuote(view, id) {
+  let index;
+  try {
+    index = await loadQuoteIndex();
+  } catch (err) {
+    state.quotes = null;      // 讓下一次進來還會再試一次，不要記住這次的失敗
+    view.innerHTML = `<p class="hint">還沒有報價資料（${esc(err.message)}）。<br>
+      請先執行 <code>scripts/fetch_quotes.py</code> 與 <code>scripts/build_quotes.py</code>。</p>`;
+    return;
+  }
+  if (!index || !Array.isArray(index.items) || !index.items.length) {
+    view.innerHTML = '<p class="hint">報價目錄是空的，請重新執行 scripts/build_quotes.py。</p>';
+    return;
+  }
+  if (id) await renderQuoteItem(view, index, id);
+  else await renderQuoteList(view, index);
+}
+
+// --------------------------------------------------------------------------
 // 分頁四：任兩日對照
 // --------------------------------------------------------------------------
 async function renderCompare(view, params) {
@@ -2608,6 +3747,11 @@ function paintChrome() {
   select.innerHTML = idx.dates.slice().reverse().map((d) => `<option value="${d}">${d}</option>`).join('');
   select.value = state.date;
 
+  // 走到序列兩端就把按鈕鎖起來，免得按了沒反應讓人以為壞掉
+  const at = idx.dates.indexOf(state.date);
+  $('#date-prev').disabled = at <= 0;
+  $('#date-next').disabled = at < 0 || at >= idx.dates.length - 1;
+
   $('#scope-select').value = state.scope;
 
   const i = idx.dates.indexOf(state.date);
@@ -2648,6 +3792,8 @@ async function render() {
     else if (route.view === 'burst') await renderBurst(view);
     else if (route.view === 'ma') await renderMa(view);
     else if (route.view === 'macd') await renderMacd(view);
+    else if (route.view === 'holders') await renderHolders(view, route.arg);
+    else if (route.view === 'quote') await renderQuote(view, route.arg);
     else if (route.view === 'stock') await renderStock(view, route.arg);
     else if (route.view === 'compare') await renderCompare(view, route.params);
     else await renderRank(view);
@@ -2658,11 +3804,25 @@ async function render() {
   }
 }
 
+/** 沿著交易日序列前後各挪一天（step 為 -1 或 +1），到頭了就不動 */
+function shiftDate(step) {
+  const dates = state.index.dates;
+  const at = dates.indexOf(state.date);
+  if (at < 0) return;
+  const next = dates[at + step];
+  if (!next) return;
+  state.date = next;
+  render();
+}
+
 function bindGlobalControls() {
   $('#date-select').addEventListener('change', (e) => {
     state.date = e.target.value;
     render();
   });
+
+  $('#date-prev').addEventListener('click', () => shiftDate(-1));
+  $('#date-next').addEventListener('click', () => shiftDate(1));
 
   $('#scope-select').addEventListener('change', (e) => {
     state.scope = e.target.value;
@@ -2693,6 +3853,18 @@ function bindGlobalControls() {
     if (pill.dataset.macdwhen) state.macdWhen = pill.dataset.macdwhen;
     if (pill.dataset.macdstack) state.macdStack = pill.dataset.macdstack;
     if (pill.dataset.sectorsort) state.sectorSort = pill.dataset.sectorsort;
+    if (pill.dataset.holderlots) {
+      state.holderLots = Number(pill.dataset.holderlots);
+      try {
+        localStorage.setItem(HOLDER_LOTS_KEY, String(state.holderLots));
+      } catch (err) {
+        /* 記不住就算了，下次回到預設的 400 張 */
+      }
+    }
+    if (pill.dataset.holderspan) state.holderSpan = pill.dataset.holderspan;
+    if (pill.dataset.quotecat) state.quoteCat = pill.dataset.quotecat;
+    if (pill.dataset.quotespan) state.quoteSpan = pill.dataset.quotespan;
+    if (pill.dataset.quotechart) state.quoteChart = Number(pill.dataset.quotechart);
     if (pill.dataset.grouping) {
       state.grouping = pill.dataset.grouping;
       try {
@@ -2751,6 +3923,8 @@ async function start() {
     if (SCOPES.some((s) => s.value === saved) && state.index.scopes[saved]) state.scope = saved;
     const grouping = localStorage.getItem(GROUPING_KEY);
     if (GROUPINGS.some((g) => g.value === grouping)) state.grouping = grouping;
+    const lots = Number(localStorage.getItem(HOLDER_LOTS_KEY));
+    if (HOLDER_LOTS.some((o) => o.value === lots)) state.holderLots = lots;
   } catch (err) {
     /* 讀不到就用預設的「全部」與「官方產業」 */
   }

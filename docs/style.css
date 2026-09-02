@@ -69,12 +69,17 @@ a { color: inherit; text-decoration: none; }
   gap: 10px;
 }
 
+/* 標題讓位給右邊的控制項：窄螢幕寧可截字，也不要把工具列擠成兩行 */
 .app-bar h1 {
   flex: 1;
+  min-width: 0;
   margin: 0;
   font-size: 17px;
   font-weight: 700;
   letter-spacing: .5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .app-bar__meta {
@@ -107,10 +112,35 @@ select, input, button {
 /* 手機上標題＋範圍＋日期要擠在同一列，所以兩個選單都壓縮 padding */
 #scope-select, #date-select { padding: 8px 4px; }
 #scope-select { flex: 0 0 auto; }
-#date-select { max-width: 38vw; }
+#date-select { max-width: 34vw; }
+
+/* 日期左右切換：兩顆窄按鈕夾著日期選單，一次跳一個交易日 */
+.date-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.date-nav__btn {
+  padding: 8px 6px;
+  min-width: 30px;
+  line-height: 1;
+  font-size: 18px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.date-nav__btn:disabled {
+  opacity: .35;
+  cursor: default;
+}
 
 @media (max-width: 400px) {
   .app-bar h1 { font-size: 15px; letter-spacing: 0; }
+  .app-bar__top { gap: 6px; }
+  #date-select { max-width: 32vw; font-size: 14px; }
+  .date-nav__btn { min-width: 24px; padding: 8px 2px; }
 }
 
 /* ---------- 分頁 ---------- */
@@ -221,6 +251,7 @@ select, input, button {
 .rank { text-align: center; line-height: 1.2; }
 .rank .no { display: block; font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .rank .delta { display: block; font-size: 11px; font-variant-numeric: tabular-nums; }
+.rank .delta.flat { font-size: 10px; }
 
 .ident { min-width: 0; }
 .ident .name { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -530,8 +561,26 @@ select, input, button {
   font-variant-numeric: tabular-nums;
 }
 
-.ident .ma-chips { display: block; font-size: 11px; line-height: 1.4; }
-.ma-chip { margin-right: 6px; font-variant-numeric: tabular-nums; }
+.ident .ma-chips,
+.ident .chips { display: block; font-size: 11px; line-height: 1.4; }
+.ma-chip,
+.chip { margin-right: 6px; font-variant-numeric: tabular-nums; }
+/* 大戶頁一列要塞三段「級距＋比例＋變化」，窄螢幕上讓它自己折行，別把名稱擠掉 */
+.ident .chips { white-space: normal; }
+.ident .chips .chip { white-space: nowrap; display: inline-block; }
+
+/* 大戶頁「各門檻一次看」：左邊張數，右邊三格是比例與兩個期間的變化。
+   六列要能並排比較，所以每一格都靠右、用等寬數字，行高也比排行列矮一點。 */
+.row--ladder {
+  grid-template-columns: 1fr auto auto auto;
+  gap: 8px;
+  min-height: 46px;
+}
+.row--ladder .figures .value { font-size: 14px; }
+.row--ladder .figures .price { font-size: 10px; }
+.row--ladder .ident .name em { font-size: 11px; font-weight: 400; margin-left: 4px; }
+/* 目前選定的那一層要看得出來，但不能搶過數字 */
+.row--ladder.is-on { background: var(--bg); }
 
 /* ---------- 圖表與統計 ---------- */
 .stat-grid {
@@ -587,6 +636,37 @@ select, input, button {
 .chart-box { padding: 10px 8px 14px; height: 220px; }
 /* K 線要看得出實體與影線的差別，220px 太擠 */
 .chart-box.tall { height: 300px; }
+
+/* ---------- 報價 ---------- */
+/* 報價列：左邊品項名、中間迷你走勢、右邊數字。沒有名次欄，所以不沿用 .row 的三欄。 */
+.row--quote { grid-template-columns: 1fr 68px auto; }
+
+/* 報價 × 族群：一個族群一列，右邊三格數字（報價中位數／成交值／加權漲跌）。
+   手機寬度塞不下三格加名稱，所以名稱獨佔一整列。 */
+.row--theme {
+  grid-template-columns: repeat(3, 1fr);
+  row-gap: 6px;
+}
+.row--theme .ident { grid-column: 1 / -1; }
+.row--theme .figures { text-align: left; }
+.row--theme .figures:first-of-type { text-align: left; }
+.row--theme .figures .value { font-size: 15px; }
+.row--theme .figures .price { font-size: 11px; }
+
+.spark {
+  width: 68px;
+  height: 24px;
+  overflow: visible;
+  color: var(--flat);
+}
+.spark.up { color: var(--up); }
+.spark.down { color: var(--down); }
+.spark polyline {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+}
 
 .foot {
   max-width: 720px;

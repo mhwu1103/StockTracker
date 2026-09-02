@@ -46,8 +46,39 @@ jobs:
         continue-on-error: true
         run: python scripts/fetch_industry.py
 
+      # 報價來自第三方的免費頁面（TrendForce、Yahoo），改版或臨時掛掉都有可能。
+      # 那是附加資訊，不該連帶讓當日行情更新失敗，所以這兩步都允許出錯。
+      - name: 抓上游報價與原物料
+        continue-on-error: true
+        run: python scripts/fetch_quotes.py
+
+      # 集保一週只結算一次（每週五），但這一步每天跑也不會多出東西：資料日還沒換
+      # 的話解出來的內容與已存的那一份一字不差，就不會再寫一次。第三方網站，
+      # 同樣不該連帶讓當日行情更新失敗。
+      - name: 抓集保股權分散表
+        continue-on-error: true
+        run: python scripts/fetch_holders.py
+
+      # 集保的 opendata 只留最新一週，下一週就被蓋掉 —— 排程被 GitHub 延遲或整次
+      # 跳過的話，那一週就永久沒了。官網的個股查詢頁還留著近一年，可以逐檔補回來。
+      # 這一步在正常情況下不發任何查詢請求：那幾週的快照已經涵蓋前 200 名就直接略過，
+      # 只有真的缺了才會補，一週的成本是 200 次小請求。
+      - name: 補回漏掉的集保週資料
+        continue-on-error: true
+        run: python scripts/backfill_holders.py --source stock --weeks 3 --top 200
+
       - name: 重建索引與歷史序列
         run: python scripts/build_history.py
+
+      - name: 重建報價序列
+        continue-on-error: true
+        run: python scripts/build_quotes.py
+
+      # 要放在 build_history.py 後面：個股序列只出給進過排行的代號，
+      # 那份名單是從 history/ 讀的。
+      - name: 重建集保序列
+        continue-on-error: true
+        run: python scripts/build_holders.py
 
       - name: 提交資料變更
         run: |
