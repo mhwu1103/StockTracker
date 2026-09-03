@@ -74,6 +74,9 @@ const state = {
   macdStack: 'any',    // 「MACD」分頁的四線篩選：沿用均線頁的 any／up／down
   holderLots: 400,     // 「大戶」分頁的大戶門檻（張），HOLDER_LOTS 的 value
   holderSpan: 'q1',    // 「大戶」分頁拿哪一段當基準（HOLDER_SPANS 的 value）
+  instiMin: 0.5,       // 「法人」分頁的同買／同賣門檻（億），INSTI_MINS 的 value
+  insti: null,         // Promise<insti/index.json>，進到法人頁才載
+  instiDay: new Map(), // 交易日 -> Promise<insti/daily/{日期}.json>
   holders: null,       // Promise<holders/index.json>，進到大戶頁才載
   holderWeek: new Map(),// 集保資料日 -> Promise<holders/weekly/{日期}.json>
   holderStock: new Map(),// 代號 -> Promise<holders/stock/{代號}.json|null>
@@ -2280,6 +2283,239 @@ async function renderHolders(view, code) {
 }
 
 // --------------------------------------------------------------------------
+// 分頁：法人（三大法人買賣超）
+//
+// 這一頁只問一件事：**外資與投信有沒有站在同一邊**。
+//
+// 兩者的錢性質不同，所以「同買」才有意思。外資動的是全球資金的配置，一天幾百億、
+// 常常是被動的（ETF 調整成分、指數換股、避險部位），對個別公司的看法不見得在裡面。
+// 投信動的是國內主動型基金，一檔幾千萬到幾億，經理人得對每一筆負責，通常也真的
+// 跑過公司。兩邊的理由本來各自獨立，同一天在同一檔上同向，才代表兩種完全不同的
+// 決策流程指到了同一個地方。
+//
+// 反過來，只有一邊在動的很常見也很難解讀：外資買超十億可能只是某檔 ETF 在建倉，
+// 投信賣超三億可能只是基金在應付贖回。所以這一頁不做「外資買超排行」——
+// 那張榜前幾名幾乎天天是同一批權值股，看久了就沒有資訊。
+//
+// 三件事一定要先講清楚，不然這一頁很容易被讀成「跟著買就對了」：
+//   1. **金額是估算的。** 官方的個股資料從頭到尾只有股數，金額＝股數 × 收盤價。
+//      門檻邊緣的個股會因為這幾個百分點進出榜。表頭的全市場合計才是官方金額。
+//   2. **買超不等於看多。** 外資的買超裡混著避險、借券還券與指數調整；投信在季底
+//      與年底有作帳的動機。淨額只說了「這些帳戶今天淨買進」，沒說為什麼。
+//   3. **淨額看不出成本。** 同樣買超一億，開盤搶進與收盤前掛低接的處境完全不同，
+//      日報表只有一個淨數字，分不出來。
+// --------------------------------------------------------------------------
+// 「同買／同賣」的門檻：兩邊各自都要達到這個金額。0.5 億是市場上最常用的說法，
+// 也差不多是「投信一檔基金認真布局」的量級；小型股上 3 億幾乎不會出現。
+const INSTI_MINS = [
+  { value: 0.3, label: '0.3 億' },
+  { value: 0.5, label: '0.5 億' },
+  { value: 1, label: '1 億' },
+  { value: 3, label: '3 億' },
+];
+const INSTI_MIN_KEY = 'stocktracker.instimin';
+
+// 每一檔存的五個值，順序即 scripts/institutions.py 的 FIELDS，兩邊必須一致。
+const I_NAME = 0;      // 簡稱
+const I_FO = 1;        // 外資買賣超股數（外陸資 + 外資自營商）
+const I_TR = 2;        // 投信買賣超股數
+const I_DE = 3;        // 自營商買賣超股數（自行買賣 + 避險）
+const I_CLOSE = 4;     // 當日收盤價，金額由這裡乘出來
+
+const INSTI_TOP = 30;  // 每張榜最多列幾檔
+
+function loadInstiIndex() {
+  // 目錄決定「哪幾天有法人資料」，讀到舊的就永遠看不到今天的，一律抓最新的；
+  // 每日檔是「同一個網址內容不再變」的檔案，照常吃快取。
+  if (!state.insti) state.insti = getJSON(`${DATA}/insti/index.json`, { cache: 'reload' });
+  return state.insti;
+}
+
+function loadInstiDay(date) {
+  if (!state.instiDay.has(date)) {
+    state.instiDay.set(date, getJSON(`${DATA}/insti/daily/${date}.json`));
+  }
+  return state.instiDay.get(date);
+}
+
+/**
+ * 億元。個股的估算金額從 0.3 億到幾百億都有，位數固定會讓一頭看不出差別、
+ * 另一頭塞滿沒有意義的小數，所以按量級給位數。
+ */
+const signedOku = (oku) => {
+  if (oku === null || oku === undefined) return '—';
+  const size = Math.abs(oku);
+  return `${oku > 0 ? '+' : ''}${num(oku, size < 10 ? 2 : size < 100 ? 1 : 0)} 億`;
+};
+
+/** 買賣超張數。零股在法人的日報表裡是常態，但幾百股在畫面上沒有意義，取整到張。 */
+const signedLots = (shares) =>
+  `${shares > 0 ? '+' : ''}${num(shares / 1000, 0)} 張`;
+
+/** 每日檔攤平成一排：{代號, 市場, 簡稱, 收盤, 三邊的股數與估算金額}。 */
+function instiRows(payload) {
+  const out = [];
+  for (const market of Object.keys(payload.stocks || {})) {
+    for (const [code, row] of Object.entries(payload.stocks[market] || {})) {
+      const close = row[I_CLOSE];
+      out.push({
+        code,
+        market,
+        name: row[I_NAME],
+        close,
+        lots: { fo: row[I_FO], tr: row[I_TR], de: row[I_DE] },
+        fo: (row[I_FO] * close) / 1e8,
+        tr: (row[I_TR] * close) / 1e8,
+        de: (row[I_DE] * close) / 1e8,
+      });
+    }
+  }
+  return out;
+}
+
+/** 外資與投信同向、而且兩邊各自都達到門檻。'buy' 是同買、'sell' 是同賣。 */
+const instiTogether = (rows, side, min) =>
+  rows
+    .filter((r) => (side === 'buy'
+      ? r.fo >= min && r.tr >= min
+      : r.fo <= -min && r.tr <= -min))
+    .sort((a, b) => (side === 'buy' ? (b.fo + b.tr) - (a.fo + a.tr) : (a.fo + a.tr) - (b.fo + b.tr)));
+
+function instiRow(entry, seq, ranked) {
+  const stock = ranked.get(entry.code);
+  const sum = entry.fo + entry.tr;
+  const chip = (label, oku, shares) =>
+    `<span class="chip">${label} <em class="${trend(oku)}">${signedOku(oku)}</em> · ${signedLots(shares)}</span>`;
+  const pct = stock && stock.changePct !== null && stock.changePct !== undefined
+    ? ` <em class="${trend(stock.changePct)}">${stock.changePct > 0 ? '+' : ''}${stock.changePct.toFixed(2)}%</em>`
+    : '';
+  // 同一個門檻套在大小型股上意義完全不同，所以把「這筆合計佔了當天成交值多少」
+  // 擺在金額底下。成交值只有前 300 名有（daily 就留到那裡），其餘的留白。
+  const share = stock && stock.value
+    ? `佔成交值 ${num((Math.abs(sum) * 1e8 / stock.value) * 100, 1)}%`
+    : '—';
+  return `<a class="row" href="#/stock/${entry.code}">
+    <div class="rank"><span class="no">${seq}</span>
+      <span class="delta flat">${stock ? `名次 ${stock.rank}` : `${KEPT} 名外`}</span></div>
+    <div class="ident">
+      <span class="name">${state.watch.has(entry.code) ? '<span class="star">★</span>' : ''}${esc(entry.name)}</span>
+      <span class="code">${entry.code} · ${esc(MARKET_TAGS[entry.market])}${
+        hasIndustry() ? ` · ${esc(industryOf(entry.code))}` : ''}</span>
+      <span class="chips">${chip('外資', entry.fo, entry.lots.fo)}${
+        chip('投信', entry.tr, entry.lots.tr)}${chip('自營', entry.de, entry.lots.de)}</span>
+    </div>
+    <div class="figures">
+      <span class="value ${trend(sum)}">${signedOku(sum)}</span>
+      <span class="price">${share}</span>
+      <span class="price">${num(entry.close, 2)}${pct}</span>
+    </div>
+  </a>`;
+}
+
+/** 這一頁共用的一段話：這些數字能講什麼、不能拿它講什麼。 */
+const INSTI_CAVEAT = `個股的金額是<b>估算</b>的：官方的三大法人日報表從頭到尾只有股數，
+  這裡的金額一律是「買賣超股數 × 當日收盤價」。真正的成交均價不等於收盤價，
+  拿全市場合計去對官方那張買賣金額彙總表，外資的相對誤差中位數約 5%、
+  金額差距中位數 2.8 億（22 個交易日、上市與上櫃分開算）。
+  量級與方向是可靠的，<b>但門檻邊緣的個股會因為這幾個百分點進出榜</b>。
+  表頭那六個全市場合計是官方金額，不是估算。`;
+
+async function renderInsti(view) {
+  let index;
+  try {
+    index = await loadInstiIndex();
+  } catch (err) {
+    view.innerHTML = `<p class="hint">還沒有法人資料（${esc(err.message)}）。<br>
+      請先執行 <code>scripts/fetch_institutions.py</code> 與
+      <code>scripts/build_institutions.py</code>；
+      要一次補上一段歷史就加 <code>--days 30</code>。</p>`;
+    return;
+  }
+  const days = index.days || [];
+  if (!days.length) {
+    view.innerHTML = '<p class="hint">法人目錄裡沒有任何交易日，請重跑 scripts/build_institutions.py。</p>';
+    return;
+  }
+
+  const controls = `<div class="controls">${pills('instimin', INSTI_MINS, state.instiMin)}</div>`;
+  const today = days.find((d) => d.d === state.date);
+  if (!today) {
+    // 法人資料是後來才開始累積的，涵蓋的交易日比排行短。缺哪一天要講清楚是
+    // 「還沒抓到」而不是「那天法人沒動作」，不然畫面上兩者長得一模一樣。
+    view.innerHTML = `${controls}
+      <p class="hint">${state.date} 還沒有法人資料。<br>
+      目前有 ${days.length} 個交易日：${esc(index.first)} ~ ${esc(index.latest)}。<br>
+      請把日期挪到那一段裡面，或執行
+      <code>scripts/fetch_institutions.py --days 30</code> 往前回補。</p>`;
+    return;
+  }
+
+  const [payload, daily] = await Promise.all([loadInstiDay(state.date), loadDaily(state.date)]);
+  const ranked = new Map(daily.stocks.map((s) => [s.code, s]));
+  // 頂部的範圍選單對這一頁一樣有效：選了上市就只看上市，表頭的合計也跟著只留上市
+  const markets = state.scope === 'all' ? ['twse', 'tpex'] : [state.scope];
+  const rows = instiRows(payload).filter((r) => markets.includes(r.market));
+  const min = state.instiMin;
+  const buys = instiTogether(rows, 'buy', min);
+  const sells = instiTogether(rows, 'sell', min);
+
+  // 統計格一排三個，所以要嘛三個、要嘛六個：兩個市場 × 三邊法人剛好排滿兩排
+  const stats = [];
+  for (const market of markets) {
+    const total = today[market] || {};
+    for (const [key, label] of [['fo', '外資'], ['tr', '投信'], ['de', '自營商']]) {
+      stats.push({
+        b: signedOku(total[key]),
+        span: `${MARKET_TAGS[market]}${label}`,
+        cls: trend(total[key]),
+      });
+    }
+  }
+
+  const both = new Set([...buys, ...sells].map((r) => r.code));
+  view.innerHTML = `
+    ${controls}
+    <section class="card">
+      <h2>三大法人買賣超 <small>${esc(state.date)} ${esc(scopeLabel())} · 同買 ${buys.length} 檔、同賣 ${sells.length} 檔</small></h2>
+      <div class="stat-grid">${stats
+        .map((s) => `<div class="stat"><b class="${s.cls}">${s.b}</b><span>${s.span}</span></div>`)
+        .join('')}</div>
+      <p class="note">上面那幾格是<b>官方</b>的全市場買賣超金額${today.e ? '（這一天官方彙總表抓不到，用估算值代替）' : ''}。
+        「外資」含外資自營商，「自營商」含自行買賣與避險，與市場上引用的口徑一致。</p>
+      <p class="note">下面兩張榜的門檻是<b>兩邊各自</b>都要達到 ${min} 億：外資買超 ${min} 億以上
+        <b>而且</b>投信也買超 ${min} 億以上才算同買。不是合計達到就算 ——
+        合計那樣算的話，外資買超十億配上投信賣超九億也會進榜，方向卻是相反的。
+        這一天${esc(scopeLabel())}有 ${rows.length} 檔進了資料檔（三邊的估算金額都不到
+        ${payload.cut} 億的不收），其中 ${both.size} 檔在目前門檻下同買或同賣。</p>
+    </section>
+    ${listCard('外資投信同買', `兩邊各自都買超 ${min} 億以上 · 依合計排序 · 取前 ${INSTI_TOP}`,
+      buys.slice(0, INSTI_TOP).map((r, i) => instiRow(r, i + 1, ranked)),
+      `${state.date} 沒有任何一檔外資與投信都買超 ${min} 億以上`)}
+    ${listCard('外資投信同賣', `兩邊各自都賣超 ${min} 億以上 · 依合計排序 · 取前 ${INSTI_TOP}`,
+      sells.slice(0, INSTI_TOP).map((r, i) => instiRow(r, i + 1, ranked)),
+      `${state.date} 沒有任何一檔外資與投信都賣超 ${min} 億以上`)}
+    <section class="card">
+      <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
+      <p class="note">${INSTI_CAVEAT}</p>
+      <p class="note">外資與投信的錢性質不同，「同買」才是這一頁的重點：外資動的是全球資金的
+        配置，一天幾百億而且常常是被動的（ETF 調整成分、指數換股、避險部位）；投信動的是
+        國內主動型基金，一檔幾千萬到幾億，經理人得對每一筆負責。兩種完全不同的決策流程
+        在同一天指到同一檔，比任何單邊的買超排行都少見。</p>
+      <p class="note">但買超不等於看多：外資的買超裡混著避險、借券還券與指數調整，投信在季底
+        與年底有作帳的動機。而且淨額看不出成本 —— 同樣買超一億，開盤搶進與收盤前掛低接的
+        處境完全不同，日報表只有一個淨數字，分不出來。<b>這是籌碼的事後紀錄，不是投資建議。</b></p>
+      <p class="note">同一個門檻套在大小型股上意義不同：0.5 億對一檔日成交 200 億的權值股是零頭，
+        對一檔日成交 3 億的中小型股是當天成交值的六分之一。所以每一列的金額底下擺了
+        「<b>佔成交值</b>」＝外資與投信合計 ÷ 當日成交值：權值股常常不到 1%，
+        中小型股可以到十幾趴，後者才是真的被法人吃掉了一大塊。成交值只有前 ${KEPT} 名
+        有（本站的每日檔就留到那裡），其餘的那一格留白。</p>
+      <p class="note">資料來自證交所「三大法人買賣超日報」與櫃買中心「三大法人買賣超彙總表」，
+        涵蓋普通股、特別股與 ETF／ETN，已排除權證與牛熊證。表頭的全市場合計來自兩邊的
+        「三大法人買賣金額彙總表」。</p>
+    </section>`;
+}
+
+// --------------------------------------------------------------------------
 // 分頁六：族群（資金流向）
 // --------------------------------------------------------------------------
 const SECTOR_SORTS = [
@@ -3793,6 +4029,7 @@ async function render() {
     else if (route.view === 'ma') await renderMa(view);
     else if (route.view === 'macd') await renderMacd(view);
     else if (route.view === 'holders') await renderHolders(view, route.arg);
+    else if (route.view === 'insti') await renderInsti(view);
     else if (route.view === 'quote') await renderQuote(view, route.arg);
     else if (route.view === 'stock') await renderStock(view, route.arg);
     else if (route.view === 'compare') await renderCompare(view, route.params);
@@ -3862,6 +4099,14 @@ function bindGlobalControls() {
       }
     }
     if (pill.dataset.holderspan) state.holderSpan = pill.dataset.holderspan;
+    if (pill.dataset.instimin) {
+      state.instiMin = Number(pill.dataset.instimin);
+      try {
+        localStorage.setItem(INSTI_MIN_KEY, String(state.instiMin));
+      } catch (err) {
+        /* 記不住就算了，下次回到預設的 0.5 億 */
+      }
+    }
     if (pill.dataset.quotecat) state.quoteCat = pill.dataset.quotecat;
     if (pill.dataset.quotespan) state.quoteSpan = pill.dataset.quotespan;
     if (pill.dataset.quotechart) state.quoteChart = Number(pill.dataset.quotechart);
@@ -3925,6 +4170,8 @@ async function start() {
     if (GROUPINGS.some((g) => g.value === grouping)) state.grouping = grouping;
     const lots = Number(localStorage.getItem(HOLDER_LOTS_KEY));
     if (HOLDER_LOTS.some((o) => o.value === lots)) state.holderLots = lots;
+    const instiMin = Number(localStorage.getItem(INSTI_MIN_KEY));
+    if (INSTI_MINS.some((o) => o.value === instiMin)) state.instiMin = instiMin;
   } catch (err) {
     /* 讀不到就用預設的「全部」與「官方產業」 */
   }

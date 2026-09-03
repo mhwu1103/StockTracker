@@ -46,6 +46,15 @@ jobs:
         continue-on-error: true
         run: python scripts/fetch_industry.py
 
+      # 三大法人買賣超。個股的金額是「買賣超股數 × 當日收盤價」估出來的，所以這一步
+      # 一定要排在 backfill.py 後面 —— 當日的 close/ 檔那時才寫好，否則就得自己再抓
+      # 一次全市場行情。--days 14 的理由與 backfill 相同：排程可能被延遲甚至整次跳過，
+      # 而這兩支來源都能指定日期，已存在的日期不會發出請求。
+      # 官方資料，但仍是附加資訊，不該連帶讓當日行情更新失敗。
+      - name: 抓三大法人買賣超
+        continue-on-error: true
+        run: python scripts/fetch_institutions.py --days 14 --sleep 3
+
       # 報價來自第三方的免費頁面（TrendForce、Yahoo），改版或臨時掛掉都有可能。
       # 那是附加資訊，不該連帶讓當日行情更新失敗，所以這兩步都允許出錯。
       - name: 抓上游報價與原物料
@@ -79,6 +88,10 @@ jobs:
       - name: 重建集保序列
         continue-on-error: true
         run: python scripts/build_holders.py
+
+      - name: 重建法人目錄
+        continue-on-error: true
+        run: python scripts/build_institutions.py
 
       - name: 提交資料變更
         run: |
