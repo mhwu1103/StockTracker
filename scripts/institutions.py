@@ -45,6 +45,24 @@ T86 把外資拆成「外陸資（不含外資自營商）」與「外資自營�
 
 `est` 是在**套門檻之前**加總的，所以它是整個市場的估算合計，不是榜上那幾檔的和
 —— 這樣它才能拿去跟官方的 `total` 對照。
+
+## 連續買賣超算在後端
+
+「外資連買 N 天」要回頭看 N 天，而一天的檔案 43 KB —— 讓前端自己抓十幾天回來算
+是幾百 KB 的代價，而且最長的那幾段可以連到資料起點，等於整段歷史都得下載。
+所以連續天數在 `build_institutions.py` 算好，一天寫一個 `insti/streak/{日期}.json`
+（只留 `RUN_MIN_DAYS` 天以上的，一天約 13 KB）。純衍生資料，每次都由 daily/ 重算。
+
+判斷「連續」的三條規則，都是為了不讓它安靜地算出比實際更長的天數：
+
+1. **相鄰性看交易日，不是看檔案順序。** 兩個市場只有一邊有資料的日子整天不寫檔
+   （見 `fetch_institutions.py`），所以 daily/ 中間可能缺一個真正的交易日。
+   照檔案順序往前接的話，那個缺口會被跳過 —— 缺的那天賣超也照樣算成連買。
+   交易日的名單取自 `docs/data/close/twse/`（全市場行情，比法人資料早開始累積）。
+2. **沒進當天檔案就斷。** 缺席代表三邊的估算金額都不到 `MIN_OKU`，外資那天動的
+   是幾萬元的零頭；把它算成買超的一天，等於用資料檔的邊界去編造連續性。
+3. **連到資料起點（或缺口）的那幾段標 `trunc`。** 起算日的前一個交易日沒有法人
+   資料時，實際天數只可能更長，不可能更短，畫面上要標成「連 N+ 天」。
 """
 
 from __future__ import annotations
@@ -58,6 +76,7 @@ import twse
 
 INSTI_DIR = twse.DATA_DIR / "insti"
 INSTI_DAILY_DIR = INSTI_DIR / "daily"
+INSTI_RUN_DIR = INSTI_DIR / "streak"
 INSTI_INDEX_PATH = INSTI_DIR / "index.json"
 
 # 上市：三大法人買賣超日報。selectType=ALLBUT0999 是「全部（不含權證、牛熊證）」
@@ -79,6 +98,7 @@ SNAPSHOT_VERSION = 1
 #   de     自營商買賣超股數（自行買賣 + 避險）
 #   close  當日收盤價，金額由前端乘出來
 FIELDS = ("name", "fo", "tr", "de", "close")
+F_NAME, F_FO, F_TR, F_DE, F_CLOSE = (FIELDS.index(k) for k in FIELDS)
 
 # 三邊的估算金額都不到這個數（億元）就不存。理由見模組說明。
 MIN_OKU = 0.05
@@ -331,6 +351,131 @@ def oku(shares: float, close: float) -> float:
 
 
 # --------------------------------------------------------------------------- #
+# 連續買賣超（外資）
+# --------------------------------------------------------------------------- #
+# 檔案格式版號，與 SNAPSHOT_VERSION 各自獨立：daily/ 沒動、只改連續榜的欄位時
+# 只有這一個要加一。
+RUN_VERSION = 1
+
+# 幾天以上才寫進檔案。三天是「連續」這個詞最低的門檻，兩天在一天的檔案裡就看得出來。
+RUN_MIN_DAYS = 3
+
+# 只算外資。投信與自營商的資料同樣在 daily/ 裡，但這一份要回答的是「外資有沒有
+# 一路買下去」—— 三邊都存進來會讓檔案大三倍，而畫面上一次只看得懂一種。
+RUN_LEG = "fo"
+
+# 一段連續買（賣）超存的八個值，順序即 index。前端的 R_NAME/R_DAYS/… 必須一致。
+#   name   簡稱
+#   days   連續天數，正的是連買、負的是連賣
+#   lots   這段期間的累計買賣超股數
+#   oku    這段期間的累計估算金額（億元，逐日以當日收盤價換算後相加）
+#   since  這段連續的起算日（第一個同向的交易日）
+#   close  最後一天（也就是檔名那天）的收盤價
+#   ret    起算日「前一個交易日」收盤到最後一天收盤的漲跌（%），算不出來為 null
+#   trunc  1 代表起算日的前一個交易日沒有法人資料，實際天數只可能更長
+RUN_FIELDS = ("name", "days", "lots", "oku", "since", "close", "ret", "trunc")
+
+# 一段還在進行中的連續買（賣）超。days 帶正負號，其餘都是累加值。
+Run = namedtuple("Run", "market name days lots oku since close trunc")
+
+
+def foreign_table(payload: dict) -> dict:
+    """一天的檔案 -> {代號: (市場, 簡稱, 外資買賣超股數, 收盤價)}。"""
+    out = {}
+    for market, stocks in (payload.get("stocks") or {}).items():
+        for code, row in stocks.items():
+            out[code] = (market, row[F_NAME], row[F_FO], row[F_CLOSE])
+    return out
+
+
+def adjacent_flags(dates: list, trading: list) -> list:
+    """dates[i] 的前一個交易日是不是就是 dates[i-1]。
+
+    dates 是有法人資料的日子、trading 是全部交易日。第 0 個永遠是 False ——
+    它前面那個交易日（如果有）本來就沒有法人資料。不在 trading 裡的日期同樣算 False：
+    對不上全市場行情的日期不該被拿來接續，寧可斷在那裡。
+    """
+    slot = {d: i for i, d in enumerate(trading)}
+    flags = []
+    for i, date_iso in enumerate(dates):
+        at = slot.get(date_iso)
+        flags.append(bool(i and at and slot.get(dates[i - 1]) == at - 1))
+    return flags
+
+
+def foreign_runs(days: list):
+    """逐日推進每一檔的連續買（賣）超。
+
+    days 是 [(日期, 前一天是否相鄰, foreign_table 的結果)]，由舊到新。
+    每一天產出 {代號: Run}，只含當天外資有明確方向（股數不為零）的那些。
+
+    往前接的條件有三個：前一個交易日相鄰、那天這一檔也在（沒進檔案就是斷）、
+    而且方向相同。任何一個不成立就從今天重新起算。
+    """
+    prev = {}
+    for date_iso, adjacent, table in days:
+        cur = {}
+        for code, (market, name, shares, close) in table.items():
+            if not shares:
+                continue
+            up = shares > 0
+            base = prev.get(code) if adjacent else None
+            if base and (base.days > 0) == up:
+                cur[code] = base._replace(
+                    market=market, name=name,
+                    days=base.days + (1 if up else -1),
+                    lots=base.lots + shares,
+                    oku=base.oku + oku(shares, close),
+                    close=close)
+            else:
+                cur[code] = Run(market, name, 1 if up else -1, shares,
+                                oku(shares, close), date_iso, close, not adjacent)
+        prev = cur
+        yield date_iso, cur
+
+
+def run_return(run: Run, base_close) -> float:
+    """起算日前一個交易日的收盤 -> 最後一天的收盤，漲跌幾 %。
+
+    基準取「起算日的前一天」而不是起算日本身：外資是在起算日當天買的，那天的
+    收盤價已經含了這筆買盤推上去的部分，拿它當起點會少算第一天。
+    """
+    if not base_close:
+        return None
+    return round((run.close / base_close - 1) * 100, 2)
+
+
+def build_run_payload(date_iso: str, runs: dict, first: str, returns: dict) -> dict:
+    """一天的連續榜檔案。runs 是 foreign_runs 的產出，returns 是 {代號: 漲跌%}。"""
+    stocks = {m: {} for m in MARKETS}
+    buy = sell = 0
+    for code, run in sorted(runs.items()):
+        if abs(run.days) < RUN_MIN_DAYS:
+            continue
+        stocks[run.market][code] = [
+            run.name, run.days, int(run.lots), round(run.oku, 2), run.since,
+            run.close, returns.get(code), 1 if run.trunc else 0,
+        ]
+        if run.days > 0:
+            buy += 1
+        else:
+            sell += 1
+    return {
+        "date": date_iso,
+        "v": RUN_VERSION,
+        "fields": list(RUN_FIELDS),
+        "leg": RUN_LEG,
+        "min": RUN_MIN_DAYS,
+        # 法人資料最早的那一天。起算日等於它的那幾段，天數只可能更長（trunc=1）
+        "first": first,
+        "n": buy + sell,
+        "buy": buy,
+        "sell": sell,
+        "stocks": stocks,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # 檔案
 # --------------------------------------------------------------------------- #
 def build_payload(date_iso: str, by_market: dict, closes: dict, totals: dict = None) -> dict:
@@ -386,6 +531,10 @@ def build_payload(date_iso: str, by_market: dict, closes: dict, totals: dict = N
 
 def daily_path(date_iso: str) -> Path:
     return INSTI_DAILY_DIR / f"{date_iso}.json"
+
+
+def run_path(date_iso: str) -> Path:
+    return INSTI_RUN_DIR / f"{date_iso}.json"
 
 
 def existing_dates() -> list:

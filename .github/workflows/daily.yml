@@ -89,7 +89,7 @@ jobs:
         continue-on-error: true
         run: python scripts/build_holders.py
 
-      - name: 重建法人目錄
+      - name: 重建法人目錄與外資連續買賣超
         continue-on-error: true
         run: python scripts/build_institutions.py
 

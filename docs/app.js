@@ -75,8 +75,11 @@ const state = {
   holderLots: 400,     // 「大戶」分頁的大戶門檻（張），HOLDER_LOTS 的 value
   holderSpan: 'q1',    // 「大戶」分頁拿哪一段當基準（HOLDER_SPANS 的 value）
   instiMin: 0.5,       // 「法人」分頁的同買／同賣門檻（億），INSTI_MINS 的 value
+  runDays: 3,          // 「連買」分頁的連續天數門檻，RUN_DAYS 的 value
+  runOku: 0,           // 「連買」分頁的累計金額門檻（億），0 是不限
   insti: null,         // Promise<insti/index.json>，進到法人頁才載
   instiDay: new Map(), // 交易日 -> Promise<insti/daily/{日期}.json>
+  instiRun: new Map(), // 交易日 -> Promise<insti/streak/{日期}.json>
   holders: null,       // Promise<holders/index.json>，進到大戶頁才載
   holderWeek: new Map(),// 集保資料日 -> Promise<holders/weekly/{日期}.json>
   holderStock: new Map(),// 代號 -> Promise<holders/stock/{代號}.json|null>
@@ -2516,6 +2519,229 @@ async function renderInsti(view) {
 }
 
 // --------------------------------------------------------------------------
+// 分頁：連買（外資連續買超／賣超）
+//
+// 法人頁看的是一天，這一頁看的是**同一個方向撐了幾天**。
+//
+// 單日的買超很容易是別的東西：ETF 調整成分、指數換股、避險部位、除息前後的調節，
+// 一天就結束。連續買超要的是「每一個交易日都站在同一邊」——一筆被動的調整不會
+// 連著十天做同一件事，但一個真的在建倉（或減碼）的決定會。所以天數是這一頁的主軸，
+// 排序也以它為先：金額大的單日買超在法人頁看得到，這裡要挑出來的是持續性。
+//
+// 兩個門檻各自解決一個問題：
+//   - **天數**（3／5／8／12）決定「多久才算持續」。三天是最低的門檻，兩天在一天的
+//     檔案裡就看得出來，算不上連續。
+//   - **累計金額**（不限／1／5／20 億）把零頭濾掉。連買天數本身不分大小，一檔債券
+//     ETF 每天被買進幾十萬元也能連上十幾天，那不是訊號、只是它天天有人申購。
+//
+// 每一列都帶「期間漲跌」，因為這一頁最容易被誤讀成「跟著買」。實際上兩邊都常見：
+// 外資連賣二十幾天而股價還在漲的有、連買十幾天而股價沒動的也有。這一格擺在名單上，
+// 讀者才不會自己把「連續買超」補完成「所以會漲」。
+// --------------------------------------------------------------------------
+const RUN_DAYS = [
+  { value: 3, label: '3 天' },
+  { value: 5, label: '5 天' },
+  { value: 8, label: '8 天' },
+  { value: 12, label: '12 天' },
+];
+// 累計金額的門檻。連買天數本身不分大小，這一格才分得出「真的在買」與「天天有零頭」。
+const RUN_OKUS = [
+  { value: 0, label: '不限' },
+  { value: 1, label: '1 億' },
+  { value: 5, label: '5 億' },
+  { value: 20, label: '20 億' },
+];
+const RUN_DAYS_KEY = 'stocktracker.rundays';
+const RUN_OKU_KEY = 'stocktracker.runoku';
+
+// 每一段存的八個值，順序即 scripts/institutions.py 的 RUN_FIELDS，兩邊必須一致。
+const R_NAME = 0;      // 簡稱
+const R_DAYS = 1;      // 連續天數，正的是連買、負的是連賣
+const R_LOTS = 2;      // 這段期間的累計買賣超股數
+const R_OKU = 3;       // 這段期間的累計估算金額（億元，逐日以當日收盤價換算後相加）
+const R_SINCE = 4;     // 這段連續的起算日
+const R_CLOSE = 5;     // 最後一天（也就是選定日期那天）的收盤價
+const R_RET = 6;       // 起算日「前一個交易日」收盤到最後一天收盤的漲跌（%）
+const R_TRUNC = 7;     // 1 = 起算日的前一個交易日沒有法人資料，實際天數只可能更長
+
+const RUN_TOP = 30;    // 每張榜最多列幾檔
+
+function loadInstiRun(date) {
+  if (!state.instiRun.has(date)) {
+    state.instiRun.set(date, getJSON(`${DATA}/insti/streak/${date}.json`));
+  }
+  return state.instiRun.get(date);
+}
+
+/** 檔案攤平成一排。 */
+function runRows(payload) {
+  const out = [];
+  for (const market of Object.keys(payload.stocks || {})) {
+    for (const [code, row] of Object.entries(payload.stocks[market] || {})) {
+      out.push({
+        code,
+        market,
+        name: row[R_NAME],
+        days: row[R_DAYS],
+        lots: row[R_LOTS],
+        oku: row[R_OKU],
+        since: row[R_SINCE],
+        close: row[R_CLOSE],
+        ret: row[R_RET],
+        trunc: !!row[R_TRUNC],
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 挑出一邊。'buy' 是連續買超、'sell' 是連續賣超。
+ * 天數優先、同天數才比累計金額 —— 這一頁問的是持續性，不是單日的大小。
+ */
+const runPick = (rows, side, days, floor) =>
+  rows
+    .filter((r) => (side === 'buy' ? r.days >= days : -r.days >= days)
+      && Math.abs(r.oku) >= floor)
+    .sort((a, b) => Math.abs(b.days) - Math.abs(a.days) || Math.abs(b.oku) - Math.abs(a.oku));
+
+/**
+ * 連 N 天。沿用排行頁 streakLabel() 的兩個慣例：一樣寫成「連 N 天」，
+ * 而連到資料起點（或缺口）的那幾段標 `+` —— 實際天數只可能更長。
+ * 是買還是賣由所在的那張榜與紅綠決定，不必在每一列上再寫一次。
+ */
+const runDaysLabel = (entry) =>
+  `連 ${Math.abs(entry.days)}${entry.trunc ? '+' : ''} 天`;
+
+/** 期間漲跌。起算日的前一個交易日收盤起算，算不出來就留白。 */
+const runRetLabel = (ret) =>
+  (ret === null || ret === undefined
+    ? '期間 —'
+    : `期間 <em class="${trend(ret)}">${ret > 0 ? '+' : ''}${ret.toFixed(2)}%</em>`);
+
+function runRow(entry, seq, ranked) {
+  const stock = ranked.get(entry.code);
+  const pct = stock && stock.changePct !== null && stock.changePct !== undefined
+    ? ` <em class="${trend(stock.changePct)}">${stock.changePct > 0 ? '+' : ''}${stock.changePct.toFixed(2)}%</em>`
+    : '';
+  return `<a class="row" href="#/stock/${entry.code}">
+    <div class="rank"><span class="no">${seq}</span>
+      <span class="delta ${trend(entry.days)}">${runDaysLabel(entry)}</span></div>
+    <div class="ident">
+      <span class="name">${state.watch.has(entry.code) ? '<span class="star">★</span>' : ''}${esc(entry.name)}</span>
+      <span class="code">${entry.code} · ${esc(MARKET_TAGS[entry.market])}${
+        hasIndustry() ? ` · ${esc(industryOf(entry.code))}` : ''}</span>
+      <span class="chips"><span class="chip">${esc(entry.since)} 起</span><span
+        class="chip">${runRetLabel(entry.ret)}</span>${
+        stock ? `<span class="chip">名次 ${stock.rank}</span>` : ''}</span>
+    </div>
+    <div class="figures">
+      <span class="value ${trend(entry.oku)}">${signedOku(entry.oku)}</span>
+      <span class="price">${signedLots(entry.lots)}</span>
+      <span class="price">${num(entry.close, 2)}${pct}</span>
+    </div>
+  </a>`;
+}
+
+async function renderInstiRun(view) {
+  let index;
+  try {
+    index = await loadInstiIndex();
+  } catch (err) {
+    view.innerHTML = `<p class="hint">還沒有法人資料（${esc(err.message)}）。<br>
+      請先執行 <code>scripts/fetch_institutions.py</code> 與
+      <code>scripts/build_institutions.py</code>；
+      要一次補上一段歷史就加 <code>--days 30</code>。</p>`;
+    return;
+  }
+  const days = index.days || [];
+  if (!days.length) {
+    view.innerHTML = '<p class="hint">法人目錄裡沒有任何交易日，請重跑 scripts/build_institutions.py。</p>';
+    return;
+  }
+  // 舊的資料集有 daily/ 卻還沒有 streak/。少了這一行自我描述就先講清楚是哪一種情況，
+  // 不然下面那個 fetch 會變成一則看不出原因的 404。
+  if (!index.streak) {
+    view.innerHTML = `<p class="hint">這份法人資料還沒有算連續買賣超。<br>
+      請重跑 <code>scripts/build_institutions.py</code>（它會由
+      <code>docs/data/insti/daily/</code> 從頭重算，不用重抓）。</p>`;
+    return;
+  }
+
+  const controls = `<div class="controls">${pills('rundays', RUN_DAYS, state.runDays)}${
+    pills('runoku', RUN_OKUS, state.runOku)}</div>`;
+  if (!days.some((d) => d.d === state.date)) {
+    // 與法人頁同一個道理：缺哪一天要講清楚是「還沒抓到」而不是「那天沒有連續買超」
+    view.innerHTML = `${controls}
+      <p class="hint">${state.date} 還沒有法人資料。<br>
+      目前有 ${days.length} 個交易日：${esc(index.first)} ~ ${esc(index.latest)}。<br>
+      請把日期挪到那一段裡面，或執行
+      <code>scripts/fetch_institutions.py --days 30</code> 往前回補。</p>`;
+    return;
+  }
+
+  const [payload, daily] = await Promise.all([loadInstiRun(state.date), loadDaily(state.date)]);
+  const ranked = new Map(daily.stocks.map((s) => [s.code, s]));
+  // 頂部的範圍選單對這一頁一樣有效
+  const markets = state.scope === 'all' ? ['twse', 'tpex'] : [state.scope];
+  const rows = runRows(payload).filter((r) => markets.includes(r.market));
+  const n = state.runDays;
+  const floor = state.runOku;
+  const buys = runPick(rows, 'buy', n, floor);
+  const sells = runPick(rows, 'sell', n, floor);
+  const picked = [...buys, ...sells];
+  const longest = Math.max(0, ...picked.map((r) => Math.abs(r.days)));
+  // 最長那一段本身連到資料起點時，這一格也要標 +，不然它會與底下的列對不起來
+  const longestOpen = picked.some((r) => Math.abs(r.days) === longest && r.trunc);
+  const truncated = picked.filter((r) => r.trunc).length;
+  const floorText = floor ? `累計 ${floor} 億以上` : '累計金額不限';
+
+  view.innerHTML = `
+    ${controls}
+    <section class="card">
+      <h2>外資連續買賣超 <small>${esc(state.date)} ${esc(scopeLabel())} · ${n} 天以上 · ${floorText}</small></h2>
+      <div class="stat-grid">
+        <div class="stat"><b class="up">${buys.length}</b><span>連買 ${n} 天以上</span></div>
+        <div class="stat"><b class="down">${sells.length}</b><span>連賣 ${n} 天以上</span></div>
+        <div class="stat"><b>${longest ? `${longest}${longestOpen ? '+' : ''} 天` : '—'}</b><span>最長一段</span></div>
+      </div>
+      <p class="note">天數的算法：從 ${esc(state.date)} 往前，<b>每一個交易日</b>外資的買賣超都同向
+        才算一天，中間只要有一天翻向、歸零，或是<b>沒進當天的資料檔</b>（三邊的估算金額都
+        不到 ${index.cut} 億，那天外資動的是幾萬元的零頭）就斷掉，從那裡重新起算。
+        這一天${esc(scopeLabel())}有 ${rows.length} 檔連續 ${payload.min} 天以上（檔案就只留
+        ${payload.min} 天以上的），目前的兩個門檻篩掉其中 ${rows.length - picked.length} 檔。</p>
+      <p class="note">本站的法人資料從 ${esc(index.first)} 開始。起算日的前一個交易日沒有法人資料的
+        那幾段標成「連 N<b>+</b> 天」——實際天數只可能更長，不可能更短。目前榜上有
+        ${truncated} 段是這種。</p>
+    </section>
+    ${listCard('外資連續買超', `連 ${n} 天以上 · ${floorText} · 依天數排序 · 取前 ${RUN_TOP}`,
+      buys.slice(0, RUN_TOP).map((r, i) => runRow(r, i + 1, ranked)),
+      `${state.date} 沒有任何一檔外資連續買超 ${n} 天以上${floor ? `、且累計達 ${floor} 億` : ''}`)}
+    ${listCard('外資連續賣超', `連 ${n} 天以上 · ${floorText} · 依天數排序 · 取前 ${RUN_TOP}`,
+      sells.slice(0, RUN_TOP).map((r, i) => runRow(r, i + 1, ranked)),
+      `${state.date} 沒有任何一檔外資連續賣超 ${n} 天以上${floor ? `、且累計達 ${floor} 億` : ''}`)}
+    <section class="card">
+      <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
+      <p class="note">法人頁看的是一天，這一頁看的是<b>同一個方向撐了幾天</b>。單日的買超很容易是
+        別的東西 —— ETF 調整成分、指數換股、避險部位、除息前後的調節，一天就結束。
+        一筆被動的調整不會連著十天做同一件事，但一個真的在建倉（或減碼）的決定會。
+        所以這兩張榜以<b>天數</b>排序，同天數才比累計金額：金額大的單日買超在法人頁看得到，
+        這裡要挑的是持續性。</p>
+      <p class="note"><b>連續買超不等於會漲。</b>每一列都帶「期間漲跌」就是為了這件事 ——
+        兩邊都常見：外資連賣二十幾天而股價還在漲的有、連買十幾天而股價原地不動的也有。
+        期間漲跌是「起算日<b>前一個交易日</b>的收盤」到選定日期收盤的變化：外資是在起算日
+        當天買的，那天的收盤價已經含了這筆買盤推上去的部分，拿它當起點會少算第一天。</p>
+      <p class="note">${INSTI_CAVEAT}</p>
+      <p class="note">累計金額是逐日「買賣超股數 × <b>當日</b>收盤價」相加的，不是用最後一天的
+        價格回推 —— 一段連買十幾天的期間裡股價本來就在動，用同一個價格乘完會算錯。
+        累計張數則是純粹的股數相加，不受價格影響，兩格並排就看得出這段期間的均價落在哪。</p>
+      <p class="note">「外資」含外資自營商，與市場上引用的口徑一致。連續天數只算外資 ——
+        投信與自營商的每日資料同樣在法人頁上，但這一頁要回答的是「外資有沒有一路買下去」，
+        三邊都排出來只會讓人一次看三張榜、一張也讀不完。</p>
+    </section>`;
+}
+
+// --------------------------------------------------------------------------
 // 分頁六：族群（資金流向）
 // --------------------------------------------------------------------------
 const SECTOR_SORTS = [
@@ -4030,6 +4256,7 @@ async function render() {
     else if (route.view === 'macd') await renderMacd(view);
     else if (route.view === 'holders') await renderHolders(view, route.arg);
     else if (route.view === 'insti') await renderInsti(view);
+    else if (route.view === 'instirun') await renderInstiRun(view);
     else if (route.view === 'quote') await renderQuote(view, route.arg);
     else if (route.view === 'stock') await renderStock(view, route.arg);
     else if (route.view === 'compare') await renderCompare(view, route.params);
@@ -4107,6 +4334,23 @@ function bindGlobalControls() {
         /* 記不住就算了，下次回到預設的 0.5 億 */
       }
     }
+    if (pill.dataset.rundays) {
+      state.runDays = Number(pill.dataset.rundays);
+      try {
+        localStorage.setItem(RUN_DAYS_KEY, String(state.runDays));
+      } catch (err) {
+        /* 記不住就算了，下次回到預設的 3 天 */
+      }
+    }
+    // 「不限」的 value 是 0，但 dataset 讀出來是字串 "0"，照樣進得來
+    if (pill.dataset.runoku) {
+      state.runOku = Number(pill.dataset.runoku);
+      try {
+        localStorage.setItem(RUN_OKU_KEY, String(state.runOku));
+      } catch (err) {
+        /* 記不住就算了，下次回到預設的「不限」 */
+      }
+    }
     if (pill.dataset.quotecat) state.quoteCat = pill.dataset.quotecat;
     if (pill.dataset.quotespan) state.quoteSpan = pill.dataset.quotespan;
     if (pill.dataset.quotechart) state.quoteChart = Number(pill.dataset.quotechart);
@@ -4172,6 +4416,11 @@ async function start() {
     if (HOLDER_LOTS.some((o) => o.value === lots)) state.holderLots = lots;
     const instiMin = Number(localStorage.getItem(INSTI_MIN_KEY));
     if (INSTI_MINS.some((o) => o.value === instiMin)) state.instiMin = instiMin;
+    // 「不限」是 0，而讀不到時 Number(null) 也是 0 —— 兩者的結果一樣，所以不用分辨
+    const runDays = Number(localStorage.getItem(RUN_DAYS_KEY));
+    if (RUN_DAYS.some((o) => o.value === runDays)) state.runDays = runDays;
+    const runOku = Number(localStorage.getItem(RUN_OKU_KEY));
+    if (RUN_OKUS.some((o) => o.value === runOku)) state.runOku = runOku;
   } catch (err) {
     /* 讀不到就用預設的「全部」與「官方產業」 */
   }
