@@ -6,7 +6,7 @@
  * 只有 CDN 上帶版號的第三方程式庫走 cache-first，因為同一個網址內容永不改變。
  */
 
-const VERSION = '42';                 // 前端版號。三處要一致，由 scripts/check_frontend_version.py 把關
+const VERSION = '43';                 // 前端版號。三處要一致，由 scripts/check_frontend_version.py 把關
 const CACHE = `stocktracker-v${VERSION}`;
 const SHELL = ['./', 'index.html', `style.css?v=${VERSION}`, `app.js?v=${VERSION}`,
   `nav.js?v=${VERSION}`, 'manifest.webmanifest', 'icons/icon.svg'];
