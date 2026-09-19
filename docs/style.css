@@ -944,6 +944,9 @@ select, input, button {
 /* ==========================================================================
  * 桌面版（≥1024px）
  *
+ * 這個 1024 也寫在 app.js 的 WIDE_MQ（清單的欄位要用 JS 決定，CSS 切不動）。
+ * 兩邊一錯開就是「版面換了、內容還是手機版」，所以 CI 有一步在對這個字串。
+ *
  * 手機版是一條直的捲軸：app-bar、群組列、分頁列、清單由上往下疊。寬螢幕照搬這個
  * 形狀要付兩個代價——右半邊整片空著，而且捲到第 80 名時導覽早就捲出畫面外了。
  *
@@ -955,6 +958,9 @@ select, input, button {
  * 也就沒有「第幾層黏在第幾層底下」要算。純 CSS，同一份 DOM，app.js 一行沒動。
  * ========================================================================== */
 @media (min-width: 1024px) {
+  /* 窗格的上緣留白。表頭的 sticky 偏移要用到同一個值，所以給它一個名字。 */
+  :root { --pane-pad: 18px; }
+
   html { height: 100%; }
 
   body {
@@ -1050,7 +1056,7 @@ select, input, button {
     margin: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 18px 24px 48px;
+    padding: var(--pane-pad) 24px 48px;
   }
 
   /*
@@ -1089,6 +1095,91 @@ select, input, button {
   .row--theme .ident { grid-column: auto; }
   .row--theme .figures,
   .row--theme .figures:first-of-type { text-align: right; }
+
+  /* ---- 多欄清單 ----
+   * 內容由 app.js 的 wideList() 產生（欄位要看有沒有那份資料，CSS 決定不了）。
+   * 欄寬走 --cols，表頭與每一列吃同一個值，不可能對不起來。
+   */
+  .thead,
+  .row--wide {
+    display: grid;
+    grid-template-columns: var(--cols);
+    gap: 10px;
+    align-items: center;
+    padding: 0 16px;
+  }
+
+  /* 兩百列捲下去，欄名要還在。.card 因此改用 overflow: clip——一樣裁切圓角，但不會
+     建立捲動容器，sticky 才會對到 .view 那層而不是卡在卡片裡不動。 */
+  .card { overflow: clip; }
+
+  .thead {
+    position: sticky;
+    /*
+     * 負的偏移量，大小正好是窗格的上緣留白。
+     *
+     * sticky 的 top 是對**內容框**頂端算的，而 padding 那一段在它上面——top: 0 的話，
+     * 列會從表頭與窗格上緣之間那條 18px 的縫裡穿過去，看起來像表頭浮在半空中。
+     * 往上推一個 padding 的距離，它就貼齊窗格上緣，底下什麼都露不出來。
+     */
+    top: calc(-1 * var(--pane-pad));
+    z-index: 2;
+    padding-top: 9px;
+    padding-bottom: 9px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .thead span {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--muted);
+  }
+
+  .row--wide {
+    min-height: 40px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+
+  .row--wide:last-child { border-bottom: none; }
+
+  /* 數字欄一律靠右、等寬字：上下兩百列要對得齊，靠的是這兩件事 */
+  .w-num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .w-rank { text-align: center; font-variant-numeric: tabular-nums; }
+  .w-rank b { font-size: 15px; }
+  /* 手機版的名次變化是名次底下那一行，這裡沒有第二行，改成接在後面 */
+  .w-rank .delta { display: inline; margin-left: 5px; font-size: 11px; }
+
+  .w-name {
+    min-width: 0;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .w-name i {
+    margin-left: 6px;
+    font-style: normal;
+    font-weight: 400;
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .w-ind {
+    min-width: 0;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .w-val { font-weight: 600; }
+  .w-streak { font-size: 12px; color: var(--muted); }
 
   /* 反過來，圖表與表格是「給多少面積用多少」的東西，桌面有高度就給它 */
   .chart-box { height: 300px; }

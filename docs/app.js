@@ -504,10 +504,108 @@ function stockRow(stock, base, tag) {
   </a>`;
 }
 
+/* --------------------------------------------------------------------------
+ * 桌面版的清單：同一批資料攤成多欄
+ *
+ * 手機一列是「名次｜名稱｜數字」三格，代號、產業、連續天數靠換行擠進第二格。寬螢幕
+ * 照搬這個形狀，只是把同樣三格扯開到 1160px，中間一大片空白——而清單在寬螢幕上真正
+ * 該換的東西是**欄**：每一段自己一欄，兩百列才能上下對齊比較。
+ *
+ * 外資與投信那兩欄不需要多抓任何資料：排行頁本來就載了法人的每日檔（43 KB，與法人頁
+ * 共用快取），只是以前把它縮成一個「土洋同買」的徽章。桌面有欄位可以放數字，就別只
+ * 給形容詞。
+ *
+ * **不用 <table>**：一列必須是 <a>。ctrl／中鍵開新分頁在桌面上比手機重要得多，而
+ * <table> 裡放連結就得整列委派 JS 導覽，那會把「在新分頁開啟」一起弄丟。CSS grid
+ * 給得起欄位對齊，不需要 table。
+ *
+ * 欄寬只寫在 --cols 一處，表頭與每一列共用同一個值，不可能對不起來。
+ * -------------------------------------------------------------------------- */
+
+/**
+ * 斷點與 style.css 的桌面層是同一個 1024px。
+ * 兩邊一錯開就是「版面已經換了、內容還是手機版」，所以 .github/workflows/check.yml
+ * 有一步在對這個字串。
+ */
+const WIDE_MQ = '(min-width: 1024px)';
+const wide = window.matchMedia(WIDE_MQ);
+
+/** 一格數字：沒有值時給破折號，不要留白（留白看起來像壞掉）。 */
+const cellNum = (v, digits = 2) => (v === null || v === undefined ? '—' : num(v, digits));
+
+const WIDE_COLS = {
+  rank: { label: '名次', w: '4.4rem', cls: 'w-rank',
+    cell: (it) => `<b>${it.s.rank}</b>${deltaBadge(it.s.rank, it.base ? it.base.rank : null)}` },
+
+  name: { label: '名稱', w: 'minmax(8rem, 1.4fr)', cls: 'w-name',
+    cell: (it) => `${state.watch.has(it.s.code) ? '<span class="star">★</span>' : ''}`
+      + `${esc(it.s.name)}<i>${it.s.code}${it.s.m ? ` · ${esc(MARKET_TAGS[it.s.m])}` : ''}</i>` },
+
+  industry: { label: '產業', w: 'minmax(5rem, 0.8fr)', cls: 'w-ind',
+    cell: (it) => esc(industryOf(it.s.code)) },
+
+  value: { label: '成交值', w: '6.5rem', cls: 'w-num w-val',
+    cell: (it) => fmtValue(it.s.value) },
+
+  close: { label: '收盤', w: '5.5rem', cls: 'w-num',
+    cell: (it) => cellNum(it.s.close) },
+
+  chg: { label: '漲跌%', w: '5rem', cls: 'w-num',
+    cell: (it) => (it.s.changePct === null || it.s.changePct === undefined ? '—'
+      : `<em class="${trend(it.s.changePct)}">${it.s.changePct > 0 ? '+' : ''}${it.s.changePct.toFixed(2)}%</em>`) },
+
+  fo: { label: '外資', w: '6rem', cls: 'w-num',
+    cell: (it) => (it.insti ? `<em class="${trend(it.insti.fo)}">${signedOku(it.insti.fo)}</em>` : '—') },
+
+  tr: { label: '投信', w: '6rem', cls: 'w-num',
+    cell: (it) => (it.insti ? `<em class="${trend(it.insti.tr)}">${signedOku(it.insti.tr)}</em>` : '—') },
+
+  streak: { label: '連續進榜', w: '5.5rem', cls: 'w-num w-streak',
+    cell: (it) => (streakLabel(it.s) || '—') },
+};
+
+/**
+ * 哪幾欄要出現，由這批資料自己決定：沒有產業對照就不要空一欄，沒帶法人資料的頁面
+ * （站穩、異動、族群）也不該畫兩欄破折號。
+ */
+function wideColumns(items) {
+  const cols = [WIDE_COLS.rank, WIDE_COLS.name];
+  if (hasIndustry()) cols.push(WIDE_COLS.industry);
+  cols.push(WIDE_COLS.value, WIDE_COLS.close, WIDE_COLS.chg);
+  if (items.some((it) => it.insti)) cols.push(WIDE_COLS.fo, WIDE_COLS.tr);
+  if (items.some((it) => it.s && it.s.streak)) cols.push(WIDE_COLS.streak);
+  return cols;
+}
+
+function wideList(items) {
+  const cols = wideColumns(items);
+  const tpl = cols.map((c) => c.w).join(' ');
+  const head = `<div class="thead">${cols
+    .map((c) => `<span class="${c.cls}">${c.label}</span>`).join('')}</div>`;
+  const rows = items.map((it) => `<a class="row row--wide" href="#/stock/${it.s.code}">${cols
+    .map((c) => `<span class="${c.cls}">${c.cell(it)}</span>`).join('')}</a>`).join('');
+  return `<div class="wide-table" style="--cols:${tpl}">${head}${rows}</div>`;
+}
+
+/**
+ * 一份股票清單的 HTML。桌面給多欄表格、手機給原本那種列——手機那條路徑一個位元組
+ * 都沒動，寬螢幕的新版面不該有機會影響每天在用的那一個。
+ *
+ * items 是 [{ s, base, tag, insti }]：s 必要，其餘看該頁有沒有那份資料。
+ */
+function stockList(items) {
+  const rows = items.filter((it) => it.s);
+  if (wide.matches) return wideList(rows);
+  return rows.map((it) => stockRow(it.s, it.base, it.tag)).join('');
+}
+
 function listCard(title, subtitle, rows, emptyText = '無') {
+  // rows 可以是畫好的 HTML（stockList 給的）或一陣列的列。桌面版的表格是一整塊
+  // （表頭 + 兩百列），拆不回陣列，所以這裡兩種都收。
+  const body = typeof rows === 'string' ? rows : (rows.length ? rows.join('') : '');
   return `<section class="card">
     <h2>${esc(title)} ${subtitle ? `<small>${esc(subtitle)}</small>` : ''}</h2>
-    ${rows.length ? rows.join('') : `<p class="hint">${esc(emptyText)}</p>`}
+    ${body || `<p class="hint">${esc(emptyText)}</p>`}
   </section>`;
 }
 
@@ -638,6 +736,7 @@ async function renderRank(view) {
     loadInstiDay(state.date).catch(() => null)]);
   const baseMap = rankMap(base);
   const tags = instiTagMap(instiDay, state.instiMin);
+  const amounts = instiAmountMap(instiDay);
   const top = today.stocks.filter((s) => s.rank <= TOP);
 
   // 產業選單只列當日榜上有的產業，選了不存在的產業會看到空清單沒有意義
@@ -717,7 +816,9 @@ async function renderRank(view) {
       .filter((s) => s.value >= state.floor * 1e8)
       .filter((s) => !q || s.code.toLowerCase().includes(q) || s.name.toLowerCase().includes(q))
       .sort((a, b) => sortKey(b) - sortKey(a));
-    const rows = picked.map((s) => stockRow(s, baseMap.get(s.code), tags.get(s.code)));
+    const rows = stockList(picked.map((s) => ({
+      s, base: baseMap.get(s.code), tag: tags.get(s.code), insti: amounts.get(s.code),
+    })));
 
     const watchNote = state.sector === '!WATCH'
       ? `<p class="note">自選清單：<code id="watch-codes">${[...state.watch].sort().join(',')}</code>
@@ -732,7 +833,7 @@ async function renderRank(view) {
         hasIndustry() ? industryOf(s.code) : '',
         (s.value / 1e8).toFixed(2), s.close, s.changePct, s.streak || '']));
     $('#rank-list').innerHTML =
-      (rows.length ? rows.join('') : '<p class="hint">找不到符合的股票</p>') + watchNote;
+      (picked.length ? rows : '<p class="hint">找不到符合的股票</p>') + watchNote;
     $('#rank-say').innerHTML = rankSay(picked, top, baseMap, baseDate);
 
     const copy = $('#copy-watch');
@@ -792,7 +893,7 @@ async function renderStreak(view) {
     .filter((s) => s.streak >= n)
     .sort((a, b) => a.streak - b.streak || a.rank - b.rank);
 
-  const rows = (list) => list.map((s) => stockRow(s, baseMap.get(s.code)));
+  const rows = (list) => stockList(list.map((s) => ({ s, base: baseMap.get(s.code) })));
 
   view.innerHTML = `
     <div class="controls">${pills('streak', STREAK_TARGETS, n)}</div>
@@ -830,7 +931,7 @@ function diffDays(current, base, topN = TOP) {
 
 function diffSections(current, base, labelA, labelB) {
   const d = diffDays(current, base);
-  const rows = (list) => list.map((s) => stockRow(s, d.basMap.get(s.code)));
+  const rows = (list) => stockList(list.map((s) => ({ s, base: d.basMap.get(s.code) })));
   const leftRows = d.left.map(
     (s) => `<a class="row" href="#/stock/${s.code}">
       <div class="rank"><span class="no">${s.rank}</span><span class="delta down">OUT</span></div>
@@ -1991,11 +2092,11 @@ async function renderStockPicker(view) {
   const top = today.stocks.filter((s) => s.rank <= TOP);
   const paint = (q = '') => {
     const key = q.trim().toLowerCase();
-    $('#pick').innerHTML = top
+    const hits = top
       .filter((s) => !key || s.code.toLowerCase().includes(key) || s.name.toLowerCase().includes(key))
-      .slice(0, 60)
-      .map((s) => stockRow(s, null))
-      .join('') || '<p class="hint">找不到符合的股票</p>';
+      .slice(0, 60);
+    $('#pick').innerHTML = stockList(hits.map((s) => ({ s })))
+      || '<p class="hint">找不到符合的股票</p>';
   };
   paint();
   $('#q2').addEventListener('input', (e) => paint(e.target.value));
@@ -2993,6 +3094,17 @@ function instiTagMap(payload, min) {
     const tag = instiTagOf(row.fo, row.tr, min);
     if (tag) out.set(row.code, tag);
   }
+  return out;
+}
+
+/**
+ * 代號 -> { fo, tr }（億元，正買超負賣超）。徽章只講得出「同買／對作」，桌面版的
+ * 表格有欄位可以放數字，就把原始金額也帶出來——同一份已經載好的資料，不多抓東西。
+ */
+function instiAmountMap(payload) {
+  const out = new Map();
+  if (!payload) return out;
+  for (const row of instiRows(payload)) out.set(row.code, { fo: row.fo, tr: row.tr });
   return out;
 }
 
@@ -4388,11 +4500,10 @@ async function renderSector(view) {
   // 展開時才填內容，200 檔一次全渲染沒必要
   const baseRanks = rankMap(base);
   const found = new Map(groups.map((g) => [g.name, g]));
-  const rowsOf = (codes) => codes
+  const rowsOf = (codes) => stockList(codes
     .slice()
     .sort((a, b) => byCode.get(a).rank - byCode.get(b).rank)
-    .map((c) => stockRow(byCode.get(c), baseRanks.get(c)))
-    .join('');
+    .map((c) => ({ s: byCode.get(c), base: baseRanks.get(c) })));
   const bodyOf = (name) => {
     const g = found.get(name);
     if (!g) return '';
@@ -5980,6 +6091,12 @@ function bindGlobalControls() {
   });
 
   window.addEventListener('hashchange', render);
+
+  /*
+   * 跨過 1024px 就得重畫：清單的欄位是在 render() 裡決定的，不是 CSS 能切換的東西。
+   * 只有真的跨過斷點才會發事件，拉視窗的過程中不會一直重畫。
+   */
+  wide.addEventListener('change', render);
 }
 
 async function start() {
