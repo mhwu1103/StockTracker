@@ -79,11 +79,13 @@ const state = {
   holderSpan: 'q1',    // 「大戶」分頁拿哪一段當基準（HOLDER_SPANS 的 value）
   instiMin: 0.5,       // 「法人」分頁的同買／同賣門檻（億），INSTI_MINS 的 value
   instiLeg: 'fo',      // 「買超」分頁看哪一邊法人（INSTI_LEGS 的 value），sum 是三邊相加
+  instiWin: 'd',       // 「買超」分頁看哪一個期間（INSTI_WINS 的 value），d 是當日
   runDays: 3,          // 「連買」分頁的連續天數門檻，RUN_DAYS 的 value
   runOku: 0,           // 「連買」分頁的累計金額門檻（億），0 是不限
   insti: null,         // Promise<insti/index.json>，進到法人頁才載
   instiDay: new Map(), // 交易日 -> Promise<insti/daily/{日期}.json>
   instiChg: new Map(), // 交易日 -> Promise<insti/chg/{日期}.json>
+  instiSum: new Map(), // 交易日 -> Promise<insti/sum/{日期}.json>
   instiRun: new Map(), // 交易日 -> Promise<insti/streak/{日期}.json>
   holders: null,       // Promise<holders/index.json>，進到大戶頁才載
   holderWeek: new Map(),// 集保資料日 -> Promise<holders/weekly/{日期}.json>
@@ -2596,6 +2598,16 @@ const INSTI_LEGS = [
 const LEG_NAMES = { fo: '外資', tr: '投信', de: '自營商', sum: '三大法人' };
 const INSTI_LEG_KEY = 'stocktracker.instileg';
 
+// 看哪一個期間。當日的資料在 insti/daily/ + insti/chg/，跨日的在 insti/sum/ ——
+// 兩條路算出來的每一列形狀相同（三邊金額、三邊張數、期間漲跌），所以下面四張榜
+// 與每一列的畫法完全共用，只有「從哪裡拿」不一樣。
+const INSTI_WINS = [
+  { value: 'd', label: '當日' },
+  { value: '5', label: '近 5 日' },
+  { value: '20', label: '近 20 日' },
+];
+const INSTI_WIN_KEY = 'stocktracker.instiwin';
+
 const RANK_TOP = 30;   // 每張榜最多列幾檔
 
 /** 選定那一邊的估算金額（億）。'sum' 是三邊相加。 */
@@ -2610,6 +2622,56 @@ function loadInstiChg(date) {
     state.instiChg.set(date, getJSON(`${DATA}/insti/chg/${date}.json`));
   }
   return state.instiChg.get(date);
+}
+
+function loadInstiSum(date) {
+  if (!state.instiSum.has(date)) {
+    state.instiSum.set(date, getJSON(`${DATA}/insti/sum/${date}.json`));
+  }
+  return state.instiSum.get(date);
+}
+
+// 跨日累計檔的每一列。順序即 scripts/institutions.py 的 SUM_FIELDS，兩邊必須一致。
+const W_FO = 0;        // 外資累計估算金額（億，逐日以當日收盤價換算後相加）
+const W_TR = 1;        // 投信累計
+const W_DE = 2;        // 自營商累計
+const W_LFO = 3;       // 外資累計買賣超股數
+const W_LTR = 4;       // 投信累計股數
+const W_LDE = 5;       // 自營商累計股數
+const W_RET = 6;       // 期間漲跌（%）：窗口第一天的前一個交易日收盤 -> 當日收盤
+// meta 的三個值
+const M_NAME = 0;
+const M_MARKET = 1;
+const M_CLOSE = 2;
+
+/**
+ * 跨日累計檔 -> 與 instiRows() 同一種形狀的一排。
+ *
+ * 差別只有金額怎麼來：當日那條路是「股數 × 收盤價」當場乘出來，跨日這條路是後端
+ * 逐日以**當日**收盤價換算後相加的 —— 一段 20 天的期間裡股價本來就在動，用最後
+ * 一天的價格回推會算錯（與連買頁累計金額同一個理由）。
+ */
+function sumRows(payload, win) {
+  const block = (payload.w || {})[win];
+  if (!block) return [];
+  const meta = payload.meta || {};
+  const out = [];
+  for (const [code, row] of Object.entries(block.rows || {})) {
+    const info = meta[code];
+    if (!info) continue;
+    out.push({
+      code,
+      market: info[M_MARKET],
+      name: info[M_NAME],
+      close: info[M_CLOSE],
+      lots: { fo: row[W_LFO], tr: row[W_LTR], de: row[W_LDE] },
+      fo: row[W_FO],
+      tr: row[W_TR],
+      de: row[W_DE],
+      chg: row[W_RET],
+    });
+  }
+  return out;
 }
 
 /** 當日漲跌。算不出來（前一個交易日沒有收盤價）就留白，不要寫成 0%。 */
@@ -2647,12 +2709,15 @@ const instiChips = (entry) => {
 // 名次那一格擺的是**當日漲跌**，成交值名次退到中間的 chip 上。
 // 四張榜裡有兩張是逆勢榜，逆不逆勢全看這一格；擺在 figures 那一欄的話，讀者得一列
 // 一列往右找，而那一欄在手機上是最先被截掉的。
-function instiRankRow(entry, seq, ranked, leg) {
+function instiRankRow(entry, seq, ranked, leg, win) {
   const stock = ranked.get(entry.code);
   const oku = legOku(entry, leg);
-  const share = stock && stock.value
-    ? `佔成交值 ${num((Math.abs(oku) * 1e8 / stock.value) * 100, 1)}%`
-    : '—';
+  // 「佔成交值」只有當日算得出來：單日的成交值不能當 N 日累計的分母，而本站沒有
+  // 存 N 日累計成交值。與其擺一個分母是錯的百分比，不如那一格不要。
+  const share = win !== 'd' ? ''
+    : ` · ${stock && stock.value
+      ? `佔成交值 ${num((Math.abs(oku) * 1e8 / stock.value) * 100, 1)}%`
+      : '—'}`;
   return `<a class="row" href="#/stock/${entry.code}">
     <div class="rank"><span class="no">${seq}</span>
       <span class="delta ${trend(entry.chg)}">${chgText(entry.chg)}</span></div>
@@ -2666,7 +2731,7 @@ function instiRankRow(entry, seq, ranked, leg) {
     <div class="figures">
       <span class="value ${trend(oku)}">${signedOku(oku)}</span>
       <span class="price">${signedLots(legLots(entry, leg))}</span>
-      <span class="price">${num(entry.close, 2)} · ${share}</span>
+      <span class="price">${num(entry.close, 2)}${share}</span>
     </div>
   </a>`;
 }
@@ -2697,7 +2762,17 @@ async function renderInstiRank(view) {
     return;
   }
 
-  const controls = `<div class="controls">${pills('instileg', INSTI_LEGS, state.instiLeg)}</div>`;
+  // 舊的資料集有 daily/ 卻還沒有 sum/。與上面 chg 同一個道理。
+  if (state.instiWin !== 'd' && !index.sum) {
+    view.innerHTML = `${pills('instiwin', INSTI_WINS, state.instiWin)}
+      <p class="hint">這份法人資料還沒有算跨日累計。<br>
+      請重跑 <code>scripts/build_institutions.py</code>（它會由
+      <code>docs/data/insti/daily/</code> 從頭重算，不用重抓）。</p>`;
+    return;
+  }
+
+  const controls = `<div class="controls">${pills('instileg', INSTI_LEGS, state.instiLeg)}</div>
+    <div class="controls">${pills('instiwin', INSTI_WINS, state.instiWin)}</div>`;
   if (!days.some((d) => d.d === state.date)) {
     view.innerHTML = `${controls}
       <p class="hint">${state.date} 還沒有法人資料。<br>
@@ -2707,75 +2782,117 @@ async function renderInstiRank(view) {
     return;
   }
 
-  const [payload, moves, daily] = await Promise.all([
-    loadInstiDay(state.date), loadInstiChg(state.date), loadDaily(state.date)]);
+  const win = state.instiWin;
+  const daily = await loadDaily(state.date);
   const ranked = new Map(daily.stocks.map((s) => [s.code, s]));
   // 頂部的範圍選單對這一頁一樣有效
   const markets = state.scope === 'all' ? ['twse', 'tpex'] : [state.scope];
-  const chg = moves.chg || {};
-  const rows = instiRows(payload)
-    .filter((r) => markets.includes(r.market))
-    .map((r) => ({ ...r, chg: chg[r.code] }));
+
+  // 兩條路產出同一種形狀的一排，所以下面的四張榜完全共用。
+  //   當日   insti/daily/ 的股數 × 收盤價，配 insti/chg/ 的當日漲跌
+  //   跨日   insti/sum/ 後端算好的累計金額與期間漲跌
+  let rows;
+  let span;            // 這個窗口實際算了幾個交易日
+  let pool;            // 這份資料檔在這個範圍下總共有幾檔，說明文要用
+  let cutText;
+  if (win === 'd') {
+    const [payload, moves] = await Promise.all([
+      loadInstiDay(state.date), loadInstiChg(state.date)]);
+    const chg = moves.chg || {};
+    rows = instiRows(payload)
+      .filter((r) => markets.includes(r.market))
+      .map((r) => ({ ...r, chg: chg[r.code] }));
+    span = 1;
+    pool = rows.length;
+    cutText = `三邊的估算金額都不到 ${payload.cut} 億的不收`;
+  } else {
+    const payload = await loadInstiSum(state.date);
+    rows = sumRows(payload, win).filter((r) => markets.includes(r.market));
+    span = (payload.w[win] || {}).days || Number(win);
+    pool = rows.length;
+    cutText = `每個市場每一邊各留前 ${payload.keep} 名、不到 ${payload.floor} 億的不留`;
+  }
 
   const leg = state.instiLeg;
   const name = LEG_NAMES[leg];
+  const winName = win === 'd' ? '' : `近 ${win} 日`;
+  // 湊不滿的窗口要標出來：少算幾天的累計，看起來跟「那段時間法人沒什麼動作」一樣
+  const shortfall = win !== 'd' && span < Number(win);
+  const spanText = win === 'd' ? '當日'
+    : `近 ${win} 日${shortfall ? `（實際只算得到 ${span} 天）` : ''}`;
+
   const buys = legPick(rows, leg, 'buy');
   const sells = legPick(rows, leg, 'sell');
   const buysAgainst = legPick(rows, leg, 'buy', true);
   const sellsAgainst = legPick(rows, leg, 'sell', true);
 
-  // 漲跌家數用的是這份資料檔裡的那九百多檔，不是全市場的兩千多檔 —— 差在那些三邊
-  // 法人都只動了幾萬元零頭的小型股。句子裡要講明是哪一批，不然它看起來像是大盤的
-  // 漲跌家數，而那是另一個數字。
   const known = rows.filter((r) => r.chg !== null && r.chg !== undefined);
   const up = known.filter((r) => r.chg > 0).length;
   const down = known.filter((r) => r.chg < 0).length;
   const shareOfBuys = buys.length
     ? `${num((buysAgainst.length / buys.length) * 100, 0)}%` : '—';
+  const moveWord = win === 'd' ? '收紅 / 收黑' : '期間漲 / 期間跌';
+  const againstWord = win === 'd'
+    ? ['逆勢買超（買超收黑）', '逆勢賣超（賣超收紅）']
+    : ['逆勢買超（累計買超、期間卻跌）', '逆勢賣超（累計賣超、期間卻漲）'];
 
   view.innerHTML = `
     ${controls}
     <section class="card">
-      <h2>${esc(name)}買賣超排行 <small>${esc(state.date)} ${esc(scopeLabel())} · 買超 ${buys.length} 檔、賣超 ${sells.length} 檔</small></h2>
+      <h2>${esc(name)}${esc(winName)}買賣超排行 <small>${esc(state.date)} ${esc(scopeLabel())} · 買超 ${buys.length} 檔、賣超 ${sells.length} 檔</small></h2>
       <div class="stat-grid">
-        <div class="stat"><b>${pair(up, down)}</b><span>收紅 / 收黑</span></div>
-        <div class="stat"><b class="up">${buysAgainst.length}</b><span>逆勢買超（買超收黑）</span></div>
-        <div class="stat"><b class="down">${sellsAgainst.length}</b><span>逆勢賣超（賣超收紅）</span></div>
+        <div class="stat"><b>${pair(up, down)}</b><span>${moveWord}</span></div>
+        <div class="stat"><b class="up">${buysAgainst.length}</b><span>${againstWord[0]}</span></div>
+        <div class="stat"><b class="down">${sellsAgainst.length}</b><span>${againstWord[1]}</span></div>
       </div>
-      <p class="note">這一天${esc(scopeLabel())}有 ${rows.length} 檔進了法人的資料檔（三邊的估算金額都不到
-        ${payload.cut} 億的不收），其中 ${known.length} 檔算得出漲跌 —— ${up} 檔收紅、${down} 檔收黑。
-        ${esc(name)}買超的有 ${buys.length} 檔，其中 ${buysAgainst.length} 檔（${shareOfBuys}）是在自己
-        收黑的那一天被買的。</p>
+      <p class="note">這一天${esc(scopeLabel())}有 ${pool} 檔進了${win === 'd' ? '法人的每日檔' : '累計檔'}（${cutText}），
+        其中 ${known.length} 檔算得出${win === 'd' ? '當日漲跌' : '期間漲跌'} —— ${up} 檔漲、${down} 檔跌。
+        ${esc(name)}${esc(spanText)}買超的有 ${buys.length} 檔，其中 ${buysAgainst.length} 檔（${shareOfBuys}）
+        是在自己${win === 'd' ? '收黑' : '期間下跌'}的情況下被買的。</p>
+      ${win === 'd' ? '' : `<p class="note">累計金額是逐日「買賣超股數 × <b>當日</b>收盤價」相加的，不是用最後一天
+        的價格回推 —— 一段 ${win} 天的期間裡股價本來就在動，用同一個價格乘完會算錯。
+        期間漲跌的基準是窗口第一天的<b>前一個交易日</b>收盤，與「連買」頁同一個慣例。
+        ${shortfall ? `<b>這一天的窗口湊不滿</b>：本站的法人資料從 ${esc(index.first)} 開始，
+        往前只接得到 ${span} 個交易日，所以這是 ${span} 日的累計、不是 ${win} 日的。` : ''}</p>`}
       <p class="note">四張榜都依<b>估算金額</b>排序。逆勢那兩張不是另外挑出來的股票，而是上面那兩張
-        <b>濾掉順勢的那一半</b>：買超榜裡當天收紅的拿掉，剩下的就是逆勢買超。順勢的那一半常常
-        是果不是因 —— 股價自己在漲、買盤跟著追進去，「因為在漲所以有人買」這個解釋排除不掉；
-        逆勢的那一半排除得掉。</p>
+        <b>濾掉順勢的那一半</b>：買超榜裡${win === 'd' ? '當天收紅' : '期間上漲'}的拿掉，剩下的就是逆勢買超。
+        順勢的那一半常常是果不是因 —— 股價自己在漲、買盤跟著追進去，「因為在漲所以有人買」
+        這個解釋排除不掉；逆勢的那一半排除得掉。</p>
     </section>
-    ${listCard(`${name}買超排行`, `依估算金額排序 · 取前 ${RANK_TOP}`,
-      buys.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg)),
-      `${state.date} ${scopeLabel()}沒有任何一檔${name}買超`)}
-    ${listCard(`${name}逆勢買超`, `買超、當天卻收黑 · 依估算金額排序 · 取前 ${RANK_TOP}`,
-      buysAgainst.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg)),
-      `${state.date} 沒有任何一檔${name}買超而股價收黑`)}
-    ${listCard(`${name}賣超排行`, `依估算金額排序 · 取前 ${RANK_TOP}`,
-      sells.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg)),
-      `${state.date} ${scopeLabel()}沒有任何一檔${name}賣超`)}
-    ${listCard(`${name}逆勢賣超`, `賣超、當天卻收紅 · 依估算金額排序 · 取前 ${RANK_TOP}`,
-      sellsAgainst.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg)),
-      `${state.date} 沒有任何一檔${name}賣超而股價收紅`)}
+    ${listCard(`${name}${winName}買超排行`, `依估算金額排序 · 取前 ${RANK_TOP}`,
+      buys.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+      `${state.date} ${scopeLabel()}沒有任何一檔${name}${winName}買超`)}
+    ${listCard(`${name}${winName}逆勢買超`,
+      `買超、${win === 'd' ? '當天卻收黑' : '期間卻下跌'} · 依估算金額排序 · 取前 ${RANK_TOP}`,
+      buysAgainst.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+      `${state.date} 沒有任何一檔${name}${winName}買超而股價${win === 'd' ? '收黑' : '下跌'}`)}
+    ${listCard(`${name}${winName}賣超排行`, `依估算金額排序 · 取前 ${RANK_TOP}`,
+      sells.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+      `${state.date} ${scopeLabel()}沒有任何一檔${name}${winName}賣超`)}
+    ${listCard(`${name}${winName}逆勢賣超`,
+      `賣超、${win === 'd' ? '當天卻收紅' : '期間卻上漲'} · 依估算金額排序 · 取前 ${RANK_TOP}`,
+      sellsAgainst.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+      `${state.date} 沒有任何一檔${name}${winName}賣超而股價${win === 'd' ? '收紅' : '上漲'}`)}
     <section class="card">
       <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
       <p class="note">法人頁問的是「外資與投信有沒有站在同一邊」，這一頁問的是<b>單邊的大小</b>：
-        今天${esc(name)}買最多、賣最多的是哪幾檔。上面四個 pill 切換看哪一邊，
-        「三大法人」是三邊相加，也就是市場上引用的那個口徑。</p>
+        ${esc(name)}買最多、賣最多的是哪幾檔。上面兩排 pill 是兩個各自獨立的軸 ——
+        第一排選<b>看哪一邊</b>（「三大法人」是三邊相加，市場上引用的那個口徑），
+        第二排選<b>看多長的期間</b>。</p>
+      <p class="note"><b>累計買超不是連續買超。</b>這一頁的 5 日／20 日問的是「總共買了多少」，
+        中間翻不翻向不管；「連買」頁問的是「有沒有一路買下去」，中間一翻就斷。一檔可以在
+        20 個交易日裡累計買超 50 億、而中間有 8 天是賣的 —— 連買頁看不到它，這裡看得到；
+        反過來一檔連買 12 天但每天只有幾千萬，連買頁排在最前面，這裡排不進去。兩張榜挑出來的
+        是不同的股票，所以兩頁並存。</p>
       <p class="note"><b>單純的買超排行前幾名幾乎天天是同一批權值股</b> —— 台積電買超 0.3% 的量
-        就比一檔中型股整天的成交值還大。所以每一列的最後擺了「佔成交值」＝這一邊的買賣超
-        ÷ 當日成交值：權值股常常不到 1%，中小型股可以到十幾趴，後者才是真的被吃掉了一大塊。
-        成交值只有前 ${KEPT} 名有（本站的每日檔就留到那裡），其餘的那一格留白。</p>
-      <p class="note">漲跌是<b>收盤對收盤</b>算的：這一檔今天的收盤價比前一個交易日的收盤價。
-        它與官方的「漲跌價差」差在一件事 —— 官方是對除權息參考價算的，這裡沒有還原，
-        所以<b>除權息當天會被算成下跌</b>，那一檔會出現在逆勢買超榜上而其實只是配息。
-        金額大的那幾檔值得回頭確認一下當天是不是除權息日。</p>
+        就比一檔中型股整天的成交值還大。所以當日那個期間，每一列的最後擺了「佔成交值」＝
+        這一邊的買賣超 ÷ 當日成交值：權值股常常不到 1%，中小型股可以到十幾趴。
+        <b>跨日的兩個期間沒有這一格</b>：單日的成交值不能拿來當 N 日累計的分母，
+        而本站沒有存 N 日累計成交值。成交值名次仍在中間的 chip 上（只有前 ${KEPT} 名有）。</p>
+      <p class="note">漲跌是<b>收盤對收盤</b>算的。它與官方的「漲跌價差」差在一件事 ——
+        官方是對除權息參考價算的，這裡沒有還原，所以<b>除權息會被算成下跌</b>，
+        那一檔會出現在逆勢買超榜上而其實只是配息。金額大的那幾檔值得回頭確認一下
+        期間內有沒有除權息。</p>
       <p class="note">${INSTI_CAVEAT}</p>
       <p class="note">逆勢買超不等於低接、也不等於看多：被動的指數調整、ETF 的成分股換股與避險
         部位照樣會撞上大盤下殺的那一天，它們在這張榜上與真的在建倉的錢長得一模一樣。
@@ -4702,6 +4819,14 @@ function bindGlobalControls() {
         /* 記不住就算了，下次回到預設的外資 */
       }
     }
+    if (pill.dataset.instiwin) {
+      state.instiWin = pill.dataset.instiwin;
+      try {
+        localStorage.setItem(INSTI_WIN_KEY, state.instiWin);
+      } catch (err) {
+        /* 記不住就算了，下次回到預設的當日 */
+      }
+    }
     if (pill.dataset.rundays) {
       state.runDays = Number(pill.dataset.rundays);
       try {
@@ -4795,6 +4920,8 @@ async function start() {
     if (INSTI_MINS.some((o) => o.value === instiMin)) state.instiMin = instiMin;
     const instiLeg = localStorage.getItem(INSTI_LEG_KEY);
     if (INSTI_LEGS.some((o) => o.value === instiLeg)) state.instiLeg = instiLeg;
+    const instiWin = localStorage.getItem(INSTI_WIN_KEY);
+    if (INSTI_WINS.some((o) => o.value === instiWin)) state.instiWin = instiWin;
     // 「不限」是 0，而讀不到時 Number(null) 也是 0 —— 兩者的結果一樣，所以不用分辨
     const runDays = Number(localStorage.getItem(RUN_DAYS_KEY));
     if (RUN_DAYS.some((o) => o.value === runDays)) state.runDays = runDays;

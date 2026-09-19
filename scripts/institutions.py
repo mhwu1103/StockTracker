@@ -74,6 +74,13 @@ T86 把外資拆成「外陸資（不含外資自營商）」與「外資自營�
 不用成交值排行那份現成的 `changePct`，是因為那份只留前 300 名，而法人資料一天有
 九百多檔 —— 逆勢買超最有意思的常常正是排不進前 300 的中型股，少了它們，畫面上
 「算不出來」與「沒有逆勢」會長得一模一樣。
+
+## 跨日累計也算在後端
+
+同一個理由：近 20 日累計要回頭讀 20 個 43 KB 的每日檔。一天寫一個
+`insti/sum/{日期}.json`，含三邊 × 兩個窗口（5／20 日）的累計金額、累計股數與
+期間漲跌。**累計買超不是連續買超** —— 前者不管中間翻不翻向，後者一翻就斷，
+兩張榜挑出來的是不同的股票，所以 `streak/` 與 `sum/` 並存。
 """
 
 from __future__ import annotations
@@ -89,6 +96,7 @@ INSTI_DIR = twse.DATA_DIR / "insti"
 INSTI_DAILY_DIR = INSTI_DIR / "daily"
 INSTI_RUN_DIR = INSTI_DIR / "streak"
 INSTI_CHG_DIR = INSTI_DIR / "chg"
+INSTI_SUM_DIR = INSTI_DIR / "sum"
 INSTI_INDEX_PATH = INSTI_DIR / "index.json"
 
 # 上市：三大法人買賣超日報。selectType=ALLBUT0999 是「全部（不含權證、牛熊證）」
@@ -550,6 +558,171 @@ def build_chg_payload(date_iso: str, prev_iso, closes: dict, prev_closes: dict) 
         "chg": dict(sorted(chg.items())),
     }
 
+
+# --------------------------------------------------------------------------- #
+# 跨日累計
+# --------------------------------------------------------------------------- #
+# 「買超」分頁的第三個軸：同一批法人，**這幾天下來**買了多少。
+#
+# 當日的分項在 daily/ 裡就有，跨日的沒有 —— 近 20 日累計要回頭讀 20 個 43 KB 的
+# 每日檔，讓前端自己抓是 800 KB 的代價。與連續榜同一個理由，算在後端。
+#
+# ## 累計買超不是連續買超
+#
+# 兩份檔案各自回答不同的問題，缺一不可：
+#
+#   連買（streak/）  每一個交易日都站在同一邊，中間翻向就斷。問的是「有沒有一路買」
+#   累計（這一份）    這段期間的淨額，中間翻不翻向不管。問的是「總共買了多少」
+#
+# 一檔可以在 20 個交易日裡累計買超 50 億、而中間有 8 天是賣的 —— 連買榜看不到它，
+# 累計榜看得到。反過來一檔連買 12 天但每天只有幾千萬，連買榜排在最前面，
+# 累計榜上根本排不進去。
+#
+# ## 沒進當天檔案的那些天算 0，不是算缺
+#
+# 連續榜遇到「沒進當天檔案」是**斷掉**，因為那會讓天數憑空變長。累計這邊相反：
+# 缺席代表三邊的估算金額都不到 MIN_OKU（0.05 億），那天真的幾乎沒有淨額，
+# 算成 0 就是正確答案。把它當成缺口而整段不算，反而會把一堆真的有在買的個股刷掉。
+#
+# ## 窗口不足要標出來
+#
+# 資料起點附近（或 daily/ 中間缺了交易日時）湊不滿 20 天。**湊不滿的累計看起來
+# 跟「那段時間法人沒什麼動作」一模一樣**，所以每一列都帶 days（實際算了幾天），
+# 不足的畫面上要標，沿用連買頁「連 N+ 天」的同一個精神。
+#
+# ## 期間漲跌的基準與連買頁一致
+#
+# 取窗口第一天的**前一個交易日**收盤：法人是在第一天當天買的，那天的收盤價已經含了
+# 這筆買盤推上去的部分，拿它當起點會少算第一天。
+SUM_VERSION = 1
+
+# 兩個窗口。5 日是一週、20 日是一個月，都是市場上講累計買超時的習慣長度。
+SUM_WINDOWS = (5, 20)
+
+# ## 留哪些：按榜取前 N，不是單一金額門檻
+#
+# daily/ 用的是「三邊的估算金額都不到 MIN_OKU 就不存」那種單一門檻。同一招套在累計
+# 上會有系統性偏差：**外資的金額比投信大一個量級**，拿 max(三邊) 去砍，砍掉的幾乎
+# 都是投信有意思的中型股 —— 而那正是這張榜該挑出來的東西。
+#
+# 所以改成按榜取：每個市場、每一邊各留前 SUM_KEEP 名。四邊是畫面上的四個 pill
+# （外資、投信、自營，加上三邊相加的三大法人），每一張榜都完整到 100 名深，
+# 而畫面只排前 30 —— 榜尾不可能因為檔案的邊界而憑空少幾檔。
+#
+# 分市場取是因為頂部的範圍選單：只看上櫃時，那張榜要從上櫃自己的前 100 名裡排。
+# 某檔若排得進合併後的前 N 名，它在自己市場裡必然也在前 N 名內（README 對「全部」
+# 範圍的同一個論證），所以兩個市場各取前 100 再聯集，對三種範圍都夠用。
+SUM_KEEP = 100
+
+# 但排第幾名都一樣是零頭的那些不留：絕對值不到這個數（億元）就算進了前 100 也丟掉。
+SUM_FLOOR = 0.1
+
+# 一檔的靜態欄位，兩個窗口共用一份，省掉重複。
+SUM_META_FIELDS = ("name", "market", "close")
+
+# 每一個窗口、每一檔存的七個值，順序即 index。
+#   fo/tr/de        三邊的累計估算金額（億，逐日以當日收盤價換算後相加）
+#   lfo/ltr/lde     三邊的累計買賣超股數
+#   ret             期間漲跌（%）：窗口第一天的前一個交易日收盤 -> 當日收盤
+#
+# 「實際算了幾個交易日」不在這裡 —— 同一天同一個窗口裡，每一檔的天數都一樣，
+# 它是窗口的性質不是個股的性質，所以放在窗口那一層（w.{窗口}.days）。
+SUM_FIELDS = ("fo", "tr", "de", "lfo", "ltr", "lde", "ret")
+
+
+def sum_path(date_iso: str) -> Path:
+    return INSTI_SUM_DIR / f"{date_iso}.json"
+
+
+def leg_table(payload: dict) -> dict:
+    """一天的每日檔 -> {代號: (市場, 簡稱, 外資, 投信, 自營, 收盤價)}。
+
+    foreign_table() 只取外資那一段，這一份三邊都要。
+    """
+    out = {}
+    for market, stocks in (payload.get("stocks") or {}).items():
+        for code, row in stocks.items():
+            out[code] = (market, row[F_NAME], row[F_FO], row[F_TR], row[F_DE], row[F_CLOSE])
+    return out
+
+
+def window_span(adjacent: list) -> list:
+    """每一天往前「連續相鄰交易日」有多長（含自己）。
+
+    adjacent 是 adjacent_flags() 的結果。中間缺了一個真正的交易日就從那裡重新算起
+    —— 跨過缺口的累計會把缺的那幾天當成沒發生，而它們其實是不知道。
+    """
+    span = []
+    for i, ok in enumerate(adjacent):
+        span.append(span[i - 1] + 1 if i and ok else 1)
+    return span
+
+
+def accumulate(dates: list, tables: dict, at: int, days: int):
+    """dates[at] 往前 days 個交易日的累計。
+
+    回傳 ({代號: [fo, tr, de, lfo, ltr, lde]}, {代號: (市場, 簡稱)})。
+    tables 是 {日期: leg_table 的結果}；某一天沒有這一檔就當那天是 0（見模組說明）。
+
+    第二份取窗口內**最後一次**出現時的市場與簡稱：有些個股今天沒進檔案（當天三邊
+    都只有零頭）但前幾天有，它照樣該進累計榜，名字得拿得出來。簡稱偶爾會變
+    （改名、轉上市），以最近的那一次為準。
+    """
+    total = {}
+    ident = {}
+    for i in range(at - days + 1, at + 1):
+        for code, (market, name, fo, tr, de, close) in tables[dates[i]].items():
+            row = total.get(code)
+            if row is None:
+                row = total[code] = [0.0, 0.0, 0.0, 0, 0, 0]
+            row[0] += oku(fo, close)
+            row[1] += oku(tr, close)
+            row[2] += oku(de, close)
+            row[3] += fo
+            row[4] += tr
+            row[5] += de
+            ident[code] = (market, name)
+    return total, ident
+
+
+def sum_keep(totals: dict, ident: dict) -> set:
+    """每個市場、每一邊各留前 SUM_KEEP 名（依累計金額絕對值）的聯集。理由見上面。
+
+    totals 是 {代號: [fo, tr, de, ...]}、ident 是 {代號: (市場, 簡稱)}。
+    """
+    keep = set()
+    legs = (lambda r: r[0], lambda r: r[1], lambda r: r[2],
+            lambda r: r[0] + r[1] + r[2])      # 第四邊是三大法人合計
+    for market in MARKETS:
+        here = [(c, r) for c, r in totals.items() if ident[c][0] == market]
+        for leg in legs:
+            ranked = sorted(here, key=lambda kv: abs(leg(kv[1])), reverse=True)
+            for code, row in ranked[:SUM_KEEP]:
+                if abs(leg(row)) >= SUM_FLOOR:
+                    keep.add(code)
+    return keep
+
+
+def build_sum_payload(date_iso: str, wins: dict, meta: dict) -> dict:
+    """一天的累計檔。
+
+    wins 是 {窗口長度: (實際天數, {代號: [fo, tr, de, lfo, ltr, lde, ret]})}，
+    meta 是 {代號: [簡稱, 市場, 當日收盤價]}，只留真的有進到某一個窗口的那些。
+    """
+    kept = {str(w): {"days": days, "rows": dict(sorted(rows.items()))}
+            for w, (days, rows) in wins.items()}
+    used = {code for block in kept.values() for code in block["rows"]}
+    return {
+        "date": date_iso,
+        "v": SUM_VERSION,
+        "wins": list(SUM_WINDOWS),
+        "keep": SUM_KEEP,
+        "floor": SUM_FLOOR,
+        "fields": {"meta": list(SUM_META_FIELDS), "win": list(SUM_FIELDS)},
+        "n": {w: len(b["rows"]) for w, b in kept.items()},
+        "meta": {c: meta[c] for c in sorted(used) if c in meta},
+        "w": kept,
+    }
 
 # --------------------------------------------------------------------------- #
 # 檔案

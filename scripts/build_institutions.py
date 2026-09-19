@@ -3,6 +3,7 @@
     docs/data/insti/index.json          有哪幾個交易日、各自幾檔、全市場的估算合計
     docs/data/insti/streak/{日期}.json  截至那一天，外資連續買（賣）超 3 天以上的名單
     docs/data/insti/chg/{日期}.json     那一天每一檔的漲跌（%），「逆勢買超」要的第二個軸
+    docs/data/insti/sum/{日期}.json     截至那一天，三邊法人近 5／20 日的累計買賣超
 
 前端需要目錄檔的理由：法人資料是後來才開始累積的，它涵蓋的交易日比 data/index.json
 那份短。少了目錄，畫面就只能拿主索引的日期去猜，猜錯就是一則 404 載入失敗 ——
@@ -16,7 +17,10 @@
 前一天的價在 docs/data/close/ 裡、本機就有，讓前端為了一欄漲跌再抓兩份全市場
 行情（約 120 KB）不划算。
 
-三份都是純衍生資料，每次都由 daily/ 從頭重算。
+跨日累計與連續榜是兩件事，所以兩份檔案並存：累計不管中間翻不翻向（問「總共買了
+多少」），連續一翻就斷（問「有沒有一路買」），挑出來的是不同的股票。
+
+四份都是純衍生資料，每次都由 daily/ 從頭重算。
 
 用法：
     python scripts/build_institutions.py
@@ -62,24 +66,35 @@ def drop_orphans(folder, dates: set, label: str) -> None:
             print(f"  已刪除 {path.relative_to(twse.ROOT)}（daily/ 已經沒有這一天，{label}）")
 
 
-def build_runs(dates: list, tables: dict, trading: list, before: dict) -> int:
+def close_reader():
+    """(日期, 市場) -> {代號: 收盤價}，讀過的留著。
+
+    三份衍生檔都要回頭讀 close/ 底下的全市場行情，而且讀的是同一批日子：連續榜要
+    起算日前一天的價、漲跌要前一個交易日的、累計要窗口第一天前一天的。各自開一份
+    快取的話，同一個檔會被解析三次（22 天 × 2 市場 × 3 份 = 132 次 JSON 解析）。
+    """
+    cache = {}
+
+    def read(date_iso: str, market: str) -> dict:
+        key = (market, date_iso)
+        if key not in cache:
+            cache[key] = insti.close_file(date_iso, market)
+        return cache[key]
+
+    return read
+
+
+def build_runs(dates: list, tables: dict, trading: list, before: dict, close_at) -> int:
     """一天寫一個外資連續買賣超的檔案。回傳寫了幾天。"""
     adjacent = insti.adjacent_flags(dates, trading)
     # 缺口：中間少了一個真正的交易日（兩個市場只有一邊有資料的日子整天不寫檔）。
     # 連續天數不跨過缺口，所以缺口後面那幾天的天數會偏短，要講出來。
     gaps = [dates[i] for i in range(1, len(dates)) if not adjacent[i]]
 
-    closes = {}
-
     def base_close(market: str, since: str, code: str):
         """起算日前一個交易日的收盤價。那天的檔案不在就回 None，期間漲跌留空。"""
         day = before.get(since)
-        if not day:
-            return None
-        key = (market, day)
-        if key not in closes:
-            closes[key] = insti.close_file(day, market)
-        return closes[key].get(code)
+        return close_at(day, market).get(code) if day else None
 
     sequence = [(d, adjacent[i], tables[d]) for i, d in enumerate(dates)]
     latest = None
@@ -111,19 +126,15 @@ def build_runs(dates: list, tables: dict, trading: list, before: dict) -> int:
     return len(dates)
 
 
-def build_chg(dates: list, closes: dict, before: dict) -> int:
+def build_chg(dates: list, closes: dict, before: dict, close_at) -> int:
     """一天寫一個「每一檔今天漲跌幾 %」的檔案。回傳寫了幾天。
 
     closes 是 {日期: {市場: {代號: 收盤價}}}，取自每日檔本身；基準價則讀
     close/ 底下前一個交易日的全市場行情 —— 前一天有沒有進法人的每日檔不重要，
     今天的漲跌問的是價格，不是法人有沒有動作。
     """
-    files = {}
-
     def prev_closes(prev_iso: str) -> dict:
-        if prev_iso not in files:
-            files[prev_iso] = {m: insti.close_file(prev_iso, m) for m in insti.MARKETS}
-        return files[prev_iso]
+        return {m: close_at(prev_iso, m) for m in insti.MARKETS}
 
     blank = []
     latest = None
@@ -155,6 +166,73 @@ def build_chg(dates: list, closes: dict, before: dict) -> int:
     return len(dates)
 
 
+def build_sum(dates: list, legs: dict, trading: list, before: dict, close_at) -> int:
+    """一天寫一個跨日累計的檔案（三邊 × 5／20 日）。回傳寫了幾天。
+
+    legs 是 {日期: leg_table 的結果}。窗口不跨過 daily/ 中間的缺口 —— 跨過去的話，
+    缺的那幾天會被當成「沒發生」，而它們其實是不知道。
+    """
+    adjacent = insti.adjacent_flags(dates, trading)
+    span = insti.window_span(adjacent)
+
+    latest = None
+    short = {w: 0 for w in insti.SUM_WINDOWS}
+    for at, date_iso in enumerate(dates):
+        wins = {}
+        meta = {}
+        for window in insti.SUM_WINDOWS:
+            days = min(window, span[at])
+            if days < window:
+                short[window] += 1
+            base_day = before.get(dates[at - days + 1])
+            totals, ident = insti.accumulate(dates, legs, at, days)
+            rows = {}
+            for code in insti.sum_keep(totals, ident):
+                acc = totals[code]
+                market, name = ident[code]
+                # 當日收盤價取 close/ 的全市場行情：這一檔今天可能沒進法人的每日檔
+                # （三邊都只有零頭），但它照樣有價
+                close = close_at(date_iso, market).get(code)
+                base = close_at(base_day, market).get(code) if base_day else None
+                ret = round((close / base - 1) * 100, 2) if close and base else None
+                rows[code] = [round(acc[0], 2), round(acc[1], 2), round(acc[2], 2),
+                              int(acc[3]), int(acc[4]), int(acc[5]), ret]
+                if code not in meta:
+                    meta[code] = [name, market, close]
+            wins[window] = (days, rows)
+
+        payload = insti.build_sum_payload(date_iso, wins, meta)
+        insti.write_json(insti.sum_path(date_iso), payload)
+        latest = payload
+
+    drop_orphans(insti.INSTI_SUM_DIR, set(dates), "跨日累計")
+
+    wins_text = "／".join(f"{w} 日" for w in insti.SUM_WINDOWS)
+    print(f"跨日累計（{wins_text}）：{len(dates)} 天，"
+          f"每個市場每一邊各留前 {insti.SUM_KEEP} 名（不到 {insti.SUM_FLOOR} 億的不留）")
+    for window in insti.SUM_WINDOWS:
+        if short[window]:
+            # 湊不滿的累計看起來跟「那段時間法人沒什麼動作」一模一樣，要講出來
+            print(f"  ! {window} 日窗口有 {short[window]} 天湊不滿"
+                  f"（資料起點附近，或 daily/ 中間缺了交易日），"
+                  f"實際天數記在那一天的 w.{window}.days")
+    if latest:
+        field = {name: i for i, name in enumerate(insti.SUM_FIELDS)}
+        print(f"  最新那一天 {latest['date']}："
+              + "、".join(f"{w} 日 {n} 檔" for w, n in latest["n"].items()))
+        last = str(insti.SUM_WINDOWS[-1])
+        block = latest["w"][last]
+        rows = sorted(block["rows"].items(),
+                      key=lambda kv: kv[1][field["fo"]], reverse=True)
+        for code, row in rows[:3]:
+            name = latest["meta"][code][0]
+            ret = row[field["ret"]]
+            print(f"    {name} 近 {last} 日外資累計 {row[field['fo']]:+,.1f} 億"
+                  f"（實算 {block['days']} 天）"
+                  + (f"，期間 {ret:+.1f}%" if ret is not None else ""))
+    return len(dates)
+
+
 def main() -> int:
     dates = insti.existing_dates()
     if not dates:
@@ -165,6 +243,7 @@ def main() -> int:
     stale = []
     tables = {}
     closes = {}
+    legs = {}
     for date_iso in dates:
         payload = insti.read_json(insti.daily_path(date_iso))
         if payload.get("v") != insti.SNAPSHOT_VERSION:
@@ -172,6 +251,7 @@ def main() -> int:
             continue
         tables[date_iso] = insti.foreign_table(payload)
         closes[date_iso] = insti.payload_closes(payload)
+        legs[date_iso] = insti.leg_table(payload)
         # 官方合計優先；那天真的抓不到就退回估算值，並標上 e:1 讓畫面講得出來
         official = payload.get("total")
         entry = {"d": date_iso, "n": payload.get("n") or 0}
@@ -203,6 +283,10 @@ def main() -> int:
         # 買超分頁自己的一行自我描述，用途與上面那個 streak 相同：舊的資料集還沒有
         # chg/ 這個目錄，少了這一行，畫面就分不出「還沒算漲跌」與「檔案掛了」。
         "chg": {"v": insti.CHG_VERSION},
+        # 跨日累計的自我描述。窗口長度寫在這裡，前端的 pill 才不必自己寫死一份。
+        "sum": {"v": insti.SUM_VERSION, "wins": list(insti.SUM_WINDOWS),
+                "keep": insti.SUM_KEEP, "floor": insti.SUM_FLOOR,
+                "fields": list(insti.SUM_FIELDS)},
         # 一天一格：交易日、留下幾檔，以及兩個市場各自三邊的買賣超合計（億元，官方金額）
         "days": days,
     }
@@ -225,13 +309,20 @@ def main() -> int:
     if trading is None:
         return 1
 
-    wrote = build_runs(dates, tables, trading, before)
+    close_at = close_reader()
+
+    wrote = build_runs(dates, tables, trading, before, close_at)
     folder = insti.INSTI_RUN_DIR.relative_to(twse.ROOT).as_posix()
     print(f"已寫入 {folder}/ 底下 {wrote} 個檔案")
 
     print()
-    wrote = build_chg(dates, closes, before)
+    wrote = build_chg(dates, closes, before, close_at)
     folder = insti.INSTI_CHG_DIR.relative_to(twse.ROOT).as_posix()
+    print(f"已寫入 {folder}/ 底下 {wrote} 個檔案")
+
+    print()
+    wrote = build_sum(dates, legs, trading, before, close_at)
+    folder = insti.INSTI_SUM_DIR.relative_to(twse.ROOT).as_posix()
     print(f"已寫入 {folder}/ 底下 {wrote} 個檔案")
     return 0
 
