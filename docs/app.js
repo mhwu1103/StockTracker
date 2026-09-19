@@ -88,6 +88,7 @@ const state = {
   instiChg: new Map(), // 交易日 -> Promise<insti/chg/{日期}.json>
   instiSum: new Map(), // 交易日 -> Promise<insti/sum/{日期}.json>
   instiBase: new Map(),// 交易日 -> Promise<insti/base/{日期}.json|null>
+  instiStock: new Map(),// 代號 -> Promise<insti/stock/{代號}.json|null>
   instiRun: new Map(), // 交易日 -> Promise<insti/streak/{日期}.json>
   holders: null,       // Promise<holders/index.json>，進到大戶頁才載
   holderWeek: new Map(),// 集保資料日 -> Promise<holders/weekly/{日期}.json>
@@ -1572,7 +1573,11 @@ function fillCandles(rows) {
  * 十字線（開盤等於收盤）的實體高度是 0，長條會整根不見，
  * 所以補一個隨價格區間縮放的最小厚度，讓它至少還是一條看得見的橫線。
  */
-function drawCandles(Chart, canvas, series, offset = 0) {
+/**
+ * K 線。level 給了就在圖上疊一條水平線（目前用來畫法人的買均／賣均）。
+ * 水平線用一個「每一格都同值」的 line dataset 畫，不必為了一條線多載一個外掛。
+ */
+function drawCandles(Chart, canvas, series, offset = 0, level = null) {
   // 均線要用完整序列（含 offset 之前那段暖身）才算得準，算完再切掉暖身段
   const warmed = series.map((r) => r.c);
   const mas = KLINE_MAS.map((ma) => movingAverage(warmed, ma.win).slice(offset));
@@ -1611,6 +1616,16 @@ function drawCandles(Chart, canvas, series, offset = 0) {
           spanGaps: false,
           order: 1,
         })),
+        ...(level ? [{
+          type: 'line',
+          label: level.label,
+          data: labels.map(() => level.value),
+          borderColor: level.color,
+          borderWidth: 1.2,
+          borderDash: [5, 4],
+          pointRadius: 0,
+          order: 1,
+        }] : []),
       ],
     },
     options: {
@@ -1666,10 +1681,128 @@ async function renderStockPicker(view) {
   $('#q2').addEventListener('input', (e) => paint(e.target.value));
 }
 
+// --------------------------------------------------------------------------
+// 個股的法人歷史
+//
+// 買超頁看的是「這一天全市場誰買最多」，個股頁要的是反過來的「這一檔過去幾週
+// 法人怎麼進出」。資料是後端轉置好的 insti/stock/{代號}.json（一檔一個檔）——
+// 前端自己抓幾十天的每日檔來轉的話，一天 43 KB、抓 60 天是 2.6 MB，
+// 而使用者要的只有其中一檔。
+//
+// 日期是**稀疏**的：三邊的估算金額都不到 0.05 億的那幾天不進每日檔，這裡也就沒有。
+// 缺的那幾天代表「那天法人動的是零頭」，不是「沒有資料」，所以畫成 0 是對的
+// —— 但要在說明裡講出來，不然看起來像斷訊。
+// --------------------------------------------------------------------------
+// 每一天存的四個值，順序即 scripts/institutions.py 的 STOCK_FIELDS。
+const S_FO = 0;
+const S_TR = 1;
+const S_DE = 2;
+const S_CLOSE = 3;
+
+// 三邊在圖上的顏色。與買超頁的 chip 沒有共用色票（那裡靠紅綠表示買賣方向），
+// 這裡三條並排，要的是彼此分得開。
+const INSTI_COLORS = { fo: '#2f6fed', tr: '#7b61ff', de: '#e8912d' };
+
+function loadInstiStock(code) {
+  if (!state.instiStock.has(code)) {
+    // 這一檔從來沒沾到過法人的買賣（或整份資料還沒轉置）就是 404，不是錯誤
+    state.instiStock.set(code, getJSON(`${DATA}/insti/stock/${code}.json`).catch(() => null));
+  }
+  return state.instiStock.get(code);
+}
+
+/**
+ * 序列檔 -> [{date, fo, tr, de, close}]（金額已換成億），只留 state.date 當天以前的。
+ * 個股頁的日期選單可以往回翻，翻到哪一天就只該看到那一天為止的資料。
+ */
+function instiStockRows(payload, upTo) {
+  if (!payload || !payload.d) return [];
+  const out = [];
+  payload.d.forEach((date, i) => {
+    if (date > upTo) return;
+    const row = payload.v[i];
+    const close = row[S_CLOSE];
+    out.push({
+      date,
+      close,
+      fo: (row[S_FO] * close) / 1e8,
+      tr: (row[S_TR] * close) / 1e8,
+      de: (row[S_DE] * close) / 1e8,
+      lots: { fo: row[S_FO], tr: row[S_TR], de: row[S_DE] },
+    });
+  });
+  return out;
+}
+
+/**
+ * 最後 win 個有資料的交易日裡，「與淨額同方向那幾天」的股數加權收盤均價。
+ *
+ * 與後端 avg_prices() 必須是同一個定義，不然個股頁與買超頁會給出兩個不一樣的
+ * 數字。**不能**用「累計金額 ÷ 累計股數」——淨額是相減的結果，拿它當分母會算出
+ * 負的價格（見 institutions.py 的說明）。
+ */
+function instiAvgPrice(rows, key, win) {
+  const tail = rows.slice(-win);
+  const net = tail.reduce((sum, r) => sum + r.lots[key], 0);
+  if (!net) return null;
+  const want = net > 0 ? 1 : -1;
+  let amount = 0;
+  let shares = 0;
+  for (const r of tail) {
+    const lots = r.lots[key];
+    if (lots && Math.sign(lots) === want) {
+      amount += lots * r.close;
+      shares += lots;
+    }
+  }
+  return shares ? amount / shares : null;
+}
+
+/** 堆疊長條圖。三邊疊在一起，零軸上下各自是買超與賣超。 */
+function drawStack(Chart, canvas, labels, series, suffix = '') {
+  const chart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: series.map((s) => ({
+        label: s.label,
+        data: s.data,
+        backgroundColor: s.color,
+        borderWidth: 0,
+        categoryPercentage: 1,
+        barPercentage: 0.85,
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: (c) => `${c.dataset.label}：${c.parsed.y > 0 ? '+' : ''}${num(c.parsed.y, 2)}${suffix}`,
+          },
+        },
+      },
+      scales: {
+        x: { stacked: true, ticks: { maxTicksLimit: 5, font: { size: 10 } }, grid: { display: false } },
+        y: {
+          stacked: true,
+          ticks: { font: { size: 10 } },
+          grid: { color: 'rgba(128,128,128,.18)' },
+        },
+      },
+    },
+  });
+  state.charts.push(chart);
+}
+
 async function renderStock(view, code) {
   if (!code) return renderStockPicker(view);
 
-  const [{ name, byDate }, todayPayload] = await Promise.all([seriesFor(code), loadDaily(state.date)]);
+  const [{ name, byDate }, todayPayload, instiSeries] = await Promise.all([
+    seriesFor(code), loadDaily(state.date), loadInstiStock(code)]);
   if (!byDate.size) {
     view.innerHTML = `<p class="hint">${esc(code)} 在目前的歷史資料中沒有進過前 300 名。</p>`;
     return;
@@ -1697,6 +1830,26 @@ async function renderStock(view, code) {
   const klineFrom = series.findIndex((r) => r.date >= labels[0]);
   const drawn = klineFrom < 0 ? 0 : series.length - klineFrom;
   const klineStart = Object.values(state.index.kline || {}).map((r) => r.from).sort()[0];
+
+  // 法人：只留這一段期間、而且不晚於選定日期的那幾天
+  const instiAll = instiStockRows(instiSeries, state.date);
+  const insti = instiAll.filter((r) => r.date >= labels[0]);
+  const legSum = (key) => insti.reduce((sum, r) => sum + r[key], 0);
+  const instiTotals = { fo: legSum('fo'), tr: legSum('tr'), de: legSum('de') };
+  const instiNet = instiTotals.fo + instiTotals.tr + instiTotals.de;
+  // 買均用「最後 20 個有資料的交易日」，與買超頁的近 20 日那一欄同一個定義。
+  // 它不受上面的期間 pill 影響 —— 20 日就是 20 日，跟著畫面縮放會變成另一個數字。
+  const avgWin = 20;
+  const avgPrice = instiAvgPrice(instiAll, 'fo', avgWin);
+  const avgTail = instiAll.slice(-avgWin);
+  const avgNet = avgTail.reduce((sum, r) => sum + r.lots.fo, 0);
+  // 湊不滿 20 天的要標出來。少算幾天的均價看起來跟滿 20 天的一模一樣，
+  // 而資料起點附近（本站法人資料才開始沒多久）大部分個股都湊不滿。
+  const avgShort = avgTail.length < avgWin;
+  const avgLabel = `外資 ${avgWin}${avgShort ? '−' : ''} 日${avgNet > 0 ? '買均' : '賣均'}`;
+  const avgDaysText = avgShort
+    ? `這一檔只有 ${avgTail.length} 天有法人資料，所以是那 ${avgTail.length} 天的`
+    : `最近 ${avgWin} 個有法人資料的交易日裡，`;
 
   const watched = state.watch.has(code);
   view.innerHTML = `
@@ -1741,9 +1894,37 @@ async function renderStock(view, code) {
         ? `<div class="chart-box tall"><canvas id="c-kline"></canvas></div>
            <p class="note">紅漲綠跌，實體是開盤到收盤、影線是當日最高最低。
            三條均線由這張圖自己的收盤價現算，湊不滿天數的那幾天就不畫。
-           價格沒有還原權值，除權息當天的跳空是真的跳空，不是資料錯。</p>`
+           價格沒有還原權值，除權息當天的跳空是真的跳空，不是資料錯。</p>
+           ${avgPrice === null ? '' : `<p class="note">那條虛線是<b>${esc(avgLabel)}</b>
+           ${num(avgPrice, 2)}：${avgDaysText}外資
+           ${avgNet > 0 ? '買進' : '賣出'}的那幾天的股數加權收盤均價。
+           <b>它不是外資的成本</b> —— 官方的個股資料只有股數，這裡的價一律是收盤價，
+           真正的成交均價在盤中。它也不隨上面的期間選單改變，20 日就是 20 日。</p>`}`
         : `<p class="hint">這一段期間沒有四價資料。K 線的資料${klineStart ? `自 ${klineStart} 起` : '尚未產生'}，
            較早的日子只有成交值排行。</p>`}
+    </section>
+    <section class="card">
+      <h2>三大法人買賣超 <small>${insti.length
+        ? `近 ${labels.length} 個交易日裡有 ${insti.length} 天` : '無資料'}</small></h2>
+      ${insti.length ? `
+      <div class="stat-grid">
+        <div class="stat"><b class="${trend(instiTotals.fo)}">${signedOku(instiTotals.fo)}</b><span>外資區間累計</span></div>
+        <div class="stat"><b class="${trend(instiTotals.tr)}">${signedOku(instiTotals.tr)}</b><span>投信區間累計</span></div>
+        <div class="stat"><b class="${trend(instiTotals.de)}">${signedOku(instiTotals.de)}</b><span>自營區間累計</span></div>
+        <div class="stat"><b class="${trend(instiNet)}">${signedOku(instiNet)}</b><span>三大法人合計</span></div>
+        <div class="stat"><b>${avgPrice === null ? '—' : num(avgPrice, 2)}</b><span>${esc(avgLabel)}</span></div>
+        <div class="stat"><b>${pair(insti.filter((r) => r.fo > 0).length, insti.filter((r) => r.fo < 0).length)}</b><span>外資買 / 賣 天數</span></div>
+      </div>
+      <div class="chart-box"><canvas id="c-insti"></canvas></div>
+      <p class="note">紅綠是買賣方向、三種顏色是三邊法人，零軸上下分開堆疊。
+        金額是<b>估算</b>的：官方的個股資料只有股數，這裡一律是「買賣超股數 ×
+        當日收盤價」。</p>
+      <p class="note">圖上只有<b>那幾天</b>：三邊的估算金額都不到 0.05 億的日子不會進本站的
+        法人資料檔，所以近 ${labels.length} 個交易日裡只有 ${insti.length} 天在圖上。
+        缺的那幾天不是沒有資料，是那天法人動的是零頭。</p>`
+      : `<p class="hint">這一檔在本站的法人資料期間內沒有明顯的三大法人買賣
+        （三邊的估算金額都不到 0.05 億的日子不會收）。<br>
+        法人資料涵蓋 ${esc((state.index.instiFirst) || '較短的一段期間')}，比成交值排行短。</p>`}
     </section>
     <section class="card">
       <h2>成交值排名走勢 <small>斷線＝當日未進前 300</small></h2>
@@ -1757,7 +1938,17 @@ async function renderStock(view, code) {
 
   try {
     const Chart = await loadChartJs();
-    if (drawn) drawCandles(Chart, $('#c-kline'), series, klineFrom);
+    if (drawn) {
+      drawCandles(Chart, $('#c-kline'), series, klineFrom,
+        avgPrice === null ? null : { value: avgPrice, label: avgLabel, color: INSTI_COLORS.fo });
+    }
+    if (insti.length) {
+      drawStack(Chart, $('#c-insti'), insti.map((r) => r.date), [
+        { label: '外資', data: insti.map((r) => Number(r.fo.toFixed(2))), color: INSTI_COLORS.fo },
+        { label: '投信', data: insti.map((r) => Number(r.tr.toFixed(2))), color: INSTI_COLORS.tr },
+        { label: '自營', data: insti.map((r) => Number(r.de.toFixed(2))), color: INSTI_COLORS.de },
+      ], ' 億');
+    }
     drawLine(Chart, $('#c-rank'), labels, [{ data: ranks, color: LINE.rank, label: '名次' }], { reverse: true });
     drawLine(Chart, $('#c-value'), labels, [{ data: values, color: LINE.top10, label: '成交值(億)' }]);
   } catch (err) {

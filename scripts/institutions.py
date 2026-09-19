@@ -87,6 +87,13 @@ T86 把外資拆成「外陸資（不含外資自營商）」與「外資自營�
 力道標（今天這筆是平常的幾倍）要的是每一檔自己過去 20 天的中位數，同樣得回頭讀
 20 個每日檔。一天寫一個 `insti/base/{日期}.json`，存的是**分母**不是倍數 ——
 倍數由前端除出來，日後改顯示方式不必重算整段歷史。
+
+## 個股頁要的是轉置
+
+上面四份都是「一天 → 所有股票」，個股頁要的是反過來的「一檔 → 所有天」。所以還有
+第五份 `insti/stock/{代號}.json`，一檔一個檔（形狀與 `holders/stock/` 一致）。
+不讓前端抓幾十天的每日檔自己轉：一天 43 KB，抓 60 天是 2.6 MB，而使用者要的只有
+其中一檔。
 """
 
 from __future__ import annotations
@@ -104,6 +111,7 @@ INSTI_RUN_DIR = INSTI_DIR / "streak"
 INSTI_CHG_DIR = INSTI_DIR / "chg"
 INSTI_SUM_DIR = INSTI_DIR / "sum"
 INSTI_BASE_DIR = INSTI_DIR / "base"
+INSTI_STOCK_DIR = INSTI_DIR / "stock"
 INSTI_INDEX_PATH = INSTI_DIR / "index.json"
 
 # 上市：三大法人買賣超日報。selectType=ALLBUT0999 是「全部（不含權證、牛熊證）」
@@ -923,6 +931,76 @@ def build_base_payload(date_iso: str, norms: dict, used: int) -> dict:
         "fields": list(BASE_FIELDS),
         # {代號: [外資, 投信, 自營, 三大法人]}，日買賣超金額絕對值的中位數（億）
         "base": dict(sorted(norms.items())),
+    }
+
+# --------------------------------------------------------------------------- #
+# 個股序列（轉置）
+# --------------------------------------------------------------------------- #
+# 個股頁要的是「這一檔過去幾週法人怎麼進出」，而 daily/ 存的是「一天 → 所有股票」。
+# 方向剛好相反，所以要轉置一次 —— 成交值排行遇過一模一樣的問題（解法是
+# `history/{範圍}/{年}.json`），集保那邊也有 `holders/stock/{代號}.json`。
+#
+# ## 為什麼不讓前端自己抓幾天回來轉
+#
+# 個股頁的期間可以選到「全部」。一天的每日檔 43 KB，抓 60 天是 2.6 MB，
+# 而使用者要的只是其中一檔 —— 那 935 分之 934 的資料全部白抓。
+#
+# ## 一檔一個檔，不切年
+#
+# 跟 `holders/stock/` 一樣的形狀。不照 `kline/` 那樣切月，是因為個股頁的期間
+# 有「全部」這一個選項：切月的話那個選項要抓十幾個檔，而法人資料一檔一年也才
+# 約 7.5 KB（245 個交易日 × 4 個數字），整段抓回來一次反而便宜。
+#
+# 日後真的長到不能一次抓（幾年之後），`d` 是獨立的日期陣列，切年很容易。
+#
+# ## 只存有進每日檔的那幾天
+#
+# 三邊的估算金額都不到 MIN_OKU 的那幾天不進 daily/，這裡也就沒有。`d` 因此是
+# **稀疏**的，不是每一個交易日都有。畫面要拿 index 的交易日去對齊，而不是假設
+# `d` 是連續的 —— 缺的那幾天代表「那天法人動的是零頭」，不是「沒有資料」。
+#
+# ## 用 write_if_changed
+#
+# 每次都由 daily/ 從頭重算全部一千多檔，直接寫的話每天就是一千多個檔的差異，
+# 而其中有幾百檔今天根本沒動。內容沒變就不重寫（與 build_holders.py 同一招）。
+STOCK_VERSION = 1
+
+# 每一天存的四個值，順序即 index。前端的 S_FO/S_TR/… 必須與這裡一致。
+STOCK_FIELDS = ("fo", "tr", "de", "close")
+
+
+def stock_path(code: str) -> Path:
+    return INSTI_STOCK_DIR / f"{code}.json"
+
+
+def transpose(dates: list, tables: dict) -> dict:
+    """{日期: leg_table} -> {代號: {n, m, d, v}}，由舊到新。
+
+    簡稱與市場取**最後一次**出現時的值：簡稱偶爾會變（改名、轉上市），
+    畫面上該顯示現在的那一個。
+    """
+    out = {}
+    for date_iso in dates:
+        for code, (market, name, fo, tr, de, close) in tables[date_iso].items():
+            row = out.get(code)
+            if row is None:
+                row = out[code] = {"n": name, "m": market, "d": [], "v": []}
+            row["n"] = name
+            row["m"] = market
+            row["d"].append(date_iso)
+            row["v"].append([int(fo), int(tr), int(de), close])
+    return out
+
+
+def build_stock_payload(code: str, row: dict) -> dict:
+    """一檔的序列檔。格式與 holders/stock/ 對齊：fields 說明欄位、d 是日期、v 是值。"""
+    return {
+        "c": code,
+        "n": row["n"],
+        "m": row["m"],
+        "fields": list(STOCK_FIELDS),
+        "d": row["d"],
+        "v": row["v"],
     }
 
 # --------------------------------------------------------------------------- #

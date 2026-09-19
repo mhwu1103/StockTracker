@@ -5,6 +5,7 @@
     docs/data/insti/chg/{日期}.json     那一天每一檔的漲跌（%），「逆勢買超」要的第二個軸
     docs/data/insti/sum/{日期}.json     截至那一天，三邊法人近 5／20 日的累計買賣超
     docs/data/insti/base/{日期}.json    每一檔「平常」被買賣多少（力道標的分母）
+    docs/data/insti/stock/{代號}.json   轉置：一檔一個檔的逐日三大法人買賣超
 
 前端需要目錄檔的理由：法人資料是後來才開始累積的，它涵蓋的交易日比 data/index.json
 那份短。少了目錄，畫面就只能拿主索引的日期去猜，猜錯就是一則 404 載入失敗 ——
@@ -21,7 +22,9 @@
 跨日累計與連續榜是兩件事，所以兩份檔案並存：累計不管中間翻不翻向（問「總共買了
 多少」），連續一翻就斷（問「有沒有一路買」），挑出來的是不同的股票。
 
-五份都是純衍生資料，每次都由 daily/ 從頭重算。
+五份都是純衍生資料，每次都由 daily/ 從頭重算。個股序列那一千多個檔用
+write_if_changed 寫，內容沒變的不動 —— 不然每天都是一千多個檔的差異，
+而其中有幾百檔根本沒動。
 
 用法：
     python scripts/build_institutions.py
@@ -273,6 +276,28 @@ def build_base(dates: list, legs: dict) -> int:
     return wrote
 
 
+def build_stock(dates: list, legs: dict) -> int:
+    """把每日檔轉置成一檔一個序列檔。回傳實際寫了幾個（內容沒變的不重寫）。"""
+    series = insti.transpose(dates, legs)
+    wrote = 0
+    for code, row in sorted(series.items()):
+        if twse.write_if_changed(insti.stock_path(code),
+                                 insti.build_stock_payload(code, row)):
+            wrote += 1
+
+    # daily/ 已經沒有的代號（整段歷史重來、或那一檔從此不再沾到法人買賣）
+    drop_orphans(insti.INSTI_STOCK_DIR, set(series), "個股序列")
+
+    days = sorted(len(r["d"]) for r in series.values())
+    print(f"個股序列（轉置）：{len(series)} 檔，其中 {wrote} 檔內容有變、重寫")
+    if days:
+        mid = days[len(days) // 2]
+        full = sum(1 for n in days if n == len(dates))
+        print(f"  每一檔平均有 {sum(days) / len(days):.0f} 天（中位數 {mid} 天），"
+              f"{full} 檔 {len(dates)} 天全都在")
+    return len(series)
+
+
 def main() -> int:
     dates = insti.existing_dates()
     if not dates:
@@ -331,6 +356,8 @@ def main() -> int:
         # 還要能接受個別日期的 404。
         "base": {"v": insti.BASE_VERSION, "win": insti.BASE_WINDOW,
                  "min": insti.BASE_MIN_DAYS, "fields": list(insti.BASE_FIELDS)},
+        # 個股序列的自我描述。個股頁靠它分辨「這份資料還沒轉置」與「檔案掛了」。
+        "stock": {"v": insti.STOCK_VERSION, "fields": list(insti.STOCK_FIELDS)},
         # 一天一格：交易日、留下幾檔，以及兩個市場各自三邊的買賣超合計（億元，官方金額）
         "days": days,
     }
@@ -373,6 +400,11 @@ def main() -> int:
     wrote = build_base(dates, legs)
     folder = insti.INSTI_BASE_DIR.relative_to(twse.ROOT).as_posix()
     print(f"已寫入 {folder}/ 底下 {wrote} 個檔案")
+
+    print()
+    total = build_stock(dates, legs)
+    folder = insti.INSTI_STOCK_DIR.relative_to(twse.ROOT).as_posix()
+    print(f"{folder}/ 底下共 {total} 個檔案")
     return 0
 
 
