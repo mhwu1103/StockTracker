@@ -533,34 +533,124 @@ const wide = window.matchMedia(WIDE_MQ);
 /** 一格數字：沒有值時給破折號，不要留白（留白看起來像壞掉）。 */
 const cellNum = (v, digits = 2) => (v === null || v === undefined ? '—' : num(v, digits));
 
+/** 一欄：表頭的字、欄寬（進 grid-template-columns）、對齊用的 class、一格的內容。 */
+const col = (label, w, cls, cell) => ({ label, w, cls, cell });
+
+/**
+ * 欄寬表。
+ *
+ * 一律寫成 `minmax(讀得懂的最小值, 好看的寬度)` 而不是一個定值：視窗剛好 1024px 時，
+ * 扣掉 216px 的側欄與左右留白，內容窗格只剩 760px 左右，欄寬全寫死的話欄數多的那幾頁
+ * 會被 .card 的 overflow 裁掉右邊——**最後一欄整欄不見，而畫面看起來沒有壞**。
+ *
+ * 下限集中在這裡而不是散在各頁，是因為下限要按**內容的實際寬度**定，而同一種內容
+ * （一個億元金額、一個日期）在哪一頁都一樣寬。文字欄的下限可以很小（省略號會接手），
+ * 數字欄不行 —— 數字截一半會被讀成另一個數字，下限就是那個數字本身的寬度。
+ */
+const W = {
+  seq: '3rem',                      // 「#」：這一張榜裡的第幾名
+  rank: '4.4rem',                   // 名次 ＋ 升降徽章
+  back: 'minmax(3rem, 4.6rem)',     // 接在最後當參考的成交值名次
+  name: 'minmax(6rem, 1.4fr)',
+  title: 'minmax(7rem, 1.6fr)',     // 報價的品項名，比股票名長得多
+  ind: 'minmax(3.5rem, 0.8fr)',
+  text: 'minmax(4rem, 0.9fr)',      // 來源表、單位這種截得掉的字
+  kind: 'minmax(3.6rem, 5rem)',
+  oku: 'minmax(3.6rem, 6rem)',      // 「+169 億」
+  lots: 'minmax(4.8rem, 6.6rem)',   // 「+32,233 張」
+  val: 'minmax(4.4rem, 6.6rem)',    // 「1,140 億」
+  price: 'minmax(3.9rem, 5.2rem)',  // 「4,710.00」
+  pct: 'minmax(3.6rem, 5rem)',      // 「+10.00%」
+  pp: 'minmax(4.2rem, 5.8rem)',     // 「-22.90pp」
+  share: 'minmax(3.8rem, 5.6rem)',  // 「47.4%」：表頭「佔成交值」比內容還長
+  force: 'minmax(2.8rem, 4.8rem)',  // 「5.3 倍」
+  days: 'minmax(3.8rem, 5.4rem)',   // 「18/22 天」
+  date: 'minmax(5rem, 6.4rem)',     // 「2026-09-18」
+  note: 'minmax(4.4rem, 6.8rem)',   // 「今天剛站上」這種一句話的狀態
+  heads: 'minmax(4.6rem, 6.4rem)',  // 「1,042 戶」「100.3 萬人」
+  chips: 'minmax(7rem, 9rem)',      // 四條均線的標記
+  chipsMacd: 'minmax(8.4rem, 10.5rem)',
+  spark: '68px',
+};
+
+/**
+ * 第二層斷點。只在 JS 裡，CSS 沒有對應的一層，所以不像 1024 那樣有兩邊同步的問題。
+ *
+ * 1024–1280 這一段的內容窗格只有 700–950px，欄數最多的那幾頁（雷達十二欄、大戶與
+ * 連買十一欄）塞不下。塞不下的後果不是擠成一團，是 .card 的 overflow 把最右邊那幾欄
+ * **整欄裁掉**，而畫面看起來還是好好的 —— 跟斷點對不上那個坑是同一種：看不出來。
+ *
+ * 所以標了 optional() 的欄在這一段不出。標的是**上下文欄**（產業、佔成交值這種幫忙
+ * 理解的），不是這一頁篩選與排序看的那幾欄 —— 後者砍掉，讀者就沒辦法核對「這幾檔
+ * 憑什麼在這裡」，那才是清單真正在回答的問題。
+ */
+const ROOMY_MQ = '(min-width: 1280px)';
+const roomy = window.matchMedia(ROOMY_MQ);
+
+/** 標一欄「窄桌面時可以不出」。 */
+const optional = (c) => ({ ...c, opt: true });
+
+/** 名稱格：★、名稱，代號與市場接在後面用小字。全站的清單共用同一個形狀。 */
+const wideName = (code, name, market) =>
+  `${state.watch.has(code) ? '<span class="star">★</span>' : ''}${esc(name)}`
+  + `<i>${code}${market ? ` · ${esc(MARKET_TAGS[market] || market)}` : ''}</i>`;
+
+/** 漲跌% 格。 */
+const widePct = (pct) => (pct === null || pct === undefined ? '—'
+  : `<em class="${trend(pct)}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</em>`);
+
+/** 帶紅綠的億元格。 */
+const wideOku = (v) => (v === null || v === undefined ? '—'
+  : `<em class="${trend(v)}">${signedOku(v)}</em>`);
+
+/** 力道格。法人的三張榜共用。 */
+const wideForce = (force) => (force === null || force === undefined ? '—'
+  : `${num(force, force < 10 ? 1 : 0)} 倍`);
+
+/** 這一批在當日成交值裡佔多少。買賣超的金額不套一個分母就沒有大小可言。 */
+const wideShare = (oku, stock) => (stock && stock.value
+  ? `${num((Math.abs(oku) * 1e8 / stock.value) * 100, 1)}%` : '—');
+
+/**
+ * 產業欄。沒有產業對照就整欄不要出，所以呼叫端都包在 hasIndustry() 裡。
+ * drop 為真時窄桌面也不出 —— 欄數已經爆掉的那幾頁才這樣標，見 optional()。
+ */
+const colIndustry = (codeOf, drop = false) => {
+  const c = col('產業', W.ind, 'w-ind', (it) => esc(industryOf(codeOf(it))));
+  return drop ? optional(c) : c;
+};
+
+/** 序號欄：這一張榜裡的第幾名，跟成交值名次是兩件事。 */
+const colSeq = col('#', W.seq, 'w-rank', (it, i) => i + 1);
+
 const WIDE_COLS = {
-  rank: { label: '名次', w: '4.4rem', cls: 'w-rank',
+  rank: { label: '名次', w: W.rank, cls: 'w-rank',
     cell: (it) => `<b>${it.s.rank}</b>${deltaBadge(it.s.rank, it.base ? it.base.rank : null)}` },
 
-  name: { label: '名稱', w: 'minmax(8rem, 1.4fr)', cls: 'w-name',
+  name: { label: '名稱', w: W.name, cls: 'w-name',
     cell: (it) => `${state.watch.has(it.s.code) ? '<span class="star">★</span>' : ''}`
       + `${esc(it.s.name)}<i>${it.s.code}${it.s.m ? ` · ${esc(MARKET_TAGS[it.s.m])}` : ''}</i>` },
 
-  industry: { label: '產業', w: 'minmax(5rem, 0.8fr)', cls: 'w-ind',
+  industry: { label: '產業', w: W.ind, cls: 'w-ind',
     cell: (it) => esc(industryOf(it.s.code)) },
 
-  value: { label: '成交值', w: '6.5rem', cls: 'w-num w-val',
+  value: { label: '成交值', w: W.val, cls: 'w-num w-val',
     cell: (it) => fmtValue(it.s.value) },
 
-  close: { label: '收盤', w: '5.5rem', cls: 'w-num',
+  close: { label: '收盤', w: W.price, cls: 'w-num',
     cell: (it) => cellNum(it.s.close) },
 
-  chg: { label: '漲跌%', w: '5rem', cls: 'w-num',
+  chg: { label: '漲跌%', w: W.pct, cls: 'w-num',
     cell: (it) => (it.s.changePct === null || it.s.changePct === undefined ? '—'
       : `<em class="${trend(it.s.changePct)}">${it.s.changePct > 0 ? '+' : ''}${it.s.changePct.toFixed(2)}%</em>`) },
 
-  fo: { label: '外資', w: '6rem', cls: 'w-num',
+  fo: { label: '外資', w: W.oku, cls: 'w-num',
     cell: (it) => (it.insti ? `<em class="${trend(it.insti.fo)}">${signedOku(it.insti.fo)}</em>` : '—') },
 
-  tr: { label: '投信', w: '6rem', cls: 'w-num',
+  tr: { label: '投信', w: W.oku, cls: 'w-num',
     cell: (it) => (it.insti ? `<em class="${trend(it.insti.tr)}">${signedOku(it.insti.tr)}</em>` : '—') },
 
-  streak: { label: '連續進榜', w: '5.5rem', cls: 'w-num w-streak',
+  streak: { label: '連續進榜', w: W.note, cls: 'w-num w-streak',
     cell: (it) => (streakLabel(it.s) || '—') },
 };
 
@@ -577,26 +667,45 @@ function wideColumns(items) {
   return cols;
 }
 
-function wideList(items) {
-  const cols = wideColumns(items);
+/**
+ * 表頭 + 每一列。欄寬只寫在 --cols 一處，表頭與列吃同一個值，不可能對不起來。
+ * href 決定一列連到哪裡——一列必須是 <a>，理由見上面那段。
+ */
+function wideTable(items, cols, href) {
   const tpl = cols.map((c) => c.w).join(' ');
   const head = `<div class="thead">${cols
-    .map((c) => `<span class="${c.cls}">${c.label}</span>`).join('')}</div>`;
-  const rows = items.map((it) => `<a class="row row--wide" href="#/stock/${it.s.code}">${cols
-    .map((c) => `<span class="${c.cls}">${c.cell(it)}</span>`).join('')}</a>`).join('');
+    .map((c) => `<span class="${c.cls}">${esc(c.label)}</span>`).join('')}</div>`;
+  const rows = items.map((it, i) => `<a class="row row--wide" href="${href(it, i)}">${cols
+    .map((c) => `<span class="${c.cls}">${c.cell(it, i)}</span>`).join('')}</a>`).join('');
   return `<div class="wide-table" style="--cols:${tpl}">${head}${rows}</div>`;
 }
 
 /**
- * 一份股票清單的 HTML。桌面給多欄表格、手機給原本那種列——手機那條路徑一個位元組
- * 都沒動，寬螢幕的新版面不該有機會影響每天在用的那一個。
+ * 一份清單的 HTML。桌面給多欄表格、手機給原本那種列——手機那條路徑一個位元組都沒
+ * 動，寬螢幕的新版面不該有機會影響每天在用的那一個。
  *
- * items 是 [{ s, base, tag, insti }]：s 必要，其餘看該頁有沒有那份資料。
+ * mobile(it, i) 畫手機的一列；desktop(items) 回 { cols, href }，只有寬螢幕才會被
+ * 呼叫。它拿得到**整批**而不是一個一個問，因為「要不要出這一欄」是整批的問題：
+ * 沒有產業對照就不該空一欄，這一批都沒有力道就不該畫一整欄破折號。
+ *
+ * 全站的清單都從這裡出去。頁面自己寫的那些列樣板留著當手機版，桌面的欄位另外宣告
+ * ——同一份資料換一個形狀，不是兩份資料。
+ */
+function listOf(items, mobile, desktop) {
+  if (!wide.matches) return items.map(mobile).join('');
+  const { cols, href } = desktop(items);
+  return wideTable(items, cols.filter((c) => roomy.matches || !c.opt), href);
+}
+
+/**
+ * 一份股票清單的 HTML。items 是 [{ s, base, tag, insti }]：s 必要，其餘看該頁有沒有
+ * 那份資料。
  */
 function stockList(items) {
   const rows = items.filter((it) => it.s);
-  if (wide.matches) return wideList(rows);
-  return rows.map((it) => stockRow(it.s, it.base, it.tag)).join('');
+  return listOf(rows,
+    (it) => stockRow(it.s, it.base, it.tag),
+    (list) => ({ cols: wideColumns(list), href: (it) => `#/stock/${it.s.code}` }));
 }
 
 function listCard(title, subtitle, rows, emptyText = '無') {
@@ -932,13 +1041,23 @@ function diffDays(current, base, topN = TOP) {
 function diffSections(current, base, labelA, labelB) {
   const d = diffDays(current, base);
   const rows = (list) => stockList(list.map((s) => ({ s, base: d.basMap.get(s.code) })));
-  const leftRows = d.left.map(
+  // 掉出榜這一張的名次是**基準日**的名次（今天已經不在榜上了）。手機版把這件事寫在
+  // 右下角那行小字上，桌面版寫在卡片標題與副標上，欄名就不必再說一次。
+  const leftRows = listOf(d.left,
     (s) => `<a class="row" href="#/stock/${s.code}">
       <div class="rank"><span class="no">${s.rank}</span><span class="delta down">OUT</span></div>
       <div class="ident"><span class="name">${esc(s.name)}</span><span class="code">${s.code}</span></div>
       <div class="figures"><span class="value">${fmtValue(s.value)}</span><span class="price">${esc(labelA)} 名次</span></div>
-    </a>`
-  );
+    </a>`,
+    () => ({
+      href: (s) => `#/stock/${s.code}`,
+      cols: [
+        col('名次', W.rank, 'w-rank', (s) => `<b>${s.rank}</b>`),
+        col('名稱', W.name, 'w-name', (s) => wideName(s.code, s.name, s.m)),
+        ...(hasIndustry() ? [colIndustry((s) => s.code)] : []),
+        col('成交值', W.val, 'w-num w-val', (s) => fmtValue(s.value)),
+      ],
+    }));
 
   return `
     <div class="card"><div class="stat-grid">
@@ -1170,6 +1289,27 @@ function periodRow(entry, seq, extra) {
   </a>`;
 }
 
+/**
+ * 三張榜共用的清單。手機沿用 periodRow 那一行 extra（每張榜各自關心的數字），桌面
+ * 把它拆成欄——三張榜的欄位一樣，因為 extra 講的那幾個數字每一列本來就都帶著。
+ * days 是這段期間的交易日數，只有「進前 TOP 幾天」那一欄的分母要用到。
+ */
+const periodList = (entries, days, extra) => listOf(entries,
+  (r, i) => periodRow(r, i + 1, extra(r)),
+  () => ({
+    href: (r) => `#/stock/${r.code}`,
+    cols: [
+      colSeq,
+      col('名稱', W.name, 'w-name', (r) => wideName(r.code, r.name)),
+      ...(hasIndustry() ? [colIndustry((r) => r.code)] : []),
+      col('累計成交值', W.val, 'w-num w-val', (r) => fmtOku(r.value)),
+      col('平均一天', W.val, 'w-num', (r) => fmtOku(r.value / r.days)),
+      col(`進前 ${KEPT}`, W.days, 'w-num', (r) => `${r.days} 天`),
+      col(`進前 ${TOP}`, W.days, 'w-num', (r) => `${r.top}/${days} 天`),
+      col('期間首次進榜', W.date, 'w-num w-streak', (r) => r.first || '—'),
+    ],
+  }));
+
 async function renderPeriod(view) {
   const mode = state.period;
   const [from, to] = periodRange(state.date, mode);
@@ -1238,16 +1378,16 @@ async function renderPeriod(view) {
         但它是個真的邊界。</p>
     </section>
     ${listCard(`${mode === 'm' ? '本月' : '本週'}累計成交值`, `取前 ${PERIOD_TOP} · 括號是進前 ${KEPT} 名的天數`,
-      byValue.slice(0, PERIOD_TOP).map((r, i) => periodRow(r, i + 1,
-        `${r.days} 天 · 平均 ${fmtOku(r.value / r.days)}`)),
+      periodList(byValue.slice(0, PERIOD_TOP), inRange.length,
+        (r) => `${r.days} 天 · 平均 ${fmtOku(r.value / r.days)}`),
       '這段期間沒有任何資料')}
     ${listCard(`進前 ${TOP} 名天數最多`, `取前 ${PERIOD_SIDE} · 同天數比累計成交值`,
-      byDays.slice(0, PERIOD_SIDE).map((r, i) => periodRow(r, i + 1,
-        `${r.top}/${inRange.length} 天在前 ${TOP}`)),
+      periodList(byDays.slice(0, PERIOD_SIDE), inRange.length,
+        (r) => `${r.top}/${inRange.length} 天在前 ${TOP}`),
       `這段期間沒有任何一檔進過前 ${TOP}`)}
     ${listCard('期間新進榜', `第一次擠進前 ${TOP} 的那一天 · 取前 ${PERIOD_SIDE}`,
-      rookies.slice(0, PERIOD_SIDE).map((r, i) => periodRow(r, i + 1,
-        `${r.first} 首次 · 之後 ${r.top} 天在榜`)),
+      periodList(rookies.slice(0, PERIOD_SIDE), inRange.length,
+        (r) => `${r.first} 首次 · 之後 ${r.top} 天在榜`),
       `這段期間沒有任何一檔是新進榜（都是原本就在榜上的）`)}
     <section class="card">
       <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
@@ -1314,6 +1454,28 @@ function burstRow(stock, base) {
   </a>`;
 }
 
+/**
+ * 爆量清單。開盤價是後來才加的欄位，加欄位之前抓的日子沒有——整批都沒有的時候
+ * 就不要出那一欄（一整欄破折號只是佔位置）。
+ */
+const burstList = (stocks, baseMap) => listOf(stocks,
+  (s) => burstRow(s, baseMap.get(s.code)),
+  (list) => ({
+    href: (s) => `#/stock/${s.code}`,
+    cols: [
+      col('名次', W.rank, 'w-rank',
+        (s) => `<b>${s.rank}</b>${deltaBadge(s.rank, (baseMap.get(s.code) || {}).rank)}`),
+      col('名稱', W.name, 'w-name', (s) => wideName(s.code, s.name, s.m)),
+      ...(hasIndustry() ? [colIndustry((s) => s.code)] : []),
+      col('成交量', W.lots, 'w-num w-val', (s) => `${num(lots(s.volume), 0)} 張`),
+      col('量能', W.note, 'w-num w-streak', (s) => volHighLabel(volHigh(s))),
+      ...(list.some((s) => s.open !== null && s.open !== undefined)
+        ? [col('開盤', W.price, 'w-num', (s) => cellNum(s.open))] : []),
+      col('收盤', W.price, 'w-num', (s) => cellNum(s.close)),
+      col('漲跌%', W.pct, 'w-num', (s) => widePct(s.changePct)),
+    ],
+  }));
+
 async function renderBurst(view) {
   const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(dateBack(1))]);
   const baseMap = rankMap(base);
@@ -1348,7 +1510,7 @@ async function renderBurst(view) {
         <span>其中收紅${hasOpen && !onlyRed ? '（未篩）' : ''}</span></div>
     </div></div>
     ${listCard(`${state.date} ${onlyRed ? '爆量收紅' : '爆量'}`, `${conditions}　依成交量排序`,
-      hits.map((s) => burstRow(s, baseMap.get(s.code))),
+      burstList(hits, baseMap),
       `${state.date} 沒有符合這${onlyRed ? '三' : '兩'}個條件的股票，把門檻放寬看看`)}
     <section class="card">
       <h2>這些條件在看什麼</h2>
@@ -1462,6 +1624,33 @@ function maRow(stock, base, win) {
 }
 
 /**
+ * 均線清單。手機把「狀態、四線標記」疊在名稱底下，桌面各給一欄——四線標記本來就是
+ * 一排並列的記號，擠在名稱下面那行反而看不出它是一個獨立的維度。
+ */
+const maList = (stocks, baseMap, win) => listOf(stocks,
+  (s) => maRow(s, baseMap.get(s.code), win),
+  () => ({
+    href: (s) => `#/stock/${s.code}`,
+    cols: [
+      col('名次', W.rank, 'w-rank',
+        (s) => `<b>${s.rank}</b>${deltaBadge(s.rank, (baseMap.get(s.code) || {}).rank)}`),
+      col('名稱', W.name, 'w-name', (s) => wideName(s.code, s.name, s.m)),
+      ...(hasIndustry() ? [colIndustry((s) => s.code, true)] : []),
+      col('收盤', W.price, 'w-num', (s) => cellNum(s.close)),
+      col('漲跌%', W.pct, 'w-num', (s) => widePct(s.changePct)),
+      col(`${win} 日線`, W.price, 'w-num', (s) => cellNum(maPrice(s, win))),
+      col('乖離', W.pct, 'w-num', (s) => {
+        const line = maPrice(s, win);
+        const bias = line ? (s.close / line - 1) * 100 : null;
+        return bias === null ? '—' : `<em class="${trend(bias)}">${signed(bias)}</em>`;
+      }),
+      col('狀態', W.note, 'w-num w-streak', (s) => maRunLabel(maRun(s, win))),
+      col('均線與 MACD', W.chipsMacd, 'w-chips',
+        (s) => `${maChips(s)}${macdChip(s)}`),
+    ],
+  }));
+
+/**
  * 四條線 ×「近 1／3／5／10 日」的檔數矩陣，每一格都是可以按的選擇鈕。
  * 一眼看得出「今天是誰在穿越」——某一格特別多，那條線就是今天的分水嶺。
  */
@@ -1556,7 +1745,7 @@ async function renderMa(view) {
     </div></div>
     ${listCard(`${state.date} ${span}${verb} ${win} 日線${pickedText}`,
       `榜上前 ${TOP} 名　${days ? '穿越越新的排越前面' : '天數短的排前面'}`,
-      hits.map((s) => maRow(s, baseMap.get(s.code), win)),
+      maList(hits, baseMap, win),
       `${state.date} 榜上沒有${picked.length ? `${picked.join('、')}、而且` : ''}${span}${verb} ${win} 日線的股票，把天數或線別換一個看看`)}
     <section class="card">
       <h2>這一頁在看什麼</h2>
@@ -1750,6 +1939,38 @@ function macdRow(stock, base, side, when) {
   </a>`;
 }
 
+/**
+ * MACD 清單。「近 N 日」看的是已經交叉的那幾檔，右邊該給 DIF／DEA；「明天／後天」
+ * 看的是還沒交叉的，右邊該給臨界價與還要走幾 %。手機版把兩者塞進同一行小字，桌面
+ * 直接換欄——同一批資料裡不會兩種混在一起，所以看整批的第一筆就決定得了。
+ */
+const macdList = (stocks, baseMap, side, when) => listOf(stocks,
+  (s) => macdRow(s, baseMap.get(s.code), side, when),
+  (list) => ({
+    href: (s) => `#/stock/${s.code}`,
+    cols: [
+      col('名次', W.rank, 'w-rank',
+        (s) => `<b>${s.rank}</b>${deltaBadge(s.rank, (baseMap.get(s.code) || {}).rank)}`),
+      col('名稱', W.name, 'w-name', (s) => wideName(s.code, s.name, s.m)),
+      ...(hasIndustry() ? [colIndustry((s) => s.code)] : []),
+      col('收盤', W.price, 'w-num', (s) => cellNum(s.close)),
+      col('漲跌%', W.pct, 'w-num', (s) => widePct(s.changePct)),
+      col('狀態', W.note, 'w-num w-streak', (s) => macdStateLabel(s, side)),
+      ...(list.some((s) => s.outlook) ? [
+        col(`${when === 'd1' ? '明天' : '後天'}臨界`, W.price, 'w-num',
+          (s) => (s.outlook ? cellNum(s.outlook.target) : '—')),
+        col('還要走', W.pct, 'w-num',
+          (s) => (s.outlook ? `<em class="${trend(s.outlook.need)}">${signed(s.outlook.need)}</em>` : '—')),
+      ] : [
+        col('DIF', W.pct, 'w-num',
+          (s) => { const m = macdOf(s); return m ? cellNum(macdDif(m)) : '—'; }),
+        col('DEA', W.pct, 'w-num',
+          (s) => { const m = macdOf(s); return m ? cellNum(m.dea) : '—'; }),
+      ]),
+      col('均線', W.chips, 'w-chips', (s) => maChips(s)),
+    ],
+  }));
+
 async function renderMacd(view) {
   const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(dateBack(1))]);
   const baseMap = rankMap(base);
@@ -1800,7 +2021,7 @@ async function renderMacd(view) {
       forecast
         ? `榜上前 ${TOP} 名　${when === 'd2' ? '明天以平盤計　' : ''}要走的幅度小的排前面`
         : `榜上前 ${TOP} 名　交叉越新的排越前面`,
-      hits.map((s) => macdRow(s, baseMap.get(s.code), side, when)),
+      macdList(hits, baseMap, side, when),
       forecast
         ? `${state.date} 榜上沒有一檔${stackText ? `${stackText.trim()}、` : ''}在漲跌停範圍內${when === 'd1' ? '明天' : '後天'}就會${name}的`
         : `${state.date} 榜上沒有${stackText ? `${stackText.trim()}、而且` : ''}近 ${when} 日${name}的股票，把天數放寬看看`)}
@@ -2599,6 +2820,38 @@ function holderRow(entry) {
   </a>`;
 }
 
+/**
+ * 大戶清單。手機一列擠著三段 chip（千張／散戶／股東）加右邊三行數字，桌面一段一欄
+ * ——這一頁的四張榜排序依據各不相同（大戶比例、戶數、股東人數），欄位攤開才看得出
+ * 「這一張是依哪一個數字排的」。
+ */
+const holderList = (entries) => listOf(entries, holderRow, () => ({
+  href: (e) => `#/holders/${e.stock.code}`,
+  cols: [
+    col('名次', W.rank, 'w-rank', (e) => `<b>${e.stock.rank}</b>`),
+    col('名稱', W.name, 'w-name',
+      (e) => wideName(e.stock.code, e.stock.name, e.stock.m)),
+    ...(hasIndustry() ? [colIndustry((e) => e.stock.code, true)] : []),
+    col(`${state.holderLots} 張以上`, W.pp, 'w-num w-val',
+      (e) => pctText(bigAt(e.cur))),
+    col('變化', W.pp, 'w-num', (e) => {
+      const d = holderDelta(e, bigAt);
+      return d === null ? '—' : `<em class="${trend(d)}">${ppText(d)}</em>`;
+    }),
+    col('大戶戶數', W.heads, 'w-num', (e) => headsText(bigHeads(e.cur))),
+    col('戶數變化', W.pp, 'w-num', (e) => {
+      const d = holderDelta(e, bigHeads);
+      return d === null ? '—' : `<em class="${trend(d)}">${headsDelta(d)}</em>`;
+    }),
+    col('散戶', W.pct, 'w-num', (e) => pctText(smallAt(e.cur))),
+    col('股東人數', W.heads, 'w-num', (e) => peopleText(e.cur[H_PEOPLE])),
+    col('人數變化', W.pp, 'w-num', (e) => {
+      const d = peopleChange(e);
+      return d === null ? '—' : `<em class="${trend(d)}">${signedPct(d, 1)}</em>`;
+    }),
+  ],
+}));
+
 /** 這一頁共用的一段話：這些數字能講什麼、不能講什麼。 */
 const HOLDER_CAVEAT = `集保分的是<b>帳戶</b>不是實質股東：外資持股掛在保管銀行底下，
   一家保管銀行就是一個千張大戶，公司派、董監與庫藏股同樣落在大戶級距 ——
@@ -2716,15 +2969,15 @@ async function renderHolderList(view, index) {
       ${gapNote}
     </section>
     ${listCard('大戶加碼', `${spec.label}${lotsText()}的比例增加最多 · 取前 ${HOLDER_TOP}`,
-      up.slice(0, HOLDER_TOP).map(holderRow),
+      holderList(up.slice(0, HOLDER_TOP)),
       base ? `這個期間榜上沒有任何一檔的${lotsText()}比例上升` : '沒有基準可比')}
     ${listCard('大戶減碼', `${spec.label}${lotsText()}的比例減少最多 · 取前 ${HOLDER_TOP}`,
-      down.slice(0, HOLDER_TOP).map(holderRow),
+      holderList(down.slice(0, HOLDER_TOP)),
       base ? `這個期間榜上沒有任何一檔的${lotsText()}比例下降` : '沒有基準可比')}
     ${listCard('籌碼最集中', `${lotsText()}的比例最高 · 取前 ${HOLDER_TOP}`,
-      concentrated.slice(0, HOLDER_TOP).map(holderRow))}
+      holderList(concentrated.slice(0, HOLDER_TOP)))}
     ${listCard('股東人數減少最多', `${spec.label} · 取前 ${HOLDER_TOP}`,
-      shrinking.slice(0, HOLDER_TOP).map(holderRow),
+      holderList(shrinking.slice(0, HOLDER_TOP)),
       base ? '這個期間榜上沒有任何一檔的股東人數減少' : '沒有基準可比')}
     <section class="card">
       <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
@@ -3163,6 +3416,32 @@ function instiRow(entry, seq, ranked) {
   </a>`;
 }
 
+/**
+ * 法人清單。這一頁問的是「外資與投信站在同一邊嗎」，所以桌面把兩邊各給一欄，合計
+ * 與佔成交值接在後面——手機版那三個 chip 就是這幾個數字，只是排成一行小字。
+ * 自營商不出欄：同買與對作這兩張榜的條件裡沒有它。
+ */
+const instiList = (entries, ranked) => listOf(entries,
+  (r, i) => instiRow(r, i + 1, ranked),
+  () => ({
+    href: (r) => `#/stock/${r.code}`,
+    cols: [
+      colSeq,
+      col('名稱', W.name, 'w-name', (r) => wideName(r.code, r.name, r.market)),
+      ...(hasIndustry() ? [colIndustry((r) => r.code)] : []),
+      col('外資', W.oku, 'w-num', (r) => wideOku(r.fo)),
+      col('投信', W.oku, 'w-num', (r) => wideOku(r.tr)),
+      col('合計', W.oku, 'w-num w-val', (r) => wideOku(r.fo + r.tr)),
+      col('佔成交值', W.share, 'w-num',
+        (r) => wideShare(r.fo + r.tr, ranked.get(r.code))),
+      col('收盤', W.price, 'w-num', (r) => cellNum(r.close)),
+      col('漲跌%', W.pct, 'w-num',
+        (r) => widePct((ranked.get(r.code) || {}).changePct)),
+      col('名次', W.back, 'w-num w-streak',
+        (r) => { const s = ranked.get(r.code); return s ? s.rank : `${KEPT}+`; }),
+    ],
+  }));
+
 /** 這一頁共用的一段話：這些數字能講什麼、不能拿它講什麼。 */
 const INSTI_CAVEAT = `個股的金額是<b>估算</b>的：官方的三大法人日報表從頭到尾只有股數，
   這裡的金額一律是「買賣超股數 × 當日收盤價」。真正的成交均價不等於收盤價，
@@ -3250,16 +3529,16 @@ async function renderInsti(view) {
         後者才是真的兩邊都下了重手。</p>
     </section>
     ${listCard('外資投信同買', `兩邊各自都買超 ${min} 億以上 · 依合計排序 · 取前 ${INSTI_TOP}`,
-      buys.slice(0, INSTI_TOP).map((r, i) => instiRow(r, i + 1, ranked)),
+      instiList(buys.slice(0, INSTI_TOP), ranked),
       `${state.date} 沒有任何一檔外資與投信都買超 ${min} 億以上`)}
     ${listCard('外資投信同賣', `兩邊各自都賣超 ${min} 億以上 · 依合計排序 · 取前 ${INSTI_TOP}`,
-      sells.slice(0, INSTI_TOP).map((r, i) => instiRow(r, i + 1, ranked)),
+      instiList(sells.slice(0, INSTI_TOP), ranked),
       `${state.date} 沒有任何一檔外資與投信都賣超 ${min} 億以上`)}
     ${listCard('土洋對作 · 外資買投信賣', `兩邊各自都達 ${min} 億以上 · 依較小的那一邊排序 · 取前 ${INSTI_TOP}`,
-      foBuy.slice(0, INSTI_TOP).map((r, i) => instiRow(r, i + 1, ranked)),
+      instiList(foBuy.slice(0, INSTI_TOP), ranked),
       `${state.date} 沒有任何一檔是外資買超、投信賣超各 ${min} 億以上`)}
     ${listCard('土洋對作 · 外資賣投信買', `兩邊各自都達 ${min} 億以上 · 依較小的那一邊排序 · 取前 ${INSTI_TOP}`,
-      foSell.slice(0, INSTI_TOP).map((r, i) => instiRow(r, i + 1, ranked)),
+      instiList(foSell.slice(0, INSTI_TOP), ranked),
       `${state.date} 沒有任何一檔是外資賣超、投信買超各 ${min} 億以上`)}
     <section class="card">
       <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
@@ -3540,6 +3819,35 @@ function instiRankRow(entry, seq, ranked, leg, win) {
   </a>`;
 }
 
+/**
+ * 買超排行的清單。最後一欄跟著時間軸換：當日給「佔成交值」（單日的成交值只有當日
+ * 的分母算得出來），跨日給「買賣均價」（當日的均價就是收盤價，隔壁那欄已經在顯示
+ * 了）。這跟 instiRankRow() 右下角那行小字是同一條規則，只是換成一欄。
+ */
+const instiRankList = (entries, ranked, leg, win) => listOf(entries,
+  (r, i) => instiRankRow(r, i + 1, ranked, leg, win),
+  () => ({
+    href: (r) => `#/stock/${r.code}`,
+    cols: [
+      colSeq,
+      col('名稱', W.name, 'w-name', (r) => wideName(r.code, r.name, r.market)),
+      ...(hasIndustry() ? [colIndustry((r) => r.code)] : []),
+      col('估算金額', W.oku, 'w-num w-val', (r) => wideOku(legOku(r, leg))),
+      col('張數', W.lots, 'w-num', (r) => signedLots(legLots(r, leg))),
+      col('力道', W.force, 'w-num', (r) => wideForce(r.force)),
+      col('收盤', W.price, 'w-num', (r) => cellNum(r.close)),
+      col(win === 'd' ? '漲跌%' : '期間漲跌', W.pct, 'w-num',
+        (r) => widePct(r.chg)),
+      win === 'd'
+        ? col('佔成交值', W.share, 'w-num',
+          (r) => wideShare(legOku(r, leg), ranked.get(r.code)))
+        : col('買賣均價', W.price, 'w-num',
+          (r) => cellNum((r.avgs || [])[LEG_AT[leg]])),
+      col('名次', W.back, 'w-num w-streak',
+        (r) => { const s = ranked.get(r.code); return s ? s.rank : '—'; }),
+    ],
+  }));
+
 async function renderInstiRank(view) {
   let index;
   try {
@@ -3700,18 +4008,18 @@ async function renderInstiRank(view) {
         這個解釋排除不掉；逆勢的那一半排除得掉。</p>
     </section>
     ${listCard(`${name}${winName}買超排行`, `${sortText} · 取前 ${RANK_TOP}`,
-      shown(buys).slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+      instiRankList(shown(buys).slice(0, RANK_TOP), ranked, leg, win),
       `${state.date} ${scopeLabel()}沒有任何一檔${name}${winName}買超`)}
     ${listCard(`${name}${winName}逆勢買超`,
       `買超、${win === 'd' ? '當天卻收黑' : '期間卻下跌'} · ${sortText} · 取前 ${RANK_TOP}`,
-      shown(buysAgainst).slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+      instiRankList(shown(buysAgainst).slice(0, RANK_TOP), ranked, leg, win),
       `${state.date} 沒有任何一檔${name}${winName}買超而股價${win === 'd' ? '收黑' : '下跌'}`)}
     ${listCard(`${name}${winName}賣超排行`, `${sortText} · 取前 ${RANK_TOP}`,
-      shown(sells).slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+      instiRankList(shown(sells).slice(0, RANK_TOP), ranked, leg, win),
       `${state.date} ${scopeLabel()}沒有任何一檔${name}${winName}賣超`)}
     ${listCard(`${name}${winName}逆勢賣超`,
       `賣超、${win === 'd' ? '當天卻收紅' : '期間卻上漲'} · ${sortText} · 取前 ${RANK_TOP}`,
-      shown(sellsAgainst).slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+      instiRankList(shown(sellsAgainst).slice(0, RANK_TOP), ranked, leg, win),
       `${state.date} 沒有任何一檔${name}${winName}賣超而股價${win === 'd' ? '收紅' : '上漲'}`)}
     <section class="card">
       <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
@@ -3897,6 +4205,33 @@ function runRow(entry, seq, ranked) {
   </a>`;
 }
 
+/**
+ * 連買清單。手機把「起算日、期間漲跌、名次」收成三個 chip，桌面一段一欄——這一頁
+ * 是依天數排的，起算日與期間漲跌各自成欄才對得起來：同樣連 10 天，一段從高點起算、
+ * 一段從低點起算，是完全不同的兩回事。
+ */
+const runList = (entries, ranked) => listOf(entries,
+  (r, i) => runRow(r, i + 1, ranked),
+  () => ({
+    href: (r) => `#/stock/${r.code}`,
+    cols: [
+      colSeq,
+      col('名稱', W.name, 'w-name', (r) => wideName(r.code, r.name, r.market)),
+      ...(hasIndustry() ? [colIndustry((r) => r.code, true)] : []),
+      col('連續', W.note, 'w-num',
+        (r) => `<em class="${trend(r.days)}">${runDaysLabel(r)}</em>`),
+      col('起算日', W.date, 'w-num w-streak', (r) => esc(r.since)),
+      col('期間漲跌', W.pct, 'w-num', (r) => widePct(r.ret)),
+      col('累計金額', W.oku, 'w-num w-val', (r) => wideOku(r.oku)),
+      col('張數', W.lots, 'w-num', (r) => signedLots(r.lots)),
+      col('收盤', W.price, 'w-num', (r) => cellNum(r.close)),
+      col('漲跌%', W.pct, 'w-num',
+        (r) => widePct((ranked.get(r.code) || {}).changePct)),
+      optional(col('名次', W.back, 'w-num w-streak',
+        (r) => { const s = ranked.get(r.code); return s ? s.rank : '—'; })),
+    ],
+  }));
+
 async function renderInstiRun(view) {
   let index;
   try {
@@ -3969,10 +4304,10 @@ async function renderInstiRun(view) {
         ${truncated} 段是這種。</p>
     </section>
     ${listCard('外資連續買超', `連 ${n} 天以上 · ${floorText} · 依天數排序 · 取前 ${RUN_TOP}`,
-      buys.slice(0, RUN_TOP).map((r, i) => runRow(r, i + 1, ranked)),
+      runList(buys.slice(0, RUN_TOP), ranked),
       `${state.date} 沒有任何一檔外資連續買超 ${n} 天以上${floor ? `、且累計達 ${floor} 億` : ''}`)}
     ${listCard('外資連續賣超', `連 ${n} 天以上 · ${floorText} · 依天數排序 · 取前 ${RUN_TOP}`,
-      sells.slice(0, RUN_TOP).map((r, i) => runRow(r, i + 1, ranked)),
+      runList(sells.slice(0, RUN_TOP), ranked),
       `${state.date} 沒有任何一檔外資連續賣超 ${n} 天以上${floor ? `、且累計達 ${floor} 億` : ''}`)}
     <section class="card">
       <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
@@ -4145,6 +4480,40 @@ function radarRow(entry, seq, ranked) {
   </a>`;
 }
 
+/**
+ * 雷達清單。這一頁是篩選器不是排行榜，桌面就把**每一條篩選條件看的那個數字**各給
+ * 一欄：讀者按完漏斗，要能一眼核對「這幾檔憑什麼進來」。
+ *
+ * 連續與近 20 日來自衍生檔，那一天沒有那份檔就整欄不出——一整欄破折號只是佔位置，
+ * 而上面的漏斗已經講過少了哪幾份。
+ */
+const radarList = (entries, ranked) => listOf(entries,
+  (r, i) => radarRow(r, i + 1, ranked),
+  (list) => ({
+    href: (r) => `#/stock/${r.code}`,
+    cols: [
+      colSeq,
+      col('名稱', W.name, 'w-name', (r) => wideName(r.code, r.name, r.market)),
+      ...(hasIndustry() ? [colIndustry((r) => r.code, true)] : []),
+      col('漲跌%', W.pct, 'w-num', (r) => widePct(r.chg)),
+      col('外資', W.oku, 'w-num', (r) => wideOku(r.fo)),
+      col('投信', W.oku, 'w-num', (r) => wideOku(r.tr)),
+      col('自營', W.oku, 'w-num', (r) => wideOku(r.de)),
+      col('三大法人', W.oku, 'w-num w-val',
+        (r) => wideOku(r.fo + r.tr + r.de)),
+      optional(col('佔成交值', W.share, 'w-num',
+        (r) => wideShare(r.fo + r.tr + r.de, ranked.get(r.code)))),
+      col('力道', W.force, 'w-num', (r) => wideForce(r.force)),
+      ...(list.some((r) => r.run) ? [col('外資連續', W.note, 'w-num',
+        (r) => (r.run
+          ? `<em class="${trend(r.run)}">連${r.run > 0 ? '買' : '賣'} ${Math.abs(r.run)} 天</em>`
+          : '—'))] : []),
+      ...(list.some((r) => r.sum20 !== undefined)
+        ? [col('近 20 日', W.oku, 'w-num',
+          (r) => (r.sum20 === undefined ? '—' : wideOku(r.sum20)))] : []),
+    ],
+  }));
+
 async function renderRadar(view) {
   let index;
   try {
@@ -4224,7 +4593,7 @@ async function renderRadar(view) {
     ${exportBar()}
     ${listCard('命中的股票',
       `依三大法人合計金額排序 · ${hit.length > RADAR_TOP ? `命中 ${hit.length} 檔，取前 ${RADAR_TOP}` : `共 ${hit.length} 檔`}`,
-      sorted.slice(0, RADAR_TOP).map((r, i) => radarRow(r, i + 1, ranked)),
+      radarList(sorted.slice(0, RADAR_TOP), ranked),
       `${state.date} 沒有任何一檔同時符合這幾條。把上面的漏斗由下往上看，
        最後一格掉到 0 的那一條就是最嚴的那一條。`)}
     <section class="card">
@@ -5259,6 +5628,34 @@ function quoteRow(item, values, { withTable = true } = {}) {
 }
 
 /**
+ * 報價清單。手機一列是「名稱＋迷你走勢＋數字」，桌面把擠在名稱底下那行小字（來源
+ * 表、單位、類別）拆成欄——同一張卡裡的品項單位常常不一樣（美元／噸 與 人民幣／片
+ * 並排），單位成欄才看得出「這兩個數字不能直接比大小」。
+ *
+ * valuesOf 給迷你走勢的序列；withTable 為假時來源表寫在卡片標題上，不再出一欄。
+ */
+const quoteList = (items, valuesOf, { withTable = true } = {}) => listOf(items,
+  (item) => quoteRow(item, valuesOf(item), { withTable }),
+  () => ({
+    href: (item) => `#/quote/${encodeURIComponent(item.id)}`,
+    cols: [
+      col('品項', W.title, 'w-name', (item) => esc(item.name)),
+      ...(withTable
+        ? [col('來源表', W.text, 'w-ind', (item) => esc(item.table))] : []),
+      col('單位', W.text, 'w-ind', (item) => esc(quoteUnit(item))),
+      col('類別', W.kind, 'w-ind',
+        (item) => esc((QUOTE_KINDS[item.kind] || QUOTE_KINDS.price).label)),
+      col('走勢', W.spark, 'w-spark', (item) => sparkline(valuesOf(item))),
+      col('最新', W.price, 'w-num w-val', (item) => quoteNum(item.last.v)),
+      col('報價日', W.date, 'w-num w-streak', (item) => esc(item.last.d)),
+      col(quoteSpanSpec().label, W.pct, 'w-num', (item) => {
+        const chg = quoteChg(item);
+        return chg === null ? '—' : `<em class="${trend(chg)}">${signedPct(chg, 2)}</em>`;
+      }),
+    ],
+  }));
+
+/**
  * 這一頁的一句話。挑的是「這個期間誰動得最多」——報價的意義在變化，
  * 不在絕對值（0.33 人民幣的電池片與 4,405 美元的黃金比大小毫無意義）。
  */
@@ -5450,17 +5847,16 @@ async function renderQuoteList(view, index) {
   const tableCards = [...byTable.entries()].map(([key, group]) => {
     const [cat, table] = key.split('|');
     const asof = group.reduce((a, b) => (b.last.d > a ? b.last.d : a), group[0].last.d);
-    const rows = group
-      .slice()
-      .sort((a, b) => (quoteChg(b) ?? -Infinity) - (quoteChg(a) ?? -Infinity))
-      .map((item) => quoteRow(item, valuesOf(item), { withTable: false }));
+    const rows = quoteList(
+      group.slice().sort((a, b) => (quoteChg(b) ?? -Infinity) - (quoteChg(a) ?? -Infinity)),
+      valuesOf, { withTable: false });
     // 金屬與指數的「表」就是品類本身（一個品類一張卡），不要印成「金屬原料 · 金屬原料」
     const title = table === catName(cat) ? table : `${catName(cat)} · ${table}`;
     return listCard(title,
       `報價日 ${asof} · ${group[0].freq}更新 · ${group.length} 項`, rows);
   });
 
-  const moverRows = (list, n = 6) => list.slice(0, n).map((i) => quoteRow(i, valuesOf(i)));
+  const moverRows = (list, n = 6) => quoteList(list.slice(0, n), valuesOf);
 
   view.innerHTML = `
     <div class="controls">${pills('quotecat', catPills, state.quoteCat)}</div>
@@ -5472,8 +5868,7 @@ async function renderQuoteList(view, index) {
     ${tableCards.join('')}
     ${retired.length ? `<section class="card">
       <h2>已停止報價 <small>${retired.length} 個品項</small></h2>
-      ${retired.slice().sort((a, b) => (a.last.d < b.last.d ? 1 : -1))
-        .map((item) => quoteRow(item, valuesOf(item))).join('')}
+      ${quoteList(retired.slice().sort((a, b) => (a.last.d < b.last.d ? 1 : -1)), valuesOf)}
       <p class="note">這些品項在最新的表上已經找不到（規格換代或下架），最後一筆報價
         停在各自標的日期。序列還留著，點進去看得到當時的走勢，但它們不列入上面的漲跌
         統計 —— 停更的數字混進「今天在漲的有幾項」就沒有意義了。</p>
@@ -5885,13 +6280,26 @@ async function render() {
    * 「有沒有重畫」。個股頁換代號（#/stock/2330 → 2454）算換頁，所以 arg 也要比。
    */
   const routeKey = `${route.view}/${route.arg || ''}`;
-  if (routeKey !== lastRouteKey) {
+  const turned = routeKey !== lastRouteKey;
+  if (turned) {
     lastRouteKey = routeKey;
     window.scrollTo(0, 0);
     view.scrollTop = 0;   // 桌面版捲的是 .view（固定外殼），不是 window
   }
 
-  view.innerHTML = '<p class="hint">載入中…</p>';
+  /*
+   * 換頁才清空畫面，同一頁換條件**不要**清空。
+   *
+   * 清空會讓文件高度塌陷，瀏覽器就把捲動位置夾到 0；資料回來、高度長回去了，位置也
+   * 不會自己復原。行動網路上捲到第 80 名再換一個日期，就是這樣被彈回頂端的——換頁
+   * 本來就要回頂端所以看不出來，換日期時才看得出來。
+   *
+   * 留著舊內容高度就還在，位置自然保得住，而且換日期時舊資料留在畫面上反而利於比較。
+   * 換頁那一路照舊給「載入中…」：捲動位置已經歸零了，上一頁的內容留著只會看起來像
+   * 沒反應。
+   */
+  if (turned) view.innerHTML = '<p class="hint">載入中…</p>';
+  view.classList.add('loading');
   // 上一頁的匯出資料不能留到下一頁 —— 那會讓人在圖表頁按下匯出、拿到別頁的清單
   state.csv = null;
 
@@ -5925,6 +6333,9 @@ async function render() {
   } catch (err) {
     view.innerHTML = failBox(`載入失敗：${err.message}`,
       `前端版本 ${APP_VERSION}。若清除快取後仍然一樣，就不是快取的問題。`);
+  } finally {
+    // 上面有一條提早 return 的路（那個範圍那一天沒有資料），所以放 finally
+    view.classList.remove('loading');
   }
 }
 
@@ -6093,10 +6504,12 @@ function bindGlobalControls() {
   window.addEventListener('hashchange', render);
 
   /*
-   * 跨過 1024px 就得重畫：清單的欄位是在 render() 裡決定的，不是 CSS 能切換的東西。
+   * 跨過 1024px（換不換多欄）或 1280px（窄桌面要不要省略上下文欄）就得重畫：清單的
+   * 欄位是在 render() 裡決定的，不是 CSS 能切換的東西。
    * 只有真的跨過斷點才會發事件，拉視窗的過程中不會一直重畫。
    */
   wide.addEventListener('change', render);
+  roomy.addEventListener('change', render);
 }
 
 async function start() {

@@ -217,6 +217,21 @@ select, input, button {
   max-width: 720px;
   margin: 0 auto;
   padding: 12px 12px 32px;
+  transition: opacity .12s;
+}
+
+/*
+ * 載入中。換日期時舊內容留在畫面上（清空會讓捲動位置被夾到 0，見 app.js 的
+ * render()），這一層只是告訴使用者「這批數字還不是新的」。
+ *
+ * 淡化帶 0.12s 的延遲：快取命中時整個載入只有幾毫秒，延遲讓那一瞬間完全不閃，
+ * 真的要等網路時才看得到。
+ */
+.view.loading { opacity: .45; transition: opacity .18s .12s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .view,
+  .view.loading { transition: none; }
 }
 
 .hint {
@@ -1104,7 +1119,9 @@ select, input, button {
   .row--wide {
     display: grid;
     grid-template-columns: var(--cols);
-    gap: 10px;
+    /* 欄數多的那幾頁（大戶十欄、雷達最多十二欄）在 1024px 附近很擠，欄距 8px 比
+       10px 省回 24px。真正在扛壓縮的是每一欄 minmax 的下限，這裡只是順手。 */
+    gap: 8px;
     align-items: center;
     padding: 0 16px;
   }
@@ -1130,10 +1147,16 @@ select, input, button {
     border-bottom: 1px solid var(--line);
   }
 
+  /* 欄名比那一欄的數字長是常有的事（「佔成交值」配「47.4%」），窄一點的桌面上
+     讓它截斷，不要把整欄撐寬 —— 撐寬的代價是最右邊那一欄被裁掉。 */
   .thead span {
     font-size: 12px;
     font-weight: 400;
     color: var(--muted);
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .row--wide {
@@ -1180,6 +1203,19 @@ select, input, button {
 
   .w-val { font-weight: 600; }
   .w-streak { font-size: 12px; color: var(--muted); }
+
+  /* 一格裡並排的小記號（均線的四條線、MACD）。手機版它是名稱底下那一行，
+     所以 .ident .ma-chips 的 display: block 在這裡套不到，要自己寫一份。 */
+  .w-chips {
+    min-width: 0;
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  /* 報價的迷你走勢。svg 是 inline，底下會多出一條字型基線的空隙，flex 掉它。 */
+  .w-spark { display: flex; align-items: center; }
 
   /* 反過來，圖表與表格是「給多少面積用多少」的東西，桌面有高度就給它 */
   .chart-box { height: 300px; }
