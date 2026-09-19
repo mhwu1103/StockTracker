@@ -81,6 +81,8 @@ const state = {
   instiLeg: 'fo',      // 「買超」分頁看哪一邊法人（INSTI_LEGS 的 value），sum 是三邊相加
   instiWin: 'd',       // 「買超」分頁看哪一個期間（INSTI_WINS 的 value），d 是當日
   instiSort: 'oku',    // 「買超」分頁排序：oku 依金額／force 依力道（只有當日有力道）
+  // 「雷達」分頁的八組條件。空字串＝不限；min 是 fo/tr/de 三條共用的金額門檻
+  radar: { fo: '', tr: '', de: '', against: '', force: '', run: '', sum20: '', min: '0.5' },
   runDays: 3,          // 「連買」分頁的連續天數門檻，RUN_DAYS 的 value
   runOku: 0,           // 「連買」分頁的累計金額門檻（億），0 是不限
   insti: null,         // Promise<insti/index.json>，進到法人頁才載
@@ -3562,6 +3564,245 @@ async function renderInstiRun(view) {
 }
 
 // --------------------------------------------------------------------------
+// 分頁：雷達（多條件籌碼篩選）
+//
+// 前面幾頁各自是一張排行榜：買超頁問「誰買最多」、連買頁問「誰買最久」、
+// 法人頁問「外資與投信同不同邊」。每一張都只排一個維度，而真正想問的往往是
+// **交集**：「外資連買 5 天以上、今天還逆勢加碼、而且力道是平常的三倍的，有誰？」
+//
+// 所以這一頁不是排行榜，是**篩選器**。它輸出的是一個集合，不是一個名次。
+//
+// ## 八組條件，每一組預設「不限」
+//
+// 條件是**可組合**的，不是選單裡的幾種預設組合 —— 預設組合永遠少一種你要的。
+// 外資／投信／自營三組各自選方向，所以「土洋同買」＝外資買超＋投信買超、
+// 「對作」＝外資買超＋投信賣超，不必另外給名字。
+//
+// 歷史維度（連續、力道、近 20 日）一律看**外資**：連續榜本來就只算外資
+// （見連買頁），力道與累計三邊都有，但三邊各給一組條件會讓這一頁變成 14 排 pill，
+// 而外資是這三個維度上最常被問的那一邊。
+//
+// ## 漏斗：看得出是哪一條條件把清單砍光
+//
+// 多條件篩選最惱人的情況是「一檔都沒有」，而畫面不告訴你是哪一條害的。所以條件
+// 逐條套用時記下每一步剩幾檔，畫成一個漏斗 —— 砍最兇的那一條一眼就看得出來。
+//
+// ## 歷史回看＝把頂部的日期往回挪
+//
+// 「對過去 20 天每天跑一次」要抓 20 × 159 KB ≈ 3.1 MB（這一頁一天就要五份檔案）。
+// 不值得，而且瀏覽器要算 20 遍。這一頁吃的是全站共用的日期選單，往回挪一天就是
+// 對那一天跑同一組條件 —— 條件記在 localStorage，換日期不會被重設。
+// --------------------------------------------------------------------------
+const RADAR_CONDS = [
+  { key: 'fo', label: '外資', opts: [['', '不限'], ['buy', '買超'], ['sell', '賣超']] },
+  { key: 'tr', label: '投信', opts: [['', '不限'], ['buy', '買超'], ['sell', '賣超']] },
+  { key: 'de', label: '自營', opts: [['', '不限'], ['buy', '買超'], ['sell', '賣超']] },
+  { key: 'against', label: '逆勢', opts: [['', '不限'], ['buy', '買超收黑'], ['sell', '賣超收紅']] },
+  { key: 'force', label: '力道', opts: [['', '不限'], ['2', '2 倍'], ['3', '3 倍'], ['5', '5 倍']] },
+  { key: 'run', label: '連續', opts: [['', '不限'], ['b3', '連買 3'], ['b5', '連買 5'], ['b8', '連買 8'], ['s3', '連賣 3'], ['s5', '連賣 5']] },
+  { key: 'sum20', label: '近20日', opts: [['', '不限'], ['buy', '累計買超'], ['sell', '累計賣超']] },
+  { key: 'min', label: '門檻', opts: [['0.1', '0.1 億'], ['0.5', '0.5 億'], ['1', '1 億'], ['3', '3 億']] },
+];
+const RADAR_KEY = 'stocktracker.radar';
+const RADAR_TOP = 50;        // 命中太多時最多列幾檔
+
+/** 條件列：左邊一個標籤、右邊一組 pill。八組疊在一起，沒有標籤就認不出在篩什麼。 */
+const condRow = (cond, current) =>
+  `<div class="cond"><b>${esc(cond.label)}</b><div class="pills">${cond.opts
+    .map(([value, label]) => `<button class="pill ${value === current ? 'active' : ''}"
+      data-radar="${cond.key}:${value}">${esc(label)}</button>`)
+    .join('')}</div></div>`;
+
+/**
+ * 把五份檔案併成一排「每一檔的所有籌碼屬性」。
+ * 缺哪一份就少哪一種屬性（例如資料起點附近沒有 base/，那幾天就沒有力道），
+ * 對應的條件會篩不到東西 —— 那是誠實的空集合，不是壞掉。
+ */
+function radarRows(daily, chg, base, runs, sums, markets) {
+  const moved = (chg && chg.chg) || {};
+  const norms = (base && base.base) || {};
+  const cut = daily.cut || 0.05;
+
+  const streak = new Map();
+  for (const stocks of Object.values((runs && runs.stocks) || {})) {
+    for (const [code, row] of Object.entries(stocks)) streak.set(code, row[R_DAYS]);
+  }
+
+  const long = new Map();
+  const block = sums && sums.w && sums.w['20'];
+  for (const [code, row] of Object.entries((block && block.rows) || {})) {
+    long.set(code, row[W_FO]);
+  }
+
+  return instiRows(daily)
+    .filter((r) => markets.includes(r.market))
+    .map((r) => ({
+      ...r,
+      chg: moved[r.code],
+      // 力道與連續、累計一樣只看外資，理由見這一段最上面的說明
+      force: forceOf((norms[r.code] || [])[LEG_AT.fo], r.fo, cut),
+      run: streak.get(r.code),
+      sum20: long.get(r.code),
+    }));
+}
+
+/** 一條條件的判斷。回 true 代表這一檔通過。 */
+function radarPass(row, key, value, min) {
+  if (!value) return true;
+  if (key === 'fo' || key === 'tr' || key === 'de') {
+    return value === 'buy' ? row[key] >= min : row[key] <= -min;
+  }
+  if (key === 'against') {
+    if (!row.chg) return false;                 // 平盤與算不出漲跌的都不算逆勢
+    return value === 'buy' ? row.fo > 0 && row.chg < 0 : row.fo < 0 && row.chg > 0;
+  }
+  if (key === 'force') {
+    return row.force !== null && row.force !== undefined && row.force >= Number(value);
+  }
+  if (key === 'run') {
+    const days = row.run;
+    if (!days) return false;
+    const want = Number(value.slice(1));
+    return value[0] === 'b' ? days >= want : -days >= want;
+  }
+  if (key === 'sum20') {
+    if (row.sum20 === undefined) return false;
+    return value === 'buy' ? row.sum20 > 0 : row.sum20 < 0;
+  }
+  return true;
+}
+
+/** 逐條套用，記下每一步剩幾檔。最後一格就是命中的集合。 */
+function radarFunnel(rows, picks) {
+  const steps = [];
+  let left = rows;
+  for (const cond of RADAR_CONDS) {
+    if (cond.key === 'min') continue;           // 門檻不是獨立的一條，它是上面幾條的參數
+    const value = picks[cond.key];
+    if (!value) continue;
+    left = left.filter((r) => radarPass(r, cond.key, value, Number(picks.min)));
+    const label = (cond.opts.find(([v]) => v === value) || [])[1] || value;
+    steps.push({ label: `${cond.label} ${label}`, n: left.length });
+  }
+  return { steps, hit: left };
+}
+
+function radarRow(entry, seq, ranked) {
+  const stock = ranked.get(entry.code);
+  const sum = entry.fo + entry.tr + entry.de;
+  const extra = [];
+  if (entry.run) extra.push(`<span class="chip">連${entry.run > 0 ? '買' : '賣'} ${Math.abs(entry.run)} 天</span>`);
+  if (entry.sum20 !== undefined) extra.push(`<span class="chip">近20日 ${signedOku(entry.sum20)}</span>`);
+  if (stock) extra.push(`<span class="chip">名次 ${stock.rank}</span>`);
+  const share = stock && stock.value
+    ? `佔成交值 ${num((Math.abs(sum) * 1e8 / stock.value) * 100, 1)}%` : '—';
+  return `<a class="row" href="#/stock/${entry.code}">
+    <div class="rank"><span class="no">${seq}</span>
+      <span class="delta ${trend(entry.chg)}">${chgText(entry.chg)}</span></div>
+    <div class="ident">
+      <span class="name">${state.watch.has(entry.code) ? '<span class="star">★</span>' : ''}${esc(entry.name)}</span>
+      <span class="code">${entry.code} · ${esc(MARKET_TAGS[entry.market])}${
+        hasIndustry() ? ` · ${esc(industryOf(entry.code))}` : ''}</span>
+      <span class="chips">${instiChips(entry)}${extra.join('')}</span>
+    </div>
+    <div class="figures">
+      <span class="value ${trend(sum)}">${signedOku(sum)}</span>
+      <span class="price">${forceText(entry.force).replace(' · ', '') || '力道 —'}</span>
+      <span class="price">${num(entry.close, 2)} · ${share}</span>
+    </div>
+  </a>`;
+}
+
+async function renderRadar(view) {
+  let index;
+  try {
+    index = await loadInstiIndex();
+  } catch (err) {
+    view.innerHTML = `<p class="hint">還沒有法人資料（${esc(err.message)}）。<br>
+      請先執行 <code>scripts/fetch_institutions.py</code> 與
+      <code>scripts/build_institutions.py</code>。</p>`;
+    return;
+  }
+  const days = index.days || [];
+  const picks = state.radar;
+  const controls = `<div class="conds">${RADAR_CONDS
+    .map((c) => condRow(c, picks[c.key])).join('')}</div>`;
+
+  if (!days.some((d) => d.d === state.date)) {
+    view.innerHTML = `${controls}
+      <p class="hint">${state.date} 還沒有法人資料。<br>
+      目前有 ${days.length} 個交易日：${esc(index.first)} ~ ${esc(index.latest)}。<br>
+      這一頁吃頂部的日期選單，把日期挪到那一段裡面就會跑。</p>`;
+    return;
+  }
+
+  // 五份檔案缺哪一份就少哪一種條件，所以全部用 catch 包起來，不讓其中一份拖垮整頁
+  const [daily, chg, base, runs, sums, dailyRank] = await Promise.all([
+    loadInstiDay(state.date),
+    loadInstiChg(state.date).catch(() => null),
+    loadInstiBase(state.date),
+    loadInstiRun(state.date).catch(() => null),
+    loadInstiSum(state.date).catch(() => null),
+    loadDaily(state.date),
+  ]);
+  const ranked = new Map(dailyRank.stocks.map((s) => [s.code, s]));
+  const markets = state.scope === 'all' ? ['twse', 'tpex'] : [state.scope];
+  const rows = radarRows(daily, chg, base, runs, sums, markets);
+  const { steps, hit } = radarFunnel(rows, picks);
+
+  const missing = [
+    !chg && '當日漲跌（逆勢）', !base && '平常的量（力道）',
+    !runs && '連續買賣（連續）', !sums && '跨日累計（近 20 日）',
+  ].filter(Boolean);
+
+  const sorted = [...hit].sort((a, b) =>
+    Math.abs(b.fo + b.tr + b.de) - Math.abs(a.fo + a.tr + a.de));
+
+  view.innerHTML = `
+    ${controls}
+    <section class="card">
+      <h2>籌碼雷達 <small>${esc(state.date)} ${esc(scopeLabel())} · 命中 ${hit.length} 檔</small></h2>
+      ${steps.length ? `<ol class="funnel">
+        <li><span>全部</span><b>${rows.length}</b></li>
+        ${steps.map((s) => `<li><span>${esc(s.label)}</span><b>${s.n}</b></li>`).join('')}
+      </ol>
+      <p class="note">上面是<b>漏斗</b>：條件由上而下逐條套用，每一格是套完之後還剩幾檔。
+        一檔都不剩的時候，砍最兇的是哪一條一眼就看得出來 —— 多條件篩選最惱人的情況
+        就是「什麼都沒有」而畫面不告訴你為什麼。</p>`
+      : `<p class="note">目前<b>一條條件都沒下</b>，所以這裡是這一天全部的 ${rows.length} 檔。
+        上面八組各自預設「不限」，選幾組就是取它們的<b>交集</b>。</p>`}
+      <p class="note">「外資／投信／自營」看的是<b>當日</b>的方向，門檻那一排是它們共用的金額下限
+        （買超 ≥ 門檻、賣超 ≤ −門檻）。所以「土洋同買」＝外資買超＋投信買超、
+        「土洋對作」＝外資買超＋投信賣超，不必另外給名字。</p>
+      <p class="note"><b>逆勢、力道、連續、近 20 日這四條只看外資。</b>連續榜本來就只算外資，
+        而力道與累計三邊都有 —— 三邊各給一組條件會讓這一頁變成 14 排 pill，
+        而外資是這三個維度上最常被問的那一邊。</p>
+      ${missing.length ? `<p class="note">${esc(state.date)} 少了這幾份衍生檔：
+        ${esc(missing.join('、'))}。對應的條件會篩不到任何東西 —— 那是誠實的空集合，
+        不是壞掉（資料起點附近算不出來的那幾天就會這樣）。</p>` : ''}
+    </section>
+    ${listCard('命中的股票',
+      `依三大法人合計金額排序 · ${hit.length > RADAR_TOP ? `命中 ${hit.length} 檔，取前 ${RADAR_TOP}` : `共 ${hit.length} 檔`}`,
+      sorted.slice(0, RADAR_TOP).map((r, i) => radarRow(r, i + 1, ranked)),
+      `${state.date} 沒有任何一檔同時符合這幾條。把上面的漏斗由下往上看，
+       最後一格掉到 0 的那一條就是最嚴的那一條。`)}
+    <section class="card">
+      <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
+      <p class="note">前面幾頁各自是一張排行榜：買超頁問「誰買最多」、連買頁問「誰買最久」、
+        法人頁問「外資與投信同不同邊」。每一張都只排一個維度，而真正想問的往往是<b>交集</b>。
+        這一頁因此不是排行榜而是<b>篩選器</b> —— 它輸出的是一個集合，不是一個名次
+        （列出來的順序只是為了好讀，依三大法人合計金額排）。</p>
+      <p class="note"><b>歷史回看就是把頂部的日期往回挪。</b>這一頁一天要吃五份衍生檔
+        （約 160 KB），「對過去 20 天每天跑一次」是 3 MB 加上瀏覽器算 20 遍，不值得。
+        條件記在瀏覽器裡，換日期不會被重設，所以往回翻就是對那一天跑同一組條件。</p>
+      <p class="note">${INSTI_CAVEAT}</p>
+      <p class="note">條件全部是<b>事後的籌碼紀錄</b>：這些帳戶昨天收盤前做了什麼。它沒有說
+        為什麼，也沒有說明天會怎樣 —— 外資的買超裡混著避險、借券還券與指數調整，
+        投信在季底與年底有作帳的動機。<b>命中不是買進訊號，這一頁也不提供訊號。</b></p>
+    </section>`;
+}
+
+// --------------------------------------------------------------------------
 // 分頁六：族群（資金流向）
 // --------------------------------------------------------------------------
 const SECTOR_SORTS = [
@@ -5061,7 +5302,8 @@ const NAV = [
     { v: 'burst', label: '爆量' }, { v: 'ma', label: '均線' }, { v: 'macd', label: 'MACD' }] },
   { key: 'chips', label: '籌碼', views: [
     { v: 'holders', label: '大戶' }, { v: 'insti', label: '法人' },
-    { v: 'instirank', label: '買超' }, { v: 'instirun', label: '連買' }] },
+    { v: 'instirank', label: '買超' }, { v: 'instirun', label: '連買' },
+    { v: 'radar', label: '雷達' }] },
   { key: 'money', label: '資金', views: [
     { v: 'sector', label: '族群' }, { v: 'flow', label: '流向' }, { v: 'market', label: '大盤' }] },
   { key: 'world', label: '環境', views: [
@@ -5170,6 +5412,7 @@ async function render() {
     else if (route.view === 'insti') await renderInsti(view);
     else if (route.view === 'instirank') await renderInstiRank(view);
     else if (route.view === 'instirun') await renderInstiRun(view);
+    else if (route.view === 'radar') await renderRadar(view);
     else if (route.view === 'quote') await renderQuote(view, route.arg);
     else if (route.view === 'stock') await renderStock(view, route.arg);
     else if (route.view === 'compare') await renderCompare(view, route.params);
@@ -5261,6 +5504,15 @@ function bindGlobalControls() {
         localStorage.setItem(INSTI_WIN_KEY, state.instiWin);
       } catch (err) {
         /* 記不住就算了，下次回到預設的當日 */
+      }
+    }
+    if (pill.dataset.radar) {
+      const [key, value] = pill.dataset.radar.split(':');
+      state.radar = { ...state.radar, [key]: value };
+      try {
+        localStorage.setItem(RADAR_KEY, JSON.stringify(state.radar));
+      } catch (err) {
+        /* 記不住就算了，下次回到八組都「不限」 */
       }
     }
     if (pill.dataset.instisort) {
@@ -5368,6 +5620,12 @@ async function start() {
     if (INSTI_WINS.some((o) => o.value === instiWin)) state.instiWin = instiWin;
     const instiSort = localStorage.getItem(INSTI_SORT_KEY);
     if (INSTI_SORTS.some((o) => o.value === instiSort)) state.instiSort = instiSort;
+    // 雷達的條件整包存成 JSON。只收認得的鍵與認得的值 —— 舊版存下來的條件組合
+    // 換了選項之後可能已經不存在，照單全收會讓畫面上一顆 pill 都不是 active
+    const radar = JSON.parse(localStorage.getItem(RADAR_KEY) || '{}');
+    for (const cond of RADAR_CONDS) {
+      if (cond.opts.some(([v]) => v === radar[cond.key])) state.radar[cond.key] = radar[cond.key];
+    }
     // 「不限」是 0，而讀不到時 Number(null) 也是 0 —— 兩者的結果一樣，所以不用分辨
     const runDays = Number(localStorage.getItem(RUN_DAYS_KEY));
     if (RUN_DAYS.some((o) => o.value === runDays)) state.runDays = runDays;

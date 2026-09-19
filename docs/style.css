@@ -254,6 +254,61 @@ select, input, button {
   font-weight: 600;
 }
 
+/* --------------------------------------------------------------------------
+ * 籌碼雷達的條件組合器
+ *
+ * 全站其他地方的 pill 列都是「一頁一兩組、每一顆自己說得清自己」（「0.5 億」
+ * 「近 5 日」），所以不需要標籤。雷達有八組疊在一起，沒有標籤就認不出哪一排在篩
+ * 什麼 —— 這是全站唯一帶標籤的 pill 列，pill 本身也因此縮小一號，
+ * 八排才塞得進一個手機畫面。
+ * -------------------------------------------------------------------------- */
+.conds { margin-bottom: 12px; }
+
+.cond {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.cond > b {
+  flex: 0 0 46px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.cond .pills { flex: 1 1 auto; }
+
+.cond .pill {
+  padding: 5px 10px;
+  min-height: 30px;
+  font-size: 12px;
+}
+
+/* 漏斗：條件由上而下逐條套用，每一列是套完之後還剩幾檔。
+   一檔都不剩時，砍最兇的是哪一條一眼就看得出來。 */
+.funnel {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+}
+
+.funnel li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 13px;
+}
+
+.funnel li:last-child { border-bottom: 0; }
+.funnel li span { color: var(--muted); }
+.funnel li b { font-size: 15px; font-variant-numeric: tabular-nums; }
+
 .card {
   background: var(--surface);
   border: 1px solid var(--line);
