@@ -101,10 +101,12 @@ const state = {
   quotes: null,        // Promise<quotes/index.json>，進到報價頁才載
   quoteSeries: new Map(),// 品類 -> Promise<quotes/series/{cat}.json|null>
   entry: null,         // Promise<entry.json>，進到「後續」頁才載
+  period: 'w',         // 「週月」分頁看週還是月（PERIODS 的 value）
   daily: new Map(),    // date -> Promise<payload>
   history: new Map(),  // year -> Promise<payload>
   kline: new Map(),    // market/code/month -> Promise<payload|null>
   charts: [],
+  csv: null,           // 目前畫面上那一份帶得走的資料（匯出鈕用）
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -661,6 +663,7 @@ async function renderRank(view) {
       ${themePicks.length ? `<optgroup label="題材族群">${themePicks.map((o) => opt(o.value, o.label, state.sector)).join('')}</optgroup>` : ''}
     </select>`;
 
+  const tools = exportBar();
   const sortSelect = `<select id="sort-pick" aria-label="排序">
       ${SORTS.map((o) => opt(o.value, o.label, state.sort)).join('')}
     </select>`;
@@ -675,6 +678,7 @@ async function renderRank(view) {
       ${pickSelect}${sortSelect}${floorSelect}
       ${pills('baseline', BASELINES, state.baseline)}
     </div>
+    ${tools}
     <div id="rank-say"></div>
     <section class="card">
       <h2>成交值前 ${TOP} 大 <small>${baseDate ? `名次變化 vs ${baseDate}` : '無比較基準'}</small></h2>
@@ -722,6 +726,11 @@ async function renderRank(view) {
           —— 推播會帶上每一檔的<b>籌碼動靜</b>（土洋同買／對作、外資連買天數、力道、逆勢），
           而且<b>檔數沒有上限</b>。</p>`
       : '';
+    setExport(`排行_${state.scope}_${state.date}.csv`,
+      ['名次', '代號', '名稱', '市場', '產業', '成交值(億)', '收盤', '漲跌%', '連續進榜天數'],
+      picked.map((s) => [s.rank, s.code, s.name, MARKET_TAGS[s.m] || '',
+        hasIndustry() ? industryOf(s.code) : '',
+        (s.value / 1e8).toFixed(2), s.close, s.changePct, s.streak || '']));
     $('#rank-list').innerHTML =
       (rows.length ? rows.join('') : '<p class="hint">找不到符合的股票</p>') + watchNote;
     $('#rank-say').innerHTML = rankSay(picked, top, baseMap, baseDate);
@@ -966,6 +975,189 @@ async function renderEntry(view) {
         那份的起點就是這份統計的起點，${data.n} 筆是這樣來的。</p>
       <p class="note">這一頁<b>不吃頂部的日期與範圍選單</b>：它是整段歷史的彙總，不是某一天的
         快照。市場的差別在上面「依市場」那張表裡。</p>
+    </section>`;
+}
+
+// --------------------------------------------------------------------------
+// 分頁：週月（週與月的累計維度）
+//
+// 全站其他頁的維度都是「日」：今天誰在榜上、今天誰買最多。但「這一週誰最熱」
+// 與「這個月誰天天在榜上」是另一種問題 —— 一檔爆量一天就掉下去的，跟一檔連著
+// 二十天都排在中段的，在日維度上看起來沒差多少，累計起來差很多。
+//
+// 三張榜各自回答一個問題：
+//   累計成交值   這一段期間，錢最集中在哪幾檔
+//   進榜天數     誰是常客（而不是只來了一天）
+//   期間新進榜   這一段期間才第一次擠進前 TOP 的是誰
+//
+// ## 資料是 history/，不是 daily/
+//
+// 週與月要把一整段期間的每一天加起來，而 daily/ 是一天一個檔（一天 66 KB，
+// 一個月要抓二十幾個）。history/{範圍}/{年}.json 是現成的轉置表（個股 -> 每一天的
+// 名次與成交值），一整年一個檔，個股頁本來就在用它、也已經有快取。
+//
+// ## 一個一定要講的邊界：history 只留前 300 名
+//
+// `p` 裡只有「那一天排進前 KEPT 名」的日子。所以這裡的「累計成交值」嚴格說是
+// **「排進前 300 名的那幾天的成交值總和」**，不是這一檔那一段期間的全部成交值。
+// 對榜上那幾檔來說差別很小（排不進前 300 的日子本來就沒多少量），但它是個真的
+// 邊界，畫面上要寫出來 —— 不然「累計成交值」四個字會被讀成一個它不是的東西。
+// --------------------------------------------------------------------------
+const PERIODS = [
+  { value: 'w', label: '本週' },
+  { value: 'm', label: '本月' },
+];
+const PERIOD_KEY = 'stocktracker.period';
+const PERIOD_TOP = 50;       // 累計成交值榜取前幾名
+const PERIOD_SIDE = 20;      // 另外兩張榜取前幾名
+
+/** 選定日期所屬的那一週（週一到週日）或那一個月，回傳 [起, 迄] 兩個日期字串。 */
+function periodRange(date, mode) {
+  if (mode === 'm') return [`${date.slice(0, 7)}-01`, `${date.slice(0, 7)}-31`];
+  // 週一為起點。getUTCDay() 的週日是 0，換算成「距離上一個週一幾天」
+  const day = new Date(`${date}T00:00:00Z`);
+  const back = (day.getUTCDay() + 6) % 7;
+  const monday = new Date(day.getTime() - back * 86400000);
+  const sunday = new Date(monday.getTime() + 6 * 86400000);
+  return [monday.toISOString().slice(0, 10), sunday.toISOString().slice(0, 10)];
+}
+
+/**
+ * 把一段期間的每一天加起來 -> [{code, name, value, days, top, first}]。
+ *
+ * value 是累計成交值（億）、days 是這段期間有進前 KEPT 名的天數、
+ * top 是進前 TOP 名的天數、first 是這段期間第一次進前 TOP 的日期（沒有就 null）。
+ */
+function periodRows(years, dates, before) {
+  const acc = new Map();
+  for (const payload of years) {
+    const offsets = payload.dates;
+    for (const [code, record] of Object.entries(payload.stocks)) {
+      for (const [offset, rank, value] of record.p) {
+        const date = offsets[offset];
+        if (!dates.has(date)) continue;
+        let row = acc.get(code);
+        if (!row) {
+          row = { code, name: record.name, value: 0, days: 0, top: 0, first: null };
+          acc.set(code, row);
+        }
+        row.name = record.name;
+        row.value += value;
+        row.days += 1;
+        if (rank <= TOP) {
+          row.top += 1;
+          // 期間新進榜：這一天在前 TOP、而前一個交易日不在
+          if (!row.first && !before.has(`${code}@${date}`)) row.first = date;
+        }
+      }
+    }
+  }
+  return [...acc.values()];
+}
+
+function periodRow(entry, seq, extra) {
+  return `<a class="row" href="#/stock/${entry.code}">
+    <div class="rank"><span class="no">${seq}</span></div>
+    <div class="ident">
+      <span class="name">${state.watch.has(entry.code) ? '<span class="star">★</span>' : ''}${esc(entry.name)}</span>
+      <span class="code">${entry.code}${hasIndustry() ? ` · ${esc(industryOf(entry.code))}` : ''}</span>
+    </div>
+    <div class="figures">
+      <span class="value">${fmtOku(entry.value)}</span>
+      <span class="price">${extra}</span>
+    </div>
+  </a>`;
+}
+
+async function renderPeriod(view) {
+  const mode = state.period;
+  const [from, to] = periodRange(state.date, mode);
+  const inRange = state.index.dates.filter((d) => d >= from && d <= to);
+  const label = mode === 'm' ? `${state.date.slice(0, 7)} 整月` : `${from} ~ ${to} 這一週`;
+
+  const controls = `<div class="controls">${pills('period', PERIODS, mode)}</div>`;
+  if (!inRange.length) {
+    view.innerHTML = `${controls}<p class="hint">${esc(label)}沒有任何交易日。</p>`;
+    return;
+  }
+
+  // 一段期間可能跨年（跨年的那一週），所以把涉及的年份都載進來
+  const years = [...new Set(inRange.map((d) => d.slice(0, 4)))];
+  const loaded = await Promise.all(years.map((y) => loadHistory(y, state.scope)));
+
+  // 判斷「期間新進榜」要知道前一個交易日在不在榜上，而那一天可能在期間之外
+  const at = state.index.dates.indexOf(inRange[0]);
+  const prevDate = at > 0 ? state.index.dates[at - 1] : null;
+  const before = new Set();
+  for (const payload of loaded) {
+    for (const [code, record] of Object.entries(payload.stocks)) {
+      for (const [offset, rank] of record.p) {
+        const date = payload.dates[offset];
+        if (rank > TOP) continue;
+        // key 是「這一檔在 date 的下一個交易日算不算已經在榜上」
+        const next = state.index.dates[state.index.dates.indexOf(date) + 1];
+        if (next) before.add(`${code}@${next}`);
+      }
+    }
+  }
+
+  const dateSet = new Set(inRange);
+  const rows = periodRows(loaded, dateSet, before);
+  const byValue = [...rows].sort((a, b) => b.value - a.value);
+  const byDays = [...rows].filter((r) => r.top)
+    .sort((a, b) => b.top - a.top || b.value - a.value);
+  const rookies = rows.filter((r) => r.first).sort((a, b) => a.first.localeCompare(b.first)
+    || b.value - a.value);
+
+  const total = byValue.reduce((sum, r) => sum + r.value, 0);
+  setExport(`週月_${mode}_${state.scope}_${from}_${to}.csv`,
+    ['代號', '名稱', '產業', '累計成交值(億)', '進前300天數', `進前${TOP}天數`, '期間首次進榜'],
+    byValue.map((r) => [r.code, r.name, hasIndustry() ? industryOf(r.code) : '',
+      r.value.toFixed(2), r.days, r.top, r.first || '']));
+
+  view.innerHTML = `
+    ${controls}
+    ${exportBar()}
+    <section class="card">
+      <h2>${mode === 'm' ? '本月' : '本週'}累計 <small>${esc(label)} · ${inRange.length} 個交易日 · ${esc(scopeLabel())}</small></h2>
+      <div class="stat-grid">
+        <div class="stat"><b>${inRange.length}</b><span>交易日</span></div>
+        <div class="stat"><b>${fmtOku(total)}</b><span>榜上累計成交值</span></div>
+        <div class="stat"><b>${rows.length}</b><span>期間出現過的股票</span></div>
+        <div class="stat"><b>${byDays.filter((r) => r.top === inRange.length).length}</b><span>天天在前 ${TOP}</span></div>
+        <div class="stat"><b>${rookies.length}</b><span>期間新進榜</span></div>
+        <div class="stat"><b class="sm">${esc(from)} ~ ${esc(to)}</b><span>期間</span></div>
+      </div>
+      <p class="note">期間由頂部的<b>日期選單</b>決定：選哪一天，就看那一天所屬的
+        ${mode === 'm' ? '整個月' : '那一週（週一到週日）'}。最後一段期間通常還沒走完
+        —— 上面的交易日數就是實際算進去的天數。</p>
+      <p class="note"><b>「累計成交值」是「排進前 ${KEPT} 名的那幾天的成交值總和」</b>，不是這一檔
+        期間內的全部成交值。本站的歷史序列只留每天前 ${KEPT} 名，排不進去的日子沒有紀錄。
+        對榜上這幾檔來說差別很小（排不進前 ${KEPT} 名的日子本來就沒多少量），
+        但它是個真的邊界。</p>
+    </section>
+    ${listCard(`${mode === 'm' ? '本月' : '本週'}累計成交值`, `取前 ${PERIOD_TOP} · 括號是進前 ${KEPT} 名的天數`,
+      byValue.slice(0, PERIOD_TOP).map((r, i) => periodRow(r, i + 1,
+        `${r.days} 天 · 平均 ${fmtOku(r.value / r.days)}`)),
+      '這段期間沒有任何資料')}
+    ${listCard(`進前 ${TOP} 名天數最多`, `取前 ${PERIOD_SIDE} · 同天數比累計成交值`,
+      byDays.slice(0, PERIOD_SIDE).map((r, i) => periodRow(r, i + 1,
+        `${r.top}/${inRange.length} 天在前 ${TOP}`)),
+      `這段期間沒有任何一檔進過前 ${TOP}`)}
+    ${listCard('期間新進榜', `第一次擠進前 ${TOP} 的那一天 · 取前 ${PERIOD_SIDE}`,
+      rookies.slice(0, PERIOD_SIDE).map((r, i) => periodRow(r, i + 1,
+        `${r.first} 首次 · 之後 ${r.top} 天在榜`)),
+      `這段期間沒有任何一檔是新進榜（都是原本就在榜上的）`)}
+    <section class="card">
+      <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
+      <p class="note">全站其他頁的維度都是「日」。一檔爆量一天就掉下去的，跟一檔連著二十天
+        都排在中段的，在日維度上看起來沒差多少，<b>累計起來差很多</b> —— 這一頁就是為了
+        把那個差別顯出來。「累計成交值」看錢集中在哪，「進榜天數」看誰是常客。</p>
+      <p class="note">資料是 <code>docs/data/history/</code> 的轉置表（個股 → 每一天的名次與
+        成交值），一整年一個檔，個股頁本來就在用、已經有快取。不用每日檔是因為一個月要
+        抓二十幾個。</p>
+      <p class="note">成交值大不等於漲。這三張榜講的都是<b>量</b>，不是價 ——
+        量能集中的那幾檔裡，漲的跌的都有。要看價，去個股頁或「後續」頁。</p>
     </section>`;
 }
 
@@ -3357,8 +3549,17 @@ async function renderInstiRank(view) {
     ? ['逆勢買超（買超收黑）', '逆勢賣超（賣超收紅）']
     : ['逆勢買超（累計買超、期間卻跌）', '逆勢賣超（累計賣超、期間卻漲）'];
 
+  setExport(`籌碼買超_${leg}_${win}_${state.scope}_${state.date}.csv`,
+    ['代號', '名稱', '市場', '漲跌%', '外資(億)', '投信(億)', '自營(億)',
+      `${name}(億)`, `${name}(張)`, '力道(倍)', '收盤'],
+    [...buys, ...sells].map((r) => [r.code, r.name, MARKET_TAGS[r.market], r.chg,
+      r.fo.toFixed(2), r.tr.toFixed(2), r.de.toFixed(2),
+      legOku(r, leg).toFixed(2), Math.round(legLots(r, leg) / 1000),
+      r.force === null || r.force === undefined ? '' : r.force.toFixed(1), r.close]));
+
   view.innerHTML = `
     ${controls}
+    ${exportBar()}
     <section class="card">
       <h2>${esc(name)}${esc(winName)}買賣超排行 <small>${esc(state.date)} ${esc(scopeLabel())} · 買超 ${buys.length} 檔、賣超 ${sells.length} 檔</small></h2>
       <div class="stat-grid">
@@ -3876,6 +4077,14 @@ async function renderRadar(view) {
 
   const sorted = [...hit].sort((a, b) =>
     Math.abs(b.fo + b.tr + b.de) - Math.abs(a.fo + a.tr + a.de));
+  // 匯出的是**命中的全部**，不是畫面上取前 50 的那一份 —— 篩選器的產出就是那個集合
+  setExport(`籌碼雷達_${state.scope}_${state.date}.csv`,
+    ['代號', '名稱', '市場', '漲跌%', '外資(億)', '投信(億)', '自營(億)', '三大法人(億)',
+      '力道(倍)', '外資連續天數', '近20日外資(億)', '收盤'],
+    sorted.map((r) => [r.code, r.name, MARKET_TAGS[r.market], r.chg,
+      r.fo.toFixed(2), r.tr.toFixed(2), r.de.toFixed(2), (r.fo + r.tr + r.de).toFixed(2),
+      r.force === null || r.force === undefined ? '' : r.force.toFixed(1),
+      r.run || '', r.sum20 === undefined ? '' : r.sum20, r.close]));
 
   view.innerHTML = `
     ${controls}
@@ -3900,6 +4109,7 @@ async function renderRadar(view) {
         ${esc(missing.join('、'))}。對應的條件會篩不到任何東西 —— 那是誠實的空集合，
         不是壞掉（資料起點附近算不出來的那幾天就會這樣）。</p>` : ''}
     </section>
+    ${exportBar()}
     ${listCard('命中的股票',
       `依三大法人合計金額排序 · ${hit.length > RADAR_TOP ? `命中 ${hit.length} 檔，取前 ${RADAR_TOP}` : `共 ${hit.length} 檔`}`,
       sorted.slice(0, RADAR_TOP).map((r, i) => radarRow(r, i + 1, ranked)),
@@ -5417,7 +5627,8 @@ async function renderCompare(view, params) {
 const NAV = [
   { key: 'rank', label: '排行', views: [
     { v: 'rank', label: '排行' }, { v: 'streak', label: '站穩' },
-    { v: 'moves', label: '異動' }, { v: 'entry', label: '後續' }] },
+    { v: 'moves', label: '異動' }, { v: 'entry', label: '後續' },
+    { v: 'period', label: '週月' }] },
   { key: 'tech', label: '技術', views: [
     { v: 'burst', label: '爆量' }, { v: 'ma', label: '均線' }, { v: 'macd', label: 'MACD' }] },
   { key: 'chips', label: '籌碼', views: [
@@ -5470,6 +5681,109 @@ function paintNav(view) {
     : `<a class="${t.v === view ? 'active' : ''}" href="#/${t.v}">${esc(t.label)}</a>`)).join('');
 }
 
+// --------------------------------------------------------------------------
+// 匯出與分享
+//
+// 在這之前完全沒有把資料帶走的方法，也沒有把「我現在看到的畫面」給別人的方法。
+// 兩件事都不需要後端。
+//
+// ## CSV：前端組字串 + Blob
+//
+// 開頭一定要放 BOM（﻿）。少了它，Excel 會用系統的 ANSI 編碼去猜，中文股名
+// 整欄變亂碼 —— 這是最常被回報、又最容易漏掉的一件事。
+//
+// 欄位裡的逗號、引號與換行照 RFC 4180 處理（用雙引號包起來、內部的引號變兩個）。
+// 股票名稱裡確實有逗號以外的怪字元（「臻鼎-KY」「國巨*」「康霈*」），但真正會
+// 咬到的是題材族群那種人工維護的欄位，所以一律照規矩跳脫，不挑欄位。
+//
+// ## 分享連結：把狀態放進網址，而且用完就拿掉
+//
+// 這支 SPA 的 hash 只有「哪一頁」（#/rank），日期與範圍是存在 state 裡的 ——
+// 所以直接複製網址給別人，對方看到的是他自己的日期與範圍，不是你的。
+//
+// 分享鈕產生的網址帶 `?d=` 與 `?s=`，render() 開場時讀到就套用，**然後立刻從網址
+// 上拿掉**（replaceState，不會觸發 hashchange）。一次性的理由很實際：留著的話，
+// 使用者接下來自己換日期會被網址上的 d 一直蓋回去 —— 那是個很難查的 bug。
+// --------------------------------------------------------------------------
+
+/** 一格 CSV。逗號、雙引號、換行都要包起來（RFC 4180）。 */
+const csvCell = (value) => {
+  const text = value === null || value === undefined ? '' : String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+};
+
+/**
+ * 把畫面上那份資料存成 CSV。
+ * BOM 開頭，否則 Excel 會把中文欄位整欄讀成亂碼。
+ */
+function downloadCSV(name, header, rows) {
+  const text = '﻿' + [header, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n');
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // 立刻釋放：Blob 會一直佔著記憶體直到分頁關掉
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/** 目前畫面上那一份帶得走的資料。render 時設好，匯出鈕按下去才有東西可給。 */
+function setExport(name, header, rows) {
+  state.csv = rows && rows.length ? { name, header, rows } : null;
+}
+
+/**
+ * 匯出與分享那兩顆鈕。兩顆一律都畫出來 —— 外層的 HTML 在 state.csv 填好之前就
+ * 排好了（排行頁的清單是 paint() 之後才進去的），依 state.csv 決定要不要畫，
+ * 第一次進頁面就會少一顆。按下去沒東西可匯出時由事件那邊講話。
+ */
+const exportBar = () => `<div class="controls tools">
+  <button class="linky" id="export-csv">⤓ 下載 CSV</button>
+  <button class="linky" id="share-link">🔗 複製分享連結</button>
+  <span class="tools-said" id="tools-said"></span>
+</div>`;
+
+/**
+ * 目前畫面的分享網址：帶上日期與範圍，別人打開才會看到同一個畫面。
+ * 其餘的篩選條件（門檻、排序、雷達的八組條件）不放進去 —— 那些記在對方自己的
+ * localStorage 裡，硬塞進網址會變成「打開別人的連結，自己的設定被改掉」。
+ */
+function shareURL() {
+  const { view, arg } = parseHash();
+  const path = `${view}${arg ? `/${arg}` : ''}`;
+  const params = new URLSearchParams({ d: state.date, s: state.scope });
+  return `${location.origin}${location.pathname}#/${path}?${params}`;
+}
+
+/**
+ * 網址上的 d／s 套用到 state，然後把這兩個參數從網址拿掉。
+ * 回傳有沒有動到東西（有的話 paintChrome 要重畫選單）。
+ */
+function applyShareParams(route) {
+  const wantDate = route.params.get('d');
+  const wantScope = route.params.get('s');
+  let changed = false;
+  if (wantDate && state.index.dates.includes(wantDate)) {
+    state.date = wantDate;
+    changed = true;
+  }
+  if (wantScope && SCOPES.some((s) => s.value === wantScope)) {
+    state.scope = wantScope;
+    changed = true;
+  }
+  if (!wantDate && !wantScope) return false;
+
+  // 用完就拿掉，其餘參數（例如對照頁的 a／b）原樣留著
+  route.params.delete('d');
+  route.params.delete('s');
+  const rest = route.params.toString();
+  const path = `${route.view}${route.arg ? `/${route.arg}` : ''}`;
+  history.replaceState(null, '', `${location.pathname}#/${path}${rest ? `?${rest}` : ''}`);
+  return changed;
+}
+
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
   const [path, qs] = raw.split('?');
@@ -5506,12 +5820,16 @@ function paintChrome() {
 
 async function render() {
   const route = parseHash();
+  // 分享連結帶來的日期與範圍。套用之後就從網址上拿掉，不然使用者自己換日期會被蓋回去
+  applyShareParams(route);
   paintNav(route.view);
   destroyCharts();
   const view = $('#view');
   // 流向頁那兩張圖看的是面積，寬螢幕不跟其他分頁一樣限在 720px
   view.classList.toggle('wide', route.view === 'flow');
   view.innerHTML = '<p class="hint">載入中…</p>';
+  // 上一頁的匯出資料不能留到下一頁 —— 那會讓人在圖表頁按下匯出、拿到別頁的清單
+  state.csv = null;
 
   try {
     // 某個範圍在某一天沒有資料時，直接講清楚，不要讓它變成一則 404 載入失敗
@@ -5526,6 +5844,7 @@ async function render() {
     else if (route.view === 'streak') await renderStreak(view);
     else if (route.view === 'moves') await renderMoves(view);
     else if (route.view === 'entry') await renderEntry(view);
+    else if (route.view === 'period') await renderPeriod(view);
     else if (route.view === 'burst') await renderBurst(view);
     else if (route.view === 'ma') await renderMa(view);
     else if (route.view === 'macd') await renderMacd(view);
@@ -5627,6 +5946,14 @@ function bindGlobalControls() {
         /* 記不住就算了，下次回到預設的當日 */
       }
     }
+    if (pill.dataset.period) {
+      state.period = pill.dataset.period;
+      try {
+        localStorage.setItem(PERIOD_KEY, state.period);
+      } catch (err) {
+        /* 記不住就算了，下次回到預設的本週 */
+      }
+    }
     if (pill.dataset.radar) {
       const [key, value] = pill.dataset.radar.split(':');
       state.radar = { ...state.radar, [key]: value };
@@ -5674,6 +6001,29 @@ function bindGlobalControls() {
     }
     if (pill.dataset.watch) toggleWatch(pill.dataset.watch);
     render();
+  });
+
+  // 匯出與分享。畫面重繪後不必重新綁定，所以用事件委派。
+  $('#view').addEventListener('click', async (e) => {
+    const said = (text) => {
+      const box = $('#tools-said');
+      if (box) box.textContent = text;
+    };
+    if (e.target.closest('#export-csv')) {
+      if (!state.csv) return said('這一頁沒有可以匯出的清單');
+      downloadCSV(state.csv.name, state.csv.header, state.csv.rows);
+      said(`已下載 ${state.csv.rows.length} 列`);
+    }
+    if (e.target.closest('#share-link')) {
+      const url = shareURL();
+      try {
+        await navigator.clipboard.writeText(url);
+        said('已複製，連結帶著目前的日期與範圍');
+      } catch (err) {
+        // 非 HTTPS 或使用者拒絕剪貼簿權限時，至少把網址秀出來讓他自己複製
+        said(url);
+      }
+    }
   });
 
   window.addEventListener('hashchange', render);
@@ -5743,6 +6093,8 @@ async function start() {
     if (INSTI_SORTS.some((o) => o.value === instiSort)) state.instiSort = instiSort;
     // 雷達的條件整包存成 JSON。只收認得的鍵與認得的值 —— 舊版存下來的條件組合
     // 換了選項之後可能已經不存在，照單全收會讓畫面上一顆 pill 都不是 active
+    const period = localStorage.getItem(PERIOD_KEY);
+    if (PERIODS.some((o) => o.value === period)) state.period = period;
     const radar = JSON.parse(localStorage.getItem(RADAR_KEY) || '{}');
     for (const cond of RADAR_CONDS) {
       if (cond.opts.some(([v]) => v === radar[cond.key])) state.radar[cond.key] = radar[cond.key];

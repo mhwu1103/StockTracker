@@ -254,6 +254,16 @@ select, input, button {
   font-weight: 600;
 }
 
+/* 匯出與分享那一列。linky 的樣式已經有了，這裡只負責把它們擺成一排並留一個
+   回話的位置（「已下載 200 列」「已複製」）—— 按了沒反應是這種按鈕最常見的抱怨。 */
+.tools { align-items: center; gap: 14px; margin-top: -4px; }
+
+.tools-said {
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
 /* --------------------------------------------------------------------------
  * 統計表（「後續」分頁）
  *
