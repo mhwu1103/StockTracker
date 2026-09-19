@@ -1,4 +1,4 @@
-"""把當日的新進榜／連續進榜清單推播到 Telegram。
+"""把當日的新進榜／連續進榜清單與籌碼異動推播到 Telegram。
 
 需要兩個環境變數（請在 GitHub 設成 repository secret，不要寫進程式碼或 commit）：
     TELEGRAM_BOT_TOKEN
@@ -28,6 +28,7 @@ from collections import defaultdict
 
 import requests
 
+import institutions as insti
 import twse
 
 # 要推播哪幾種連續天數，順序即為訊息中的排列順序
@@ -41,7 +42,7 @@ def escape(text: str) -> str:
 
 
 def build_message(payload: dict, site_url: str = "", scope_name: str = "",
-                  total_label: str = "大盤") -> str:
+                  total_label: str = "大盤", insti_rows=None) -> str:
     by_streak = defaultdict(list)
     for stock in payload["stocks"]:
         if stock.get("streak") in STREAK_GROUPS:
@@ -67,17 +68,106 @@ def build_message(payload: dict, site_url: str = "", scope_name: str = "",
         if len(group) > MAX_PER_GROUP:
             lines.append(f"…另有 {len(group) - MAX_PER_GROUP} 檔未列出")
 
+    lines += insti_lines(insti_rows)
+
     if site_url:
         lines += ["", f'<a href="{escape(site_url)}">看完整排行</a>']
     return "\n".join(lines)
 
+
+# --------------------------------------------------------------------------- #
+# 籌碼異動（土洋同買／對作）
+# --------------------------------------------------------------------------- #
+# 網站上那兩組榜的推播版。門檻與網站「法人」頁的預設值一致 —— 兩邊看到的名單
+# 不一樣的話，使用者會以為其中一邊壞了。
+#
+# 每一組只佔**一行**（名稱與代號用頓號串起來），不是一檔一行：現有的訊息已經有
+# 四組進榜清單，再加四組一檔一行會逼近 Telegram 的 4,096 字元上限，而超過的部分
+# 是被截掉、不是被拒絕 —— 那種壞法在收到訊息之前看不出來。
+INSTI_MIN_OKU = 0.5         # 兩邊各自都要達到的金額（億）
+INSTI_MAX = 8               # 每一組最多列幾檔
+
+# 標籤 -> 訊息裡的標題。
+INSTI_GROUPS = [
+    ("both", "🤝 土洋同買"),
+    ("bothSell", "🤝 土洋同賣"),
+    ("foBuy", "⚔️ 對作·外資買投信賣"),
+    ("foSell", "⚔️ 對作·外資賣投信買"),
+]
+
+
+def insti_tag_of(fo: float, tr: float, min_oku: float):
+    """與 app.js 的 instiTagOf() 同一個規則：兩邊各自都要達到門檻。"""
+    if fo >= min_oku and tr >= min_oku:
+        return "both"
+    if fo <= -min_oku and tr <= -min_oku:
+        return "bothSell"
+    if fo >= min_oku and tr <= -min_oku:
+        return "foBuy"
+    if fo <= -min_oku and tr >= min_oku:
+        return "foSell"
+    return None
+
+
+def insti_groups(date_iso: str, scope: str = "all", min_oku: float = INSTI_MIN_OKU):
+    """當日的法人檔 -> {標籤: [(排序鍵, 代號, 簡稱, 外資億, 投信億)]}。
+
+    那一天還沒有法人資料就回 None —— 法人資料涵蓋的交易日比排行短，
+    而「還沒抓到」與「今天沒有任何異動」必須分得出來。
+    """
+    path = insti.daily_path(date_iso)
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    markets = insti.MARKETS if scope == "all" else (scope,)
+    groups = {key: [] for key, _ in INSTI_GROUPS}
+    for market in markets:
+        for code, row in ((payload.get("stocks") or {}).get(market) or {}).items():
+            name = row[insti.F_NAME]
+            close = row[insti.F_CLOSE]
+            fo = insti.oku(row[insti.F_FO], close)
+            tr = insti.oku(row[insti.F_TR], close)
+            tag = insti_tag_of(fo, tr, min_oku)
+            if not tag:
+                continue
+            # 同買同賣看合計，對作看較小的那一邊 —— 對作的合計接近零（兩邊互相
+            # 抵消），拿它排序等於隨機
+            key = abs(fo + tr) if tag in ("both", "bothSell") else min(abs(fo), abs(tr))
+            groups[tag].append((key, code, name, fo, tr))
+    for rows in groups.values():
+        rows.sort(reverse=True)
+    return groups
+
+
+def insti_lines(groups, min_oku: float = INSTI_MIN_OKU, only: set = None) -> list:
+    """籌碼那一段的訊息行。only 給了就只留那幾檔（自選股推播用）。"""
+    if groups is None:
+        return []
+    lines = ["", f"<b>🧭 籌碼異動 · 外資與投信各自 {min_oku} 億以上</b>"]
+    empty = True
+    for key, title in INSTI_GROUPS:
+        rows = groups[key]
+        if only is not None:
+            rows = [r for r in rows if r[1] in only]
+        if not rows:
+            continue
+        empty = False
+        names = "、".join(f"{escape(name)} {code}" for _, code, name, _, _ in rows[:INSTI_MAX])
+        more = f" …另 {len(rows) - INSTI_MAX} 檔" if len(rows) > INSTI_MAX else ""
+        lines.append(f"{title}（{len(rows)}）：{names}{more}")
+    if empty:
+        return []
+    # 金額是估算的這件事每次都要講，不然這幾個數字看起來像官方數字
+    lines.append("<i>金額為估算（買賣超股數 × 收盤價），非官方數字。</i>")
+    return lines
 
 def parse_watchlist(raw: str) -> list:
     return [c.strip() for c in str(raw or "").replace("\n", ",").split(",") if c.strip()]
 
 
 def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = "",
-                        scope_name: str = "", total_label: str = "大盤") -> str:
+                        scope_name: str = "", total_label: str = "大盤",
+                        insti_rows=None) -> str:
     """只講自選股：今天在不在榜上、名次多少、是不是剛進榜或剛掉出榜。"""
     today = {s["code"]: s for s in payload["stocks"] if s["rank"] <= twse.STREAK_RANK}
     before = {s["code"]: s for s in (prev or {}).get("stocks", []) if s["rank"] <= twse.STREAK_RANK}
@@ -112,6 +202,10 @@ def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = 
     missing = [c for c in codes if c not in today and c not in before]
     if missing:
         lines += ["", f"<i>未在榜上：{escape('、'.join(missing))}</i>"]
+
+    # 自選股那一封只講自選的籌碼異動。進不進榜與有沒有法人異動是兩件事，
+    # 所以這一段不受上面的「在榜上／掉出榜」影響，自選股全部都看。
+    lines += insti_lines(insti_rows, only=set(codes))
 
     if site_url:
         lines += ["", f'<a href="{escape(site_url)}">看完整排行</a>']
@@ -171,6 +265,10 @@ def main() -> int:
     scope_name = "" if args.scope == "all" else f"（{twse.SCOPE_NAMES[args.scope]}）"
     total_label = "大盤" if args.scope == "all" else twse.SCOPE_NAMES[args.scope]
 
+    insti_rows = insti_groups(date_iso, args.scope)
+    if insti_rows is None:
+        print(f"{date_iso} 還沒有法人資料，這一封不含籌碼異動那一段。")
+
     if codes:
         i = dates.index(date_iso)
         prev = (
@@ -183,9 +281,10 @@ def main() -> int:
         if not any(c in on_board or c in was_on for c in codes):
             print(f"自選股（{len(codes)} 檔）在 {date_iso} 都沒有進出榜，不發送。")
             return 0
-        message = build_watch_message(payload, prev, codes, site_url, scope_name, total_label)
+        message = build_watch_message(payload, prev, codes, site_url, scope_name,
+                                      total_label, insti_rows)
     else:
-        message = build_message(payload, site_url, scope_name, total_label)
+        message = build_message(payload, site_url, scope_name, total_label, insti_rows)
 
     if args.dry_run:
         print(message)

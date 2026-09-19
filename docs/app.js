@@ -484,7 +484,7 @@ const MARKET_TAGS = { twse: '上市', tpex: '上櫃' };
 
 const hasIndustry = () => Object.keys(state.industry).length > 0;
 
-function stockRow(stock, base) {
+function stockRow(stock, base, tag) {
   const prev = base ? base.rank : null;
   const pct = stock.changePct;
   const pctText = pct === null || pct === undefined ? '' : `<em class="${trend(pct)}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</em>`;
@@ -493,7 +493,7 @@ function stockRow(stock, base) {
     <div class="rank"><span class="no">${stock.rank}</span>${deltaBadge(stock.rank, prev)}</div>
     <div class="ident"><span class="name">${state.watch.has(stock.code) ? '<span class="star">★</span>' : ''}${esc(stock.name)}</span>
       <span class="code">${stock.code}${stock.m ? ` · ${esc(MARKET_TAGS[stock.m])}` : ''}${hasIndustry() ? ` · ${esc(industryOf(stock.code))}` : ''}</span>
-      ${streak ? `<span class="streak">${streak}</span>` : ''}</div>
+      ${streak ? `<span class="streak">${streak}</span>` : ''}${instiTagChip(tag)}</div>
     <div class="figures"><span class="value">${fmtValue(stock.value)}</span>
       <span class="price">${stock.close === null ? '' : num(stock.close, 2)} ${pctText}</span></div>
   </a>`;
@@ -624,8 +624,13 @@ function rankSay(picked, top, baseMap, baseDate) {
 
 async function renderRank(view) {
   const baseDate = dateBack(state.baseline);
-  const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(baseDate)]);
+  // 法人資料是順便載的：它涵蓋的交易日比排行短，抓不到就是沒有徽章，整頁照常。
+  // 43 KB 換榜上直接看得到「土洋同買／對作」，而且它與法人頁共用同一份快取。
+  const [today, base, instiDay] = await Promise.all([
+    loadDaily(state.date), loadDaily(baseDate),
+    loadInstiDay(state.date).catch(() => null)]);
   const baseMap = rankMap(base);
+  const tags = instiTagMap(instiDay, state.instiMin);
   const top = today.stocks.filter((s) => s.rank <= TOP);
 
   // 產業選單只列當日榜上有的產業，選了不存在的產業會看到空清單沒有意義
@@ -703,7 +708,7 @@ async function renderRank(view) {
       .filter((s) => s.value >= state.floor * 1e8)
       .filter((s) => !q || s.code.toLowerCase().includes(q) || s.name.toLowerCase().includes(q))
       .sort((a, b) => sortKey(b) - sortKey(a));
-    const rows = picked.map((s) => stockRow(s, baseMap.get(s.code)));
+    const rows = picked.map((s) => stockRow(s, baseMap.get(s.code), tags.get(s.code)));
 
     const watchNote = state.sector === '!WATCH'
       ? `<p class="note">自選清單：<code id="watch-codes">${[...state.watch].sort().join(',')}</code>
@@ -1847,6 +1852,9 @@ async function renderStock(view, code) {
   // 而資料起點附近（本站法人資料才開始沒多久）大部分個股都湊不滿。
   const avgShort = avgTail.length < avgWin;
   const avgLabel = `外資 ${avgWin}${avgShort ? '−' : ''} 日${avgNet > 0 ? '買均' : '賣均'}`;
+  // 選定那一天的土洋標記（門檻沿用法人頁那一組 pill，選過的會記住）
+  const instiToday = instiAll.find((r) => r.date === state.date);
+  const instiTag = instiToday ? instiTagOf(instiToday.fo, instiToday.tr, state.instiMin) : null;
   const avgDaysText = avgShort
     ? `這一檔只有 ${avgTail.length} 天有法人資料，所以是那 ${avgTail.length} 天的`
     : `最近 ${avgWin} 個有法人資料的交易日裡，`;
@@ -1905,7 +1913,11 @@ async function renderStock(view, code) {
     </section>
     <section class="card">
       <h2>三大法人買賣超 <small>${insti.length
-        ? `近 ${labels.length} 個交易日裡有 ${insti.length} 天` : '無資料'}</small></h2>
+        ? `近 ${labels.length} 個交易日裡有 ${insti.length} 天` : '無資料'}</small>
+        ${instiTagChip(instiTag)}</h2>
+      ${instiTag ? `<p class="note">${esc(state.date)} 這一天是
+        <b>${esc(INSTI_TAGS[instiTag].label)}</b>：${esc(INSTI_TAGS[instiTag].say)}，
+        兩邊各自都達 ${state.instiMin} 億（門檻在「法人」頁可以改）。</p>` : ''}
       ${insti.length ? `
       <div class="stat-grid">
         <div class="stat"><b class="${trend(instiTotals.fo)}">${signedOku(instiTotals.fo)}</b><span>外資區間累計</span></div>
@@ -2618,6 +2630,76 @@ function instiRows(payload) {
   return out;
 }
 
+// --------------------------------------------------------------------------
+// 具名籌碼異動：土洋同買與土洋對作
+//
+// 「土」是投信（國內主動型基金）、「洋」是外資，市場上的說法。法人頁原本只挑
+// **同買／同賣**，這裡補上另一半：**對作** —— 一邊買、另一邊賣。
+//
+// 同買有意思的理由是「兩種完全不同的決策流程指到了同一個地方」。對作有意思的理由
+// 是同一句話的反面：**兩種流程這次指到了相反的方向**。誰對誰錯事後才知道，
+// 但它標示的是「這一檔現在有分歧」，那本身就是資訊 —— 而且它是同買的補集裡
+// 唯一講得出內容的那一塊（只有一邊在動的那些，看不出任何東西）。
+//
+// 門檻與同買共用一個規則：**兩邊各自**都要達到，不是合計。對作這邊尤其必要 ——
+// 外資買超十億配上投信賣超三百萬，那不是對作，那是外資在買而投信沒動。
+//
+// ⚠️ 徽章離「訊號」只有一步。全站不提供買賣訊號，所以這裡的文案一律是**描述**
+// （「外資買、投信賣」）而不是**判斷**（「注意進場」「留意賣壓」）。這條線在徽章上
+// 特別容易越過，因為徽章天生看起來就像提醒。
+// --------------------------------------------------------------------------
+const INSTI_TAGS = {
+  both: { label: '土洋同買', cls: 'up', say: '外資與投信都買超' },
+  bothSell: { label: '土洋同賣', cls: 'down', say: '外資與投信都賣超' },
+  foBuy: { label: '對作·外資買', cls: 'up', say: '外資買超、投信賣超' },
+  foSell: { label: '對作·外資賣', cls: 'down', say: '外資賣超、投信買超' },
+};
+
+/**
+ * 一檔在某個門檻下的籌碼異動標記。兩邊各自都要達到門檻，沒有就回 null。
+ * fo 與 tr 是估算金額（億），正買超負賣超。
+ */
+function instiTagOf(fo, tr, min) {
+  if (fo >= min && tr >= min) return 'both';
+  if (fo <= -min && tr <= -min) return 'bothSell';
+  if (fo >= min && tr <= -min) return 'foBuy';
+  if (fo <= -min && tr >= min) return 'foSell';
+  return null;
+}
+
+/**
+ * 一天的法人檔 -> {代號: 標記}。排行榜的徽章用這一份。
+ * payload 是 null（那一天還沒有法人資料）就回空的 Map，整頁照常、只是沒有徽章。
+ */
+function instiTagMap(payload, min) {
+  const out = new Map();
+  if (!payload) return out;
+  for (const row of instiRows(payload)) {
+    const tag = instiTagOf(row.fo, row.tr, min);
+    if (tag) out.set(row.code, tag);
+  }
+  return out;
+}
+
+/** 徽章。放在列上的那一個小標，沿用 .streak 的視覺語言。 */
+const instiTagChip = (tag) =>
+  (tag ? `<span class="streak ${INSTI_TAGS[tag].cls}">${INSTI_TAGS[tag].label}</span>` : '');
+
+/**
+ * 對作的排序：依**較小的那一邊**。
+ *
+ * 同買榜依合計排序，但對作的合計接近零（兩邊互相抵消），拿它排序等於隨機。
+ * 真正決定「這場對作有多實在」的是較小的那一邊 —— 外資買 50 億配投信賣 0.5 億，
+ * 與外資買 5 億配投信賣 5 億，後者才是真的兩邊都下了重手。
+ */
+const instiAgainst = (rows, side, min) =>
+  rows
+    .filter((r) => (side === 'foBuy'
+      ? r.fo >= min && r.tr <= -min
+      : r.fo <= -min && r.tr >= min))
+    .sort((a, b) => Math.min(Math.abs(b.fo), Math.abs(b.tr))
+      - Math.min(Math.abs(a.fo), Math.abs(a.tr)));
+
 /** 外資與投信同向、而且兩邊各自都達到門檻。'buy' 是同買、'sell' 是同賣。 */
 const instiTogether = (rows, side, min) =>
   rows
@@ -2700,6 +2782,8 @@ async function renderInsti(view) {
   const min = state.instiMin;
   const buys = instiTogether(rows, 'buy', min);
   const sells = instiTogether(rows, 'sell', min);
+  const foBuy = instiAgainst(rows, 'foBuy', min);
+  const foSell = instiAgainst(rows, 'foSell', min);
 
   // 統計格一排三個，所以要嘛三個、要嘛六個：兩個市場 × 三邊法人剛好排滿兩排
   const stats = [];
@@ -2715,10 +2799,11 @@ async function renderInsti(view) {
   }
 
   const both = new Set([...buys, ...sells].map((r) => r.code));
+  const against = new Set([...foBuy, ...foSell].map((r) => r.code));
   view.innerHTML = `
     ${controls}
     <section class="card">
-      <h2>三大法人買賣超 <small>${esc(state.date)} ${esc(scopeLabel())} · 同買 ${buys.length} 檔、同賣 ${sells.length} 檔</small></h2>
+      <h2>三大法人買賣超 <small>${esc(state.date)} ${esc(scopeLabel())} · 同買 ${buys.length} 檔、同賣 ${sells.length} 檔、對作 ${against.size} 檔</small></h2>
       <div class="stat-grid">${stats
         .map((s) => `<div class="stat"><b class="${s.cls}">${s.b}</b><span>${s.span}</span></div>`)
         .join('')}</div>
@@ -2728,7 +2813,14 @@ async function renderInsti(view) {
         <b>而且</b>投信也買超 ${min} 億以上才算同買。不是合計達到就算 ——
         合計那樣算的話，外資買超十億配上投信賣超九億也會進榜，方向卻是相反的。
         這一天${esc(scopeLabel())}有 ${rows.length} 檔進了資料檔（三邊的估算金額都不到
-        ${payload.cut} 億的不收），其中 ${both.size} 檔在目前門檻下同買或同賣。</p>
+        ${payload.cut} 億的不收），其中 ${both.size} 檔在目前門檻下同買或同賣、
+        ${against.size} 檔是對作。</p>
+      <p class="note">底下兩張是<b>土洋對作</b>：一邊買、另一邊賣，兩邊各自都達 ${min} 億。
+        同買有意思的理由是「兩種完全不同的決策流程指到了同一個地方」，對作有意思的理由
+        是同一句話的反面 —— <b>這次指到了相反的方向</b>。誰對誰錯事後才知道，但它標示的是
+        「這一檔現在有分歧」。對作榜<b>依較小的那一邊排序</b>：合計在這裡接近零（兩邊互相
+        抵消），拿它排序等於隨機；外資買 50 億配投信賣 0.5 億，與外資買 5 億配投信賣 5 億，
+        後者才是真的兩邊都下了重手。</p>
     </section>
     ${listCard('外資投信同買', `兩邊各自都買超 ${min} 億以上 · 依合計排序 · 取前 ${INSTI_TOP}`,
       buys.slice(0, INSTI_TOP).map((r, i) => instiRow(r, i + 1, ranked)),
@@ -2736,6 +2828,12 @@ async function renderInsti(view) {
     ${listCard('外資投信同賣', `兩邊各自都賣超 ${min} 億以上 · 依合計排序 · 取前 ${INSTI_TOP}`,
       sells.slice(0, INSTI_TOP).map((r, i) => instiRow(r, i + 1, ranked)),
       `${state.date} 沒有任何一檔外資與投信都賣超 ${min} 億以上`)}
+    ${listCard('土洋對作 · 外資買投信賣', `兩邊各自都達 ${min} 億以上 · 依較小的那一邊排序 · 取前 ${INSTI_TOP}`,
+      foBuy.slice(0, INSTI_TOP).map((r, i) => instiRow(r, i + 1, ranked)),
+      `${state.date} 沒有任何一檔是外資買超、投信賣超各 ${min} 億以上`)}
+    ${listCard('土洋對作 · 外資賣投信買', `兩邊各自都達 ${min} 億以上 · 依較小的那一邊排序 · 取前 ${INSTI_TOP}`,
+      foSell.slice(0, INSTI_TOP).map((r, i) => instiRow(r, i + 1, ranked)),
+      `${state.date} 沒有任何一檔是外資賣超、投信買超各 ${min} 億以上`)}
     <section class="card">
       <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
       <p class="note">${INSTI_CAVEAT}</p>
