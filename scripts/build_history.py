@@ -14,7 +14,9 @@
     docs/data/index.json                   交易日清單 + 三種範圍的每日成交值
     docs/data/history/{scope}/YYYY.json     該範圍「個股 -> 每日 (名次, 成交值)」轉置表
     docs/data/kline/{market}/{code}/YYYY-MM.json
-                                            個股日 K 線（開高低收），由 close/ 轉置
+                                            個股日 K 線（開高低收），由 close/ 轉置。
+                                            涵蓋「曾進過前 300 名」與「電子類股」兩批，
+                                            後者是結構分頁要用的（見 build_structure.py）
 
 用法：
     python scripts/build_history.py
@@ -27,6 +29,7 @@ import sys
 from collections import defaultdict, deque
 from datetime import datetime
 
+import structure
 import twse
 
 # 合併排行時要保留的欄位；名次、連續進榜天數與成交量新高天數都會重算，
@@ -295,7 +298,7 @@ def write_klines(market: str, series: dict, codes: set) -> tuple:
                 "q": [[trim(v) for v in price] for _, price in rows],
             }
             written += 1
-            if write_if_changed(twse.kline_path(code, month, market), payload):
+            if twse.write_if_changed(twse.kline_path(code, month, market), payload):
                 rewritten += 1
 
     # 個股改代號、月份被回補洗掉時留下的舊檔要清掉，不然前端會讀到對不上的資料
@@ -343,16 +346,6 @@ def stamp_ma(payload, tech_today) -> bool:
     return changed
 
 
-def write_if_changed(path, payload) -> bool:
-    """內容沒變就不重寫，避免每天產生無謂的 git 差異。"""
-    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    if path.exists() and path.read_text(encoding="utf-8") == text:
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-    return True
-
-
 def main() -> int:
     dates = sorted(set(twse.existing_dates("twse")) | set(twse.existing_dates("tpex")))
     if not dates:
@@ -373,6 +366,10 @@ def main() -> int:
     klines = {m: defaultdict(lambda: defaultdict(list)) for m in ("twse", "tpex")}
     kline_days = {m: [] for m in ("twse", "tpex")}   # 這個市場有四價的交易日
     board_codes = {m: set() for m in ("twse", "tpex")}
+    # 電子股的 K 線也要出：結構分頁不看成交值排名，會走到沒進過榜的個股頁。
+    # 這裡先記下每個市場出現過哪些代號，寫 K 線時才知道某一檔該歸到哪一邊。
+    market_codes = {m: set() for m in ("twse", "tpex")}
+    wanted_codes = structure.electronic_codes()
 
     for day_index, date_iso in enumerate(dates):
         # 均線、MACD 與 K 線吃的都是全市場四價（docs/data/close/），跟排行的前 300 名無關
@@ -387,6 +384,7 @@ def main() -> int:
             month = date_iso[:7]
             for code, price in prices.items():
                 klines[market][code][month].append((date_iso, price))
+            market_codes[market].update(prices)
 
         days = {scope: load_day(date_iso, scope) for scope in ("twse", "tpex")}
         both = days["twse"] and days["tpex"]
@@ -407,7 +405,7 @@ def main() -> int:
             vol_seq[scope] += 1
             changed |= stamp_ma(payload, tech_today)
             if scope == "all" or changed:
-                if write_if_changed(twse.daily_path(date_iso, scope), payload):
+                if twse.write_if_changed(twse.daily_path(date_iso, scope), payload):
                     rewritten[scope] += 1
 
             stocks = payload["stocks"]
@@ -435,7 +433,7 @@ def main() -> int:
         folder.mkdir(parents=True, exist_ok=True)
         for year, bucket in sorted(by_year[scope].items()):
             path = twse.history_path(year, scope)
-            write_if_changed(path, {"year": int(year), **bucket})
+            twse.write_if_changed(path, {"year": int(year), **bucket})
             print(f"  {scope}/{year}.json：{len(bucket['dates'])} 個交易日、"
                   f"{len(bucket['stocks'])} 檔曾進榜（{path.stat().st_size / 1024:,.0f} KB）")
 
@@ -446,10 +444,12 @@ def main() -> int:
                 print(f"  移除過期檔案 {scope}/{stale.name}")
 
     for market in ("twse", "tpex"):
-        written, changed = write_klines(market, klines[market], board_codes[market])
+        extra = (wanted_codes & market_codes[market]) - board_codes[market]
+        written, changed = write_klines(market, klines[market], board_codes[market] | extra)
         days = kline_days[market]
         span = f"{days[0]} ~ {days[-1]}" if days else "無"
-        print(f"  kline/{market}/：{len(board_codes[market])} 檔曾進榜、{written} 個月檔"
+        print(f"  kline/{market}/：{len(board_codes[market])} 檔曾進榜"
+              f"＋{len(extra)} 檔沒進過榜的電子股、{written} 個月檔"
               f"（{span}，本次重寫 {changed} 個）")
 
     # 前端要知道 K 線涵蓋到哪，才不會為了畫不出來的日子去抓一堆不存在的月檔

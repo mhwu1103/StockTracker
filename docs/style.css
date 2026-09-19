@@ -175,6 +175,43 @@ select, input, button {
   border-bottom-color: var(--accent);
 }
 
+/*
+ * 群組底下的分頁。兩件事刻意這樣做：
+ *
+ * 1. **不** sticky——上面已經有 app-bar 與群組列兩層，第三層黏在頂上會把手機的
+ *    畫面吃掉三分之一；捲下去看清單時本來也不需要它。
+ * 2. **不用 .pill**——每一頁自己的篩選就是一整排藥丸（「黃金交叉／死亡交叉」），
+ *    導覽再用同一個樣式，兩排疊在一起就分不出哪一排是換頁、哪一排是篩選。
+ *    全站就一條規則：**導覽用底線，篩選用藥丸**。
+ *
+ * 橫幅是整條的，但內容用 padding 對齊 .view 的 720px，寬螢幕才不會孤零零貼在左邊。
+ */
+.subtabs {
+  display: flex;
+  gap: 2px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  padding: 0 max(12px, calc((100% - 720px) / 2));
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.subtabs::-webkit-scrollbar { display: none; }
+
+.subtabs a {
+  padding: 9px 12px;
+  font-size: 13px;
+  white-space: nowrap;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+}
+
+.subtabs a.active {
+  color: var(--accent);
+  font-weight: 700;
+  border-bottom-color: var(--accent);
+}
+
 /* ---------- 內容 ---------- */
 .view {
   max-width: 720px;
@@ -300,6 +337,18 @@ select, input, button {
   cursor: pointer;
 }
 
+/* 頂部工具列的底色就是 --surface，.linky 放上去等於隱形。
+   這一顆是通往另一頁的入口，要看得出來可以點：描邊＋強調色。 */
+.app-bar .linky {
+  flex: none;
+  margin-left: 0;
+  padding: 3px 9px;
+  color: var(--accent);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+
 /* ---------- 族群 ---------- */
 .sector > summary { cursor: pointer; list-style: none; }
 .sector > summary::-webkit-details-marker { display: none; }
@@ -346,6 +395,47 @@ select, input, button {
 }
 .subhead small { margin-left: 6px; font-weight: 400; color: var(--muted); }
 .row em { font-style: normal; font-variant-numeric: tabular-nums; }
+
+/* ---------- 美股頁（us.html）：相關性的長條 ----------
+ * 與 .flow-bar 同一套語言（中間是零、往右是正、往左是負），但它待在 .rank 那一格裡，
+ * 寬度只有一欄，所以自己一個 class：中線固定在正中央，100% 相關畫到半格滿。
+ */
+.corr-bar {
+  display: block;
+  position: relative;
+  height: 3px;
+  margin: 3px auto 0;
+  width: 52px;
+  border-radius: 2px;
+  background: var(--line);
+}
+.corr-bar i { position: absolute; top: 0; height: 100%; border-radius: 2px; background: currentColor; }
+.rank .no.sm { font-size: 13px; }
+.figures .value.sm { font-size: 13px; font-weight: 600; }
+
+/* 連動美股：展開族群後的第一行，代號要能一眼掃過去，所以每一檔自成一個標籤不換行拆開 */
+.uslink {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  align-items: baseline;
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.ustag {
+  white-space: nowrap;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+}
+.ustag b { margin-right: 4px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.ustag em { margin-left: 4px; font-style: normal; letter-spacing: -1px; }
+/* 一句話說明擠在同一行的尾巴，寬度不夠時自己換到下一行 */
+.uslink__why { flex: 1 1 100%; color: var(--muted); line-height: 1.7; }
 
 /* ---------- 流向頁：資金地圖與量價四象限 ---------- */
 .map-box { padding: 10px; }

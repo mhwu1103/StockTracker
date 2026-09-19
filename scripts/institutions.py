@@ -63,6 +63,17 @@ T86 把外資拆成「外陸資（不含外資自營商）」與「外資自營�
    是幾萬元的零頭；把它算成買超的一天，等於用資料檔的邊界去編造連續性。
 3. **連到資料起點（或缺口）的那幾段標 `trunc`。** 起算日的前一個交易日沒有法人
    資料時，實際天數只可能更長，不可能更短，畫面上要標成「連 N+ 天」。
+
+## 當日漲跌也算在後端
+
+「買超」分頁要把買超排行與**逆勢買超**（法人買超、股價卻收黑）擺在一起，所以每一檔
+都要有當天的漲跌。daily/ 只存收盤價，漲跌得拿前一個交易日的收盤價比 —— 那份資料
+在 `docs/data/close/` 裡，本機就有，所以它與連續榜一樣是純衍生的：一天寫一個
+`insti/chg/{日期}.json`（約 13 KB），由 `build_institutions.py` 每次重算，不寫進 daily/。
+
+不用成交值排行那份現成的 `changePct`，是因為那份只留前 300 名，而法人資料一天有
+九百多檔 —— 逆勢買超最有意思的常常正是排不進前 300 的中型股，少了它們，畫面上
+「算不出來」與「沒有逆勢」會長得一模一樣。
 """
 
 from __future__ import annotations
@@ -77,6 +88,7 @@ import twse
 INSTI_DIR = twse.DATA_DIR / "insti"
 INSTI_DAILY_DIR = INSTI_DIR / "daily"
 INSTI_RUN_DIR = INSTI_DIR / "streak"
+INSTI_CHG_DIR = INSTI_DIR / "chg"
 INSTI_INDEX_PATH = INSTI_DIR / "index.json"
 
 # 上市：三大法人買賣超日報。selectType=ALLBUT0999 是「全部（不含權證、牛熊證）」
@@ -472,6 +484,70 @@ def build_run_payload(date_iso: str, runs: dict, first: str, returns: dict) -> d
         "buy": buy,
         "sell": sell,
         "stocks": stocks,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 當日漲跌
+# --------------------------------------------------------------------------- #
+# 「買超」分頁的第二個軸：法人買超的這一檔，今天自己是漲還是跌。
+#
+# daily/ 每一檔只存收盤價，漲跌要拿前一個交易日的收盤價來比，而那份資料在
+# docs/data/close/ 裡、本機就有 —— 所以這一份與連續榜一樣是**純衍生**的，
+# 由 build_institutions.py 每次從頭重算，不寫進 daily/。daily/ 存的是從官方抓
+# 回來的東西，把算得出來的欄位塞進去，日後要改算法就得把整段歷史重抓一次。
+#
+# 為什麼不拿 daily/{範圍}/*.json 那份現成的 changePct 就好：那份只留成交值前 300 名，
+# 而法人資料一天有九百多檔。「逆勢買超」最有意思的通常正是成交值排不進前 300 的
+# 中型股 —— 用前 300 名那份的話它們的漲跌整欄留白，而**留白與「沒有逆勢」在畫面上
+# 長得一模一樣**，等於安靜地把答案刪掉一半。
+#
+# 一天一個檔，九百多檔約 13 KB。代號在上市與上櫃之間不重複，所以不分市場、
+# 攤平成一張表；讀的人本來就是拿代號去查。
+CHG_VERSION = 1
+
+
+def chg_path(date_iso: str) -> Path:
+    return INSTI_CHG_DIR / f"{date_iso}.json"
+
+
+def close_file(date_iso: str, market: str) -> dict:
+    """docs/data/close/{市場}/{日期}.json 的 {代號: 收盤價}。檔案不在就回空的。"""
+    path = twse.close_path(date_iso, market)
+    return (read_json(path).get("c") or {}) if path.exists() else {}
+
+
+def payload_closes(payload: dict) -> dict:
+    """一天的每日檔 -> {市場: {代號: 收盤價}}。"""
+    return {market: {code: row[F_CLOSE] for code, row in stocks.items()}
+            for market, stocks in (payload.get("stocks") or {}).items()}
+
+
+def build_chg_payload(date_iso: str, prev_iso, closes: dict, prev_closes: dict) -> dict:
+    """一天的漲跌檔。closes 與 prev_closes 都是 {市場: {代號: 收盤價}}。
+
+    前一個交易日沒有這一檔（剛上市、停牌整天、那天的 close/ 還沒抓）就不收 ——
+    算不出來的漲跌寧可缺欄，也不要塞一個 0 進去假裝它今天收平盤。
+    """
+    chg = {}
+    missing = 0
+    for market, table in closes.items():
+        before = (prev_closes or {}).get(market) or {}
+        for code, close in table.items():
+            base = before.get(code)
+            if not base or not close:
+                missing += 1
+                continue
+            chg[code] = round((close / base - 1) * 100, 2)
+    return {
+        "date": date_iso,
+        "v": CHG_VERSION,
+        # 拿來當基準的那一個交易日。畫面上要講得出漲跌是「對比哪一天」
+        "prev": prev_iso,
+        "n": len(chg),
+        # 算不出漲跌的檔數。整份都算不出來（prev 是 None）時這個數字才會大
+        "miss": missing,
+        "chg": dict(sorted(chg.items())),
     }
 
 

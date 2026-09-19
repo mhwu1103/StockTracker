@@ -54,6 +54,9 @@ const state = {
   industry: {},        // code -> 產業中文名（industry.json，抓不到時為空）
   themes: [],          // 題材族群（themes.json，抓不到時為空陣列）
   themesUpdated: '',   // themes.json 的維護日期，族群頁要標出來
+  usLink: [],          // 題材族群 -> 連動美股（us_link.json，抓不到時為空陣列）
+  usUpdated: '',       // us_link.json 的維護日期
+  usBench: [],         // 大盤層級的美股參考（TSM ADR、費半…），不屬於任何一族
   grouping: 'industry',// 族群頁的分類軸：industry 官方產業／theme 題材族群
   sectorSort: 'flow',  // 族群頁排序：flow 資金增減／shift 佔比位移／value 成交值
   sector: '',          // 排行榜的分類篩選；'' 代表全部
@@ -75,10 +78,12 @@ const state = {
   holderLots: 400,     // 「大戶」分頁的大戶門檻（張），HOLDER_LOTS 的 value
   holderSpan: 'q1',    // 「大戶」分頁拿哪一段當基準（HOLDER_SPANS 的 value）
   instiMin: 0.5,       // 「法人」分頁的同買／同賣門檻（億），INSTI_MINS 的 value
+  instiLeg: 'fo',      // 「買超」分頁看哪一邊法人（INSTI_LEGS 的 value），sum 是三邊相加
   runDays: 3,          // 「連買」分頁的連續天數門檻，RUN_DAYS 的 value
   runOku: 0,           // 「連買」分頁的累計金額門檻（億），0 是不限
   insti: null,         // Promise<insti/index.json>，進到法人頁才載
   instiDay: new Map(), // 交易日 -> Promise<insti/daily/{日期}.json>
+  instiChg: new Map(), // 交易日 -> Promise<insti/chg/{日期}.json>
   instiRun: new Map(), // 交易日 -> Promise<insti/streak/{日期}.json>
   holders: null,       // Promise<holders/index.json>，進到大戶頁才載
   holderWeek: new Map(),// 集保資料日 -> Promise<holders/weekly/{日期}.json>
@@ -399,6 +404,47 @@ function byTheme(stocks) {
     if (b.name === UNGROUPED_LABEL) return -1;
     return b.value - a.value;
   });
+}
+
+/**
+ * 連動美股（us_link.json）。與 themes.json 是兩份各自維護的檔案，靠**族群名稱**接起來：
+ * 名字對不上就當作沒有對照，寧可少一行也不要在族群頁上掛掉。
+ *
+ * 強度只有三級，寫成星號是為了讓一眼掃得過去；意思寫在 title 裡，滑過去才看得到：
+ *   ★★★ 同一條供應鏈——客戶的財報或資本支出直接決定訂單
+ *   ★★☆ 景氣或報價同步——同一個循環，中間隔著報價與匯率
+ *   ★☆☆ 題材情緒連動——跳空之後常收斂，不宜追價
+ */
+const US_STARS = { 3: '★★★', 2: '★★☆', 1: '★☆☆' };
+const US_MEANS = {
+  3: '同一條供應鏈：客戶的財報或資本支出直接決定訂單',
+  2: '景氣或報價同步：同一個循環，中間隔著報價與匯率',
+  1: '題材情緒連動：跳空之後常收斂，不宜追價',
+};
+
+const hasUsLink = () => state.usLink.length > 0;
+
+/** 某個族群（或其中一個子族群）的連動美股；查不到回空陣列。 */
+function usLinkOf(groupName, subName) {
+  const group = state.usLink.find((g) => g.name === groupName);
+  if (!group) return [];
+  if (!subName) return group.us || [];
+  return (group.subs || []).find((s) => s.name === subName)?.us || [];
+}
+
+/** 該族群為什麼跟著美股動——一句話，只有大族群有。 */
+const usWhyOf = (groupName) => state.usLink.find((g) => g.name === groupName)?.why || '';
+
+/** 子族群列到與大族群一模一樣的美股時，那一行是多餘的（記憶體整族就是同一批）。 */
+const sameUs = (a, b) => a.length === b.length && a.every((u, i) => u.t === b[i].t);
+
+/** 一行連動美股。list 空的就回空字串，讓呼叫端不必先判斷。 */
+function usLine(list, why = '') {
+  if (!list.length) return '';
+  // 標籤裡不能有換行縮排：那會在代號前面留一個空白，靠左的邊距就對不齊
+  const tags = list.map((u) => `<span class="ustag" title="${esc(US_MEANS[u.s] || '')}"`
+    + `><b>${esc(u.t)}</b>${esc(u.n)}<em>${US_STARS[u.s] || ''}</em></span>`).join('');
+  return `<p class="uslink">${tags}${why ? `<span class="uslink__why">${esc(why)}</span>` : ''}</p>`;
 }
 
 function rankMap(payload) {
@@ -2297,8 +2343,9 @@ async function renderHolders(view, code) {
 // 決策流程指到了同一個地方。
 //
 // 反過來，只有一邊在動的很常見也很難解讀：外資買超十億可能只是某檔 ETF 在建倉，
-// 投信賣超三億可能只是基金在應付贖回。所以這一頁不做「外資買超排行」——
-// 那張榜前幾名幾乎天天是同一批權值股，看久了就沒有資訊。
+// 投信賣超三億可能只是基金在應付贖回。所以單邊的買超排行不在這一頁，而在隔壁的
+// 「買超」頁 —— 那張榜前幾名幾乎天天是同一批權值股，要讓它有資訊，得配上
+// 「逆勢」那一刀（買超而收黑），所以它自成一頁，見 renderInstiRank()。
 //
 // 三件事一定要先講清楚，不然這一頁很容易被讀成「跟著買就對了」：
 //   1. **金額是估算的。** 官方的個股資料從頭到尾只有股數，金額＝股數 × 收盤價。
@@ -2387,8 +2434,6 @@ const instiTogether = (rows, side, min) =>
 function instiRow(entry, seq, ranked) {
   const stock = ranked.get(entry.code);
   const sum = entry.fo + entry.tr;
-  const chip = (label, oku, shares) =>
-    `<span class="chip">${label} <em class="${trend(oku)}">${signedOku(oku)}</em> · ${signedLots(shares)}</span>`;
   const pct = stock && stock.changePct !== null && stock.changePct !== undefined
     ? ` <em class="${trend(stock.changePct)}">${stock.changePct > 0 ? '+' : ''}${stock.changePct.toFixed(2)}%</em>`
     : '';
@@ -2404,8 +2449,7 @@ function instiRow(entry, seq, ranked) {
       <span class="name">${state.watch.has(entry.code) ? '<span class="star">★</span>' : ''}${esc(entry.name)}</span>
       <span class="code">${entry.code} · ${esc(MARKET_TAGS[entry.market])}${
         hasIndustry() ? ` · ${esc(industryOf(entry.code))}` : ''}</span>
-      <span class="chips">${chip('外資', entry.fo, entry.lots.fo)}${
-        chip('投信', entry.tr, entry.lots.tr)}${chip('自營', entry.de, entry.lots.de)}</span>
+      <span class="chips">${instiChips(entry)}</span>
     </div>
     <div class="figures">
       <span class="value ${trend(sum)}">${signedOku(sum)}</span>
@@ -2515,6 +2559,229 @@ async function renderInsti(view) {
       <p class="note">資料來自證交所「三大法人買賣超日報」與櫃買中心「三大法人買賣超彙總表」，
         涵蓋普通股、特別股與 ETF／ETN，已排除權證與牛熊證。表頭的全市場合計來自兩邊的
         「三大法人買賣金額彙總表」。</p>
+    </section>`;
+}
+
+// --------------------------------------------------------------------------
+// 分頁：買超（完整籌碼排行，含逆勢買超）
+//
+// 法人頁只答一個很窄的問題：外資與投信有沒有站在同一邊。那張榜好讀，卻把
+// 「今天到底誰買最多」整個擋在外面 —— 而那是看籌碼的人第一個想問的。這一頁把它
+// 補回來：外資、投信、自營商各自的買超榜與賣超榜，加上三大法人合計，一次看一邊。
+//
+// 但法人頁說單邊買超排行「看久了就沒有資訊」是對的：前幾名幾乎天天是同一批權值股，
+// 台積電買超 0.3% 的量就比一檔中型股整天的成交值還大。所以這一頁不只有那兩張榜，
+// 真正的重點是它的第二個軸 —— **逆勢**。
+//
+//   逆勢買超 ＝ 法人在買，這一檔今天卻收黑。
+//   逆勢賣超 ＝ 法人在賣，這一檔今天卻收紅。
+//
+// 為什麼分這一刀：順勢的那一半（買超 + 收紅）常常是果不是因。股價自己在漲、買盤
+// 跟著追進去，法人的買超只是那天成交量的一部分，「因為在漲所以有人買」這個最無聊的
+// 解釋沒辦法排除。逆勢的那一半排除得掉 —— 買超是在賣壓裡接的、賣超是在漲勢裡出的。
+// 那不代表它是對的（被動的指數調整照樣會撞上大盤下殺），但至少它不是跟風。
+//
+// 金額是估算的、買超不等於看多、淨額看不出成本 —— 三條警語與法人頁共用
+// INSTI_CAVEAT。這一頁自己多一條：漲跌是收盤對收盤算的，沒有還原除權息。
+// --------------------------------------------------------------------------
+// 看哪一邊的法人。'sum' 是三邊相加，也就是市場上講的「三大法人買賣超」。
+// 一次只排一邊：三張榜並排的話，每一張都只剩五、六列放得下，哪一張都讀不完。
+const INSTI_LEGS = [
+  { value: 'fo', label: '外資' },
+  { value: 'tr', label: '投信' },
+  { value: 'de', label: '自營' },
+  { value: 'sum', label: '三大法人' },
+];
+// 卡片標題與說明裡的全名。pill 上要短（四個擠一列），句子裡要完整。
+const LEG_NAMES = { fo: '外資', tr: '投信', de: '自營商', sum: '三大法人' };
+const INSTI_LEG_KEY = 'stocktracker.instileg';
+
+const RANK_TOP = 30;   // 每張榜最多列幾檔
+
+/** 選定那一邊的估算金額（億）。'sum' 是三邊相加。 */
+const legOku = (entry, leg) => (leg === 'sum' ? entry.fo + entry.tr + entry.de : entry[leg]);
+
+/** 選定那一邊的買賣超股數。 */
+const legLots = (entry, leg) =>
+  (leg === 'sum' ? entry.lots.fo + entry.lots.tr + entry.lots.de : entry.lots[leg]);
+
+function loadInstiChg(date) {
+  if (!state.instiChg.has(date)) {
+    state.instiChg.set(date, getJSON(`${DATA}/insti/chg/${date}.json`));
+  }
+  return state.instiChg.get(date);
+}
+
+/** 當日漲跌。算不出來（前一個交易日沒有收盤價）就留白，不要寫成 0%。 */
+const chgText = (chg) =>
+  (chg === null || chg === undefined ? '—' : `${chg > 0 ? '+' : ''}${chg.toFixed(2)}%`);
+
+/**
+ * 依選定那一邊挑出一張榜，依金額大小排序。
+ * side 是 'buy' 或 'sell'；against 為真時只留逆勢的那一半（買超收黑、賣超收紅）。
+ *
+ * 逆勢榜同樣依金額排序而不是依跌幅：跌幅排序會把一堆幾百萬的零頭推到最上面，
+ * 而「誰在賣壓裡接了最多」才是這張榜要回答的。
+ */
+const legPick = (rows, leg, side, against = false) => {
+  const want = side === 'buy' ? 1 : -1;
+  return rows
+    .filter((r) => {
+      const oku = legOku(r, leg);
+      if (Math.sign(oku) !== want) return false;
+      if (!against) return true;
+      // 平盤（chg 正好是 0）與算不出漲跌的都不算逆勢 —— 逆勢要有「勢」可逆
+      return r.chg ? Math.sign(r.chg) === -want : false;
+    })
+    .sort((a, b) => (legOku(b, leg) - legOku(a, leg)) * want);
+};
+
+/** 三邊的估算金額與張數，三個 chip。法人頁與買超頁共用。 */
+const instiChips = (entry) => {
+  const chip = (label, oku, shares) =>
+    `<span class="chip">${label} <em class="${trend(oku)}">${signedOku(oku)}</em> · ${signedLots(shares)}</span>`;
+  return `${chip('外資', entry.fo, entry.lots.fo)}${
+    chip('投信', entry.tr, entry.lots.tr)}${chip('自營', entry.de, entry.lots.de)}`;
+};
+
+// 名次那一格擺的是**當日漲跌**，成交值名次退到中間的 chip 上。
+// 四張榜裡有兩張是逆勢榜，逆不逆勢全看這一格；擺在 figures 那一欄的話，讀者得一列
+// 一列往右找，而那一欄在手機上是最先被截掉的。
+function instiRankRow(entry, seq, ranked, leg) {
+  const stock = ranked.get(entry.code);
+  const oku = legOku(entry, leg);
+  const share = stock && stock.value
+    ? `佔成交值 ${num((Math.abs(oku) * 1e8 / stock.value) * 100, 1)}%`
+    : '—';
+  return `<a class="row" href="#/stock/${entry.code}">
+    <div class="rank"><span class="no">${seq}</span>
+      <span class="delta ${trend(entry.chg)}">${chgText(entry.chg)}</span></div>
+    <div class="ident">
+      <span class="name">${state.watch.has(entry.code) ? '<span class="star">★</span>' : ''}${esc(entry.name)}</span>
+      <span class="code">${entry.code} · ${esc(MARKET_TAGS[entry.market])}${
+        hasIndustry() ? ` · ${esc(industryOf(entry.code))}` : ''}</span>
+      <span class="chips">${instiChips(entry)}${
+        stock ? `<span class="chip">名次 ${stock.rank}</span>` : ''}</span>
+    </div>
+    <div class="figures">
+      <span class="value ${trend(oku)}">${signedOku(oku)}</span>
+      <span class="price">${signedLots(legLots(entry, leg))}</span>
+      <span class="price">${num(entry.close, 2)} · ${share}</span>
+    </div>
+  </a>`;
+}
+
+async function renderInstiRank(view) {
+  let index;
+  try {
+    index = await loadInstiIndex();
+  } catch (err) {
+    view.innerHTML = `<p class="hint">還沒有法人資料（${esc(err.message)}）。<br>
+      請先執行 <code>scripts/fetch_institutions.py</code> 與
+      <code>scripts/build_institutions.py</code>；
+      要一次補上一段歷史就加 <code>--days 30</code>。</p>`;
+    return;
+  }
+  const days = index.days || [];
+  if (!days.length) {
+    view.innerHTML = '<p class="hint">法人目錄裡沒有任何交易日，請重跑 scripts/build_institutions.py。</p>';
+    return;
+  }
+  // 與連買頁同一個道理：舊的資料集有 daily/ 卻還沒有 chg/。少了這一行自我描述就先
+  // 講清楚是哪一種情況，不然下面那個 fetch 會變成一則看不出原因的 404。
+  if (!index.chg) {
+    view.innerHTML = `<p class="hint">這份法人資料還沒有算當日漲跌。<br>
+      請重跑 <code>scripts/build_institutions.py</code>（它會由
+      <code>docs/data/insti/daily/</code> 與 <code>docs/data/close/</code>
+      從頭重算，不用重抓）。</p>`;
+    return;
+  }
+
+  const controls = `<div class="controls">${pills('instileg', INSTI_LEGS, state.instiLeg)}</div>`;
+  if (!days.some((d) => d.d === state.date)) {
+    view.innerHTML = `${controls}
+      <p class="hint">${state.date} 還沒有法人資料。<br>
+      目前有 ${days.length} 個交易日：${esc(index.first)} ~ ${esc(index.latest)}。<br>
+      請把日期挪到那一段裡面，或執行
+      <code>scripts/fetch_institutions.py --days 30</code> 往前回補。</p>`;
+    return;
+  }
+
+  const [payload, moves, daily] = await Promise.all([
+    loadInstiDay(state.date), loadInstiChg(state.date), loadDaily(state.date)]);
+  const ranked = new Map(daily.stocks.map((s) => [s.code, s]));
+  // 頂部的範圍選單對這一頁一樣有效
+  const markets = state.scope === 'all' ? ['twse', 'tpex'] : [state.scope];
+  const chg = moves.chg || {};
+  const rows = instiRows(payload)
+    .filter((r) => markets.includes(r.market))
+    .map((r) => ({ ...r, chg: chg[r.code] }));
+
+  const leg = state.instiLeg;
+  const name = LEG_NAMES[leg];
+  const buys = legPick(rows, leg, 'buy');
+  const sells = legPick(rows, leg, 'sell');
+  const buysAgainst = legPick(rows, leg, 'buy', true);
+  const sellsAgainst = legPick(rows, leg, 'sell', true);
+
+  // 漲跌家數用的是這份資料檔裡的那九百多檔，不是全市場的兩千多檔 —— 差在那些三邊
+  // 法人都只動了幾萬元零頭的小型股。句子裡要講明是哪一批，不然它看起來像是大盤的
+  // 漲跌家數，而那是另一個數字。
+  const known = rows.filter((r) => r.chg !== null && r.chg !== undefined);
+  const up = known.filter((r) => r.chg > 0).length;
+  const down = known.filter((r) => r.chg < 0).length;
+  const shareOfBuys = buys.length
+    ? `${num((buysAgainst.length / buys.length) * 100, 0)}%` : '—';
+
+  view.innerHTML = `
+    ${controls}
+    <section class="card">
+      <h2>${esc(name)}買賣超排行 <small>${esc(state.date)} ${esc(scopeLabel())} · 買超 ${buys.length} 檔、賣超 ${sells.length} 檔</small></h2>
+      <div class="stat-grid">
+        <div class="stat"><b>${pair(up, down)}</b><span>收紅 / 收黑</span></div>
+        <div class="stat"><b class="up">${buysAgainst.length}</b><span>逆勢買超（買超收黑）</span></div>
+        <div class="stat"><b class="down">${sellsAgainst.length}</b><span>逆勢賣超（賣超收紅）</span></div>
+      </div>
+      <p class="note">這一天${esc(scopeLabel())}有 ${rows.length} 檔進了法人的資料檔（三邊的估算金額都不到
+        ${payload.cut} 億的不收），其中 ${known.length} 檔算得出漲跌 —— ${up} 檔收紅、${down} 檔收黑。
+        ${esc(name)}買超的有 ${buys.length} 檔，其中 ${buysAgainst.length} 檔（${shareOfBuys}）是在自己
+        收黑的那一天被買的。</p>
+      <p class="note">四張榜都依<b>估算金額</b>排序。逆勢那兩張不是另外挑出來的股票，而是上面那兩張
+        <b>濾掉順勢的那一半</b>：買超榜裡當天收紅的拿掉，剩下的就是逆勢買超。順勢的那一半常常
+        是果不是因 —— 股價自己在漲、買盤跟著追進去，「因為在漲所以有人買」這個解釋排除不掉；
+        逆勢的那一半排除得掉。</p>
+    </section>
+    ${listCard(`${name}買超排行`, `依估算金額排序 · 取前 ${RANK_TOP}`,
+      buys.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg)),
+      `${state.date} ${scopeLabel()}沒有任何一檔${name}買超`)}
+    ${listCard(`${name}逆勢買超`, `買超、當天卻收黑 · 依估算金額排序 · 取前 ${RANK_TOP}`,
+      buysAgainst.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg)),
+      `${state.date} 沒有任何一檔${name}買超而股價收黑`)}
+    ${listCard(`${name}賣超排行`, `依估算金額排序 · 取前 ${RANK_TOP}`,
+      sells.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg)),
+      `${state.date} ${scopeLabel()}沒有任何一檔${name}賣超`)}
+    ${listCard(`${name}逆勢賣超`, `賣超、當天卻收紅 · 依估算金額排序 · 取前 ${RANK_TOP}`,
+      sellsAgainst.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg)),
+      `${state.date} 沒有任何一檔${name}賣超而股價收紅`)}
+    <section class="card">
+      <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
+      <p class="note">法人頁問的是「外資與投信有沒有站在同一邊」，這一頁問的是<b>單邊的大小</b>：
+        今天${esc(name)}買最多、賣最多的是哪幾檔。上面四個 pill 切換看哪一邊，
+        「三大法人」是三邊相加，也就是市場上引用的那個口徑。</p>
+      <p class="note"><b>單純的買超排行前幾名幾乎天天是同一批權值股</b> —— 台積電買超 0.3% 的量
+        就比一檔中型股整天的成交值還大。所以每一列的最後擺了「佔成交值」＝這一邊的買賣超
+        ÷ 當日成交值：權值股常常不到 1%，中小型股可以到十幾趴，後者才是真的被吃掉了一大塊。
+        成交值只有前 ${KEPT} 名有（本站的每日檔就留到那裡），其餘的那一格留白。</p>
+      <p class="note">漲跌是<b>收盤對收盤</b>算的：這一檔今天的收盤價比前一個交易日的收盤價。
+        它與官方的「漲跌價差」差在一件事 —— 官方是對除權息參考價算的，這裡沒有還原，
+        所以<b>除權息當天會被算成下跌</b>，那一檔會出現在逆勢買超榜上而其實只是配息。
+        金額大的那幾檔值得回頭確認一下當天是不是除權息日。</p>
+      <p class="note">${INSTI_CAVEAT}</p>
+      <p class="note">逆勢買超不等於低接、也不等於看多：被動的指數調整、ETF 的成分股換股與避險
+        部位照樣會撞上大盤下殺的那一天，它們在這張榜上與真的在建倉的錢長得一模一樣。
+        這張榜排除掉的只是最無聊的那個解釋（因為在漲所以有人追），<b>不是替你做判斷</b>。
+        要看一筆買盤有沒有持續性，去「連買」頁；要看外資與投信有沒有同時站在同一邊，
+        去「法人」頁。</p>
     </section>`;
 }
 
@@ -2880,6 +3147,22 @@ async function collectFlows(mode) {
   };
 }
 
+/**
+ * 展開後那一行「連動美股」的說明。連動不是因果：美股只是同一個訊號比台股早幾個小時
+ * 反應，真正的驅動常是報價指數（SCFI、BDI、DXI、合約價）與匯率，這點要講在前面。
+ */
+function usNote() {
+  if (!hasUsLink()) return '';
+  const stars = [3, 2, 1].map((s) => `${US_STARS[s]} ${US_MEANS[s]}`).join('；');
+  const bench = state.usBench.map((b) => `<b>${esc(b.t)}</b>（${esc(b.n)}）`).join('、');
+  return `<br>展開一族會多一行<b>連動美股</b>（<code>data/us_link.json</code>${
+    state.usUpdated ? `，維護於 ${esc(state.usUpdated)}` : ''}）：${stars}。
+    ${bench ? `大盤層級另看 ${bench}。` : ''}
+    美股只是同一個訊號比台股早幾個小時反應，真正的驅動常是報價與匯率——這是觀察的起點，不是訊號。
+    星等是人工標的；想看實際算出來的相關性百分比與美股漲跌幅，去
+    <a class="accent" href="us.html">美股 × 台股連動</a>。`;
+}
+
 /** 兩頁共用的說明文字：分類軸的來源與名單缺口。 */
 function groupingNote(mode, topCount, ungrouped) {
   const coverage = ungrouped
@@ -2960,7 +3243,8 @@ async function renderSector(view) {
 
   // 名單的缺口要講出來，不然「未分類」看起來只是一個普通族群
   const ungrouped = groups.find((g) => g.name === UNGROUPED_LABEL)?.count || 0;
-  const note = groupingNote(mode, topStocks.length, ungrouped);
+  // 連動美股只有族群頁講得到（要展開一族才看得到那一行），流向頁沒有可以展開的列
+  const note = groupingNote(mode, topStocks.length, ungrouped) + (mode === 'theme' ? usNote() : '');
 
   view.innerHTML = `
     <div class="controls">
@@ -2989,11 +3273,19 @@ async function renderSector(view) {
   const bodyOf = (name) => {
     const g = found.get(name);
     if (!g) return '';
-    if (!g.subs) return rowsOf(g.codes);
-    if (g.subs.length < 2) return rowsOf(g.subs[0].codes);
-    return g.subs.map((sub) =>
+    // 連動美股只掛在題材族群上：官方產業（「電子零組件業」）的顆粒度對不到任何一段供應鏈
+    const top = mode === 'theme' ? usLinkOf(name) : [];
+    const head = usLine(top, usWhyOf(name));
+    const subLine = (sub) => {
+      const us = mode === 'theme' ? usLinkOf(name, sub.name) : [];
+      return usLine(sameUs(us, top) ? [] : us);
+    };
+    if (!g.subs) return head + rowsOf(g.codes);
+    if (g.subs.length < 2) return head + rowsOf(g.subs[0].codes);
+    return head + g.subs.map((sub) =>
       `<p class="subhead">${esc(sub.name)}
-        <small>${sub.codes.length} 檔 · ${fmtValue(sub.value)}</small></p>${rowsOf(sub.codes)}`).join('');
+        <small>${sub.codes.length} 檔 · ${fmtValue(sub.value)}</small></p>
+       ${subLine(sub)}${rowsOf(sub.codes)}`).join('');
   };
   view.querySelectorAll('details.sector').forEach((el) => {
     el.addEventListener('toggle', () => {
@@ -4196,6 +4488,73 @@ async function renderCompare(view, params) {
 // --------------------------------------------------------------------------
 // 外框：日期選單、分頁、路由
 // --------------------------------------------------------------------------
+/**
+ * 導覽的兩層：群組 -> 分頁。
+ *
+ * 十幾個分頁擠在同一列，手機上一次只看得到六個，捲出去的那幾個等於不存在。
+ * 分組的軸是「這一頁回答什麼問題」，不是「資料從哪來」——使用者腦中的問題是
+ * 「誰在買」而不是「這份資料來自集保還是三大法人」。
+ *
+ * 群組列 sticky、分頁列不 sticky：上面已經有 app-bar 與群組列兩層，
+ * 第三層黏在頂上會把手機畫面吃掉三分之一。
+ *
+ * 帶 href 的那一項是站外的獨立頁面（美股連動不吃日期與範圍那組狀態，所以它不在
+ * 這支 SPA 裡）；其餘都是 hash 路由。
+ */
+const NAV = [
+  { key: 'rank', label: '排行', views: [
+    { v: 'rank', label: '排行' }, { v: 'streak', label: '站穩' }, { v: 'moves', label: '異動' }] },
+  { key: 'tech', label: '技術', views: [
+    { v: 'burst', label: '爆量' }, { v: 'ma', label: '均線' }, { v: 'macd', label: 'MACD' }] },
+  { key: 'chips', label: '籌碼', views: [
+    { v: 'holders', label: '大戶' }, { v: 'insti', label: '法人' },
+    { v: 'instirank', label: '買超' }, { v: 'instirun', label: '連買' }] },
+  { key: 'money', label: '資金', views: [
+    { v: 'sector', label: '族群' }, { v: 'flow', label: '流向' }, { v: 'market', label: '大盤' }] },
+  { key: 'world', label: '環境', views: [
+    { v: 'quote', label: '報價' }, { v: 'us', label: '美股', href: 'us.html' }] },
+  { key: 'find', label: '查詢', views: [
+    { v: 'stock', label: '個股' }, { v: 'compare', label: '對照' }] },
+];
+
+const NAV_KEY = 'stocktracker.nav';
+
+/** 每個群組上次停在哪一個網址。存整串 hash，回到「查詢」時才會回到原本那一檔個股。 */
+function loadNavLast() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(NAV_KEY) || '{}');
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+const navLast = loadNavLast();
+
+const groupOf = (view) => NAV.find((g) => g.views.some((t) => t.v === view)) || NAV[0];
+
+/** 畫兩層導覽。在 render() 的最前面呼叫：載入中也要看得到自己在哪一頁。 */
+function paintNav(view) {
+  const group = groupOf(view);
+  navLast[group.key] = location.hash || `#/${group.views[0].v}`;
+  try {
+    localStorage.setItem(NAV_KEY, JSON.stringify(navLast));
+  } catch (err) {
+    /* 記不住就算了，下次從該群組的第一頁開始 */
+  }
+
+  document.querySelectorAll('.tabs a').forEach((a) => {
+    const g = NAV.find((x) => x.key === a.dataset.group);
+    if (!g) return;
+    a.classList.toggle('active', g.key === group.key);
+    a.href = navLast[g.key] || `#/${g.views[0].v}`;
+  });
+
+  $('#subtabs').innerHTML = group.views.map((t) => (t.href
+    ? `<a href="${esc(t.href)}">${esc(t.label)} ↗</a>`
+    : `<a class="${t.v === view ? 'active' : ''}" href="#/${t.v}">${esc(t.label)}</a>`)).join('');
+}
+
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
   const [path, qs] = raw.split('?');
@@ -4232,7 +4591,7 @@ function paintChrome() {
 
 async function render() {
   const route = parseHash();
-  document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('active', a.dataset.view === route.view));
+  paintNav(route.view);
   destroyCharts();
   const view = $('#view');
   // 流向頁那兩張圖看的是面積，寬螢幕不跟其他分頁一樣限在 720px
@@ -4256,6 +4615,7 @@ async function render() {
     else if (route.view === 'macd') await renderMacd(view);
     else if (route.view === 'holders') await renderHolders(view, route.arg);
     else if (route.view === 'insti') await renderInsti(view);
+    else if (route.view === 'instirank') await renderInstiRank(view);
     else if (route.view === 'instirun') await renderInstiRun(view);
     else if (route.view === 'quote') await renderQuote(view, route.arg);
     else if (route.view === 'stock') await renderStock(view, route.arg);
@@ -4334,6 +4694,14 @@ function bindGlobalControls() {
         /* 記不住就算了，下次回到預設的 0.5 億 */
       }
     }
+    if (pill.dataset.instileg) {
+      state.instiLeg = pill.dataset.instileg;
+      try {
+        localStorage.setItem(INSTI_LEG_KEY, state.instiLeg);
+      } catch (err) {
+        /* 記不住就算了，下次回到預設的外資 */
+      }
+    }
     if (pill.dataset.rundays) {
       state.runDays = Number(pill.dataset.rundays);
       try {
@@ -4404,6 +4772,15 @@ async function start() {
   } catch (err) {
     state.themes = [];
   }
+  // 美股對照又是題材族群的選配：沒有這一份，族群頁照常，只是少了「連動美股」那一行。
+  try {
+    const us = await getJSON(`${DATA}/us_link.json`);
+    state.usLink = Array.isArray(us.groups) ? us.groups : [];
+    state.usUpdated = us._updated || '';
+    state.usBench = Array.isArray(us.benchmarks) ? us.benchmarks : [];
+  } catch (err) {
+    state.usLink = [];
+  }
 
   state.watch = loadWatch();
   try {
@@ -4416,6 +4793,8 @@ async function start() {
     if (HOLDER_LOTS.some((o) => o.value === lots)) state.holderLots = lots;
     const instiMin = Number(localStorage.getItem(INSTI_MIN_KEY));
     if (INSTI_MINS.some((o) => o.value === instiMin)) state.instiMin = instiMin;
+    const instiLeg = localStorage.getItem(INSTI_LEG_KEY);
+    if (INSTI_LEGS.some((o) => o.value === instiLeg)) state.instiLeg = instiLeg;
     // 「不限」是 0，而讀不到時 Number(null) 也是 0 —— 兩者的結果一樣，所以不用分辨
     const runDays = Number(localStorage.getItem(RUN_DAYS_KEY));
     if (RUN_DAYS.some((o) => o.value === runDays)) state.runDays = runDays;

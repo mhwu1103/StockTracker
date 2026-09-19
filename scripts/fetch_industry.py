@@ -1,4 +1,4 @@
-"""抓上市與上櫃公司的產業別 → docs/data/industry.json
+"""抓上市與上櫃公司的產業別與簡稱 → docs/data/industry.json
 
 兩個交易所的公司基本資料裡，產業別都是代碼（台積電是 "24"），而且用的是同一套
 代碼，只是欄位名稱不同。這裡轉成中文再存，前端就不必再帶一份對照表。
@@ -18,11 +18,12 @@ from datetime import datetime
 
 import twse
 
-# (市場, 網址, 代號欄位, 產業別欄位)
+# (市場, 網址, 代號欄位, 產業別欄位, 簡稱欄位)
 SOURCES = [
-    ("上市", "https://openapi.twse.com.tw/v1/opendata/t187ap03_L", "公司代號", "產業別"),
+    ("上市", "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+     "公司代號", "產業別", "公司簡稱"),
     ("上櫃", "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
-     "SecuritiesCompanyCode", "SecuritiesIndustryCode"),
+     "SecuritiesCompanyCode", "SecuritiesIndustryCode", "CompanyAbbreviation"),
 ]
 
 INDUSTRY_PATH = twse.DATA_DIR / "industry.json"
@@ -75,8 +76,9 @@ INDUSTRY_NAMES = {
 
 def main() -> int:
     mapping = {}
+    names = {}
     unknown = {}
-    for label, url, code_field, industry_field in SOURCES:
+    for label, url, code_field, industry_field, name_field in SOURCES:
         try:
             rows = twse.fetch_json(url)
         except RuntimeError as err:
@@ -97,6 +99,11 @@ def main() -> int:
                 unknown[raw] = unknown.get(raw, 0) + 1
                 name = "其他"
             mapping[code] = name
+            # 簡稱：排行是從行情抓的、自帶股名，但結構分頁看的是全部電子股，
+            # 其中沒進過榜的那些在別的地方查不到名字，只能從公司基本資料帶
+            abbr = str(row.get(name_field, "")).strip()
+            if abbr:
+                names[code] = abbr
             added += 1
         print(f"{label}：{added} 檔")
 
@@ -107,18 +114,19 @@ def main() -> int:
     payload = {
         "updated": datetime.now(twse.TAIPEI).isoformat(timespec="seconds"),
         "map": dict(sorted(mapping.items())),
+        "names": dict(sorted(names.items())),
     }
 
     # 內容沒變就不重寫，避免每天產生無謂的 git 差異（updated 也一併沿用舊值）
     if INDUSTRY_PATH.exists():
         old = json.loads(INDUSTRY_PATH.read_text(encoding="utf-8"))
-        if old.get("map") == payload["map"]:
+        if old.get("map") == payload["map"] and old.get("names") == payload["names"]:
             print(f"industry.json：{len(mapping)} 檔，內容未變動，不重寫")
             return 0
 
     twse.write_json(INDUSTRY_PATH, payload)
     kinds = len(set(mapping.values()))
-    print(f"industry.json：{len(mapping)} 檔、{kinds} 個產業")
+    print(f"industry.json：{len(mapping)} 檔、{kinds} 個產業、{len(names)} 個簡稱")
     if unknown:
         print(f"  ! 未知的產業別代碼（已歸為「其他」）：{unknown}")
     return 0

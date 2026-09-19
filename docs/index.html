@@ -14,13 +14,16 @@
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <!-- ?v= 是前端版號，改 app.js／style.css 時要跟 docs/sw.js 的 VERSION 一起加一。
      版號一換就是新網址，瀏覽器不可能再拿到舊的外殼去配新的 data/index.json。 -->
-<link rel="stylesheet" href="style.css?v=20">
+<link rel="stylesheet" href="style.css?v=26">
 </head>
 <body>
 
 <header class="app-bar">
   <div class="app-bar__top">
     <h1>台股成交值排行</h1>
+    <!-- 美股連動是獨立的一頁、不是分頁，所以不進 tab 列；但只放在頁尾等於沒人找得到
+         （排行頁的頁尾在兩百列之後），放在這裡是唯一不用捲動就看得到的位置。 -->
+    <a class="linky" href="us.html" title="美股 × 台股連動">美股</a>
     <select id="scope-select" aria-label="排行範圍"></select>
     <div class="date-nav">
       <button type="button" id="date-prev" class="date-nav__btn" aria-label="前一個交易日" title="前一個交易日">‹</button>
@@ -32,23 +35,18 @@
   <p class="app-bar__stale" id="stale" hidden></p>
 </header>
 
+<!-- 導覽分兩層：這一列是六個群組（sticky），底下的 #subtabs 是該群組的分頁。
+     群組的 href 由 app.js 依「上次看的是哪一頁」改寫，所以中鍵開新分頁也是對的。
+     分頁清單只寫在 app.js 的 NAV 一處，這裡不列，免得兩邊對不起來。 -->
 <nav class="tabs" id="tabs">
-  <a href="#/rank" data-view="rank">排行</a>
-  <a href="#/streak" data-view="streak">站穩</a>
-  <a href="#/moves" data-view="moves">異動</a>
-  <a href="#/burst" data-view="burst">爆量</a>
-  <a href="#/ma" data-view="ma">均線</a>
-  <a href="#/macd" data-view="macd">MACD</a>
-  <a href="#/holders" data-view="holders">大戶</a>
-  <a href="#/insti" data-view="insti">法人</a>
-  <a href="#/instirun" data-view="instirun">連買</a>
-  <a href="#/stock" data-view="stock">個股</a>
-  <a href="#/compare" data-view="compare">對照</a>
-  <a href="#/market" data-view="market">大盤</a>
-  <a href="#/sector" data-view="sector">族群</a>
-  <a href="#/flow" data-view="flow">流向</a>
-  <a href="#/quote" data-view="quote">報價</a>
+  <a href="#/rank" data-group="rank">排行</a>
+  <a href="#/burst" data-group="tech">技術</a>
+  <a href="#/holders" data-group="chips">籌碼</a>
+  <a href="#/sector" data-group="money">資金</a>
+  <a href="#/quote" data-group="world">環境</a>
+  <a href="#/stock" data-group="find">查詢</a>
 </nav>
+<nav class="subtabs" id="subtabs"></nav>
 
 <main id="view" class="view">
   <p class="hint">載入中…</p>
@@ -56,8 +54,9 @@
 
 <footer class="foot">
   資料來源：臺灣證券交易所公開資訊（上市，含 ETF）。僅供參考，非投資建議。
+  <a class="linky" href="us.html">美股 × 台股連動</a>
 </footer>
 
-<script src="app.js?v=20" defer></script>
+<script src="app.js?v=26" defer></script>
 </body>
 </html>

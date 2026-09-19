@@ -1,7 +1,8 @@
-"""由每日檔算出「法人」與「連買」兩個分頁要吃的衍生檔。
+"""由每日檔算出「法人」「買超」「連買」三個分頁要吃的衍生檔。
 
     docs/data/insti/index.json          有哪幾個交易日、各自幾檔、全市場的估算合計
     docs/data/insti/streak/{日期}.json  截至那一天，外資連續買（賣）超 3 天以上的名單
+    docs/data/insti/chg/{日期}.json     那一天每一檔的漲跌（%），「逆勢買超」要的第二個軸
 
 前端需要目錄檔的理由：法人資料是後來才開始累積的，它涵蓋的交易日比 data/index.json
 那份短。少了目錄，畫面就只能拿主索引的日期去猜，猜錯就是一則 404 載入失敗 ——
@@ -11,7 +12,11 @@
 最長的那幾段還會連到資料起點 —— 讓瀏覽器自己抓回來算是幾百 KB 的代價。
 判斷「連續」的三條規則見 institutions.py 的模組說明。
 
-兩份都是純衍生資料，每次都由 daily/ 從頭重算。
+漲跌算在這裡的理由不同：它要的是**前一個交易日**的收盤價，而 daily/ 只存當天的。
+前一天的價在 docs/data/close/ 裡、本機就有，讓前端為了一欄漲跌再抓兩份全市場
+行情（約 120 KB）不划算。
+
+三份都是純衍生資料，每次都由 daily/ 從頭重算。
 
 用法：
     python scripts/build_institutions.py
@@ -26,29 +31,44 @@ import institutions as insti
 import twse
 
 
-def build_runs(dates: list, tables: dict) -> int:
-    """一天寫一個外資連續買賣超的檔案。回傳寫了幾天，出錯回 -1。
+def trading_context(dates: list):
+    """(全部交易日, {交易日: 前一個交易日})。算不出來就印原因並回 (None, None)。
 
     交易日的名單取自 close/twse/ —— 上市與上櫃的交易日相同，而全市場行情比法人
-    資料早幾個月開始累積，所以它涵蓋得比 dates 寬，接得起相鄰性的判斷。
+    資料早幾個月開始累積，所以它涵蓋得比 dates 寬。連續榜的相鄰性與漲跌的
+    「對比前一個交易日」都靠它，缺了它兩份都只會安靜地算出偏短的天數與空白的漲跌。
     """
     trading = twse.existing_close_dates()
     outside = [d for d in dates if d not in set(trading)]
     if not trading or outside:
-        # 相鄰性判斷不出來的話，每一段都會從當天重新起算 —— 檔案會寫出來，
-        # 只是每一檔都「連 1 天」，一檔也進不了榜。那是安靜的錯，所以停在這裡。
         print("算不出交易日的相鄰性：" + (
             "docs/data/close/twse/ 沒有任何檔案" if not trading
             else f"這 {len(outside)} 天（{', '.join(outside[:5])}）在 close/twse/ 裡找不到"))
         print("請先執行 python scripts/backfill.py --days 14")
-        return -1
+        return None, None
+    before = {d: (trading[i - 1] if i else None) for i, d in enumerate(trading)}
+    return trading, before
 
+
+def drop_orphans(folder, dates: set, label: str) -> None:
+    """daily/ 已經沒有的日期，衍生檔也要跟著刪。
+
+    少了這一步，手動刪掉某一天的每日檔（或格式重來）之後，畫面上會看到一份沒有
+    對應每日檔的衍生資料 —— 它不會報錯，只會安靜地比 daily/ 多出幾天。
+    """
+    for path in sorted(folder.glob("*.json")):
+        if path.stem not in dates:
+            path.unlink()
+            print(f"  已刪除 {path.relative_to(twse.ROOT)}（daily/ 已經沒有這一天，{label}）")
+
+
+def build_runs(dates: list, tables: dict, trading: list, before: dict) -> int:
+    """一天寫一個外資連續買賣超的檔案。回傳寫了幾天。"""
     adjacent = insti.adjacent_flags(dates, trading)
     # 缺口：中間少了一個真正的交易日（兩個市場只有一邊有資料的日子整天不寫檔）。
     # 連續天數不跨過缺口，所以缺口後面那幾天的天數會偏短，要講出來。
     gaps = [dates[i] for i in range(1, len(dates)) if not adjacent[i]]
 
-    before = {d: (trading[i - 1] if i else None) for i, d in enumerate(trading)}
     closes = {}
 
     def base_close(market: str, since: str, code: str):
@@ -58,8 +78,7 @@ def build_runs(dates: list, tables: dict) -> int:
             return None
         key = (market, day)
         if key not in closes:
-            path = twse.close_path(day, market)
-            closes[key] = (insti.read_json(path).get("c") or {}) if path.exists() else {}
+            closes[key] = insti.close_file(day, market)
         return closes[key].get(code)
 
     sequence = [(d, adjacent[i], tables[d]) for i, d in enumerate(dates)]
@@ -72,12 +91,7 @@ def build_runs(dates: list, tables: dict) -> int:
         insti.write_json(insti.run_path(date_iso), payload)
         latest = payload
 
-    # daily/ 少了某一天（手動刪檔、或格式重來）時，衍生檔要跟著走，不然畫面上
-    # 會看到一份沒有對應每日檔的連續榜。
-    for path in sorted(insti.INSTI_RUN_DIR.glob("*.json")):
-        if path.stem not in set(dates):
-            path.unlink()
-            print(f"  已刪除 {path.relative_to(twse.ROOT)}（daily/ 已經沒有這一天）")
+    drop_orphans(insti.INSTI_RUN_DIR, set(dates), "連續榜")
 
     print(f"外資連續買賣超：{len(dates)} 天，每天留 {insti.RUN_MIN_DAYS} 天以上的")
     if gaps:
@@ -97,6 +111,50 @@ def build_runs(dates: list, tables: dict) -> int:
     return len(dates)
 
 
+def build_chg(dates: list, closes: dict, before: dict) -> int:
+    """一天寫一個「每一檔今天漲跌幾 %」的檔案。回傳寫了幾天。
+
+    closes 是 {日期: {市場: {代號: 收盤價}}}，取自每日檔本身；基準價則讀
+    close/ 底下前一個交易日的全市場行情 —— 前一天有沒有進法人的每日檔不重要，
+    今天的漲跌問的是價格，不是法人有沒有動作。
+    """
+    files = {}
+
+    def prev_closes(prev_iso: str) -> dict:
+        if prev_iso not in files:
+            files[prev_iso] = {m: insti.close_file(prev_iso, m) for m in insti.MARKETS}
+        return files[prev_iso]
+
+    blank = []
+    latest = None
+    for date_iso in dates:
+        prev_iso = before.get(date_iso)
+        payload = insti.build_chg_payload(
+            date_iso, prev_iso, closes[date_iso],
+            prev_closes(prev_iso) if prev_iso else {})
+        if not payload["n"]:
+            blank.append(date_iso)
+        insti.write_json(insti.chg_path(date_iso), payload)
+        latest = payload
+
+    drop_orphans(insti.INSTI_CHG_DIR, set(dates), "漲跌")
+
+    print(f"當日漲跌：{len(dates)} 天")
+    if blank:
+        # 整天都算不出漲跌，代表前一個交易日的 close/ 檔不在。畫面上那一欄會整排
+        # 留白，而留白看起來就像「今天全部收平盤」—— 這是安靜的錯，要講出來。
+        print(f"  ! 這 {len(blank)} 天一檔也算不出漲跌（前一個交易日的 close/ 檔不在）："
+              f"{', '.join(blank[:5])}")
+        print("    請先執行 python scripts/backfill.py --days 14")
+    if latest:
+        up = sum(1 for v in latest["chg"].values() if v > 0)
+        down = sum(1 for v in latest["chg"].values() if v < 0)
+        print(f"  最新那一天 {latest['date']}：{latest['n']} 檔算得出漲跌"
+              f"（對比 {latest['prev']}），{up} 檔收紅、{down} 檔收黑"
+              + (f"，{latest['miss']} 檔前一日沒有收盤價" if latest["miss"] else ""))
+    return len(dates)
+
+
 def main() -> int:
     dates = insti.existing_dates()
     if not dates:
@@ -106,12 +164,14 @@ def main() -> int:
     days = []
     stale = []
     tables = {}
+    closes = {}
     for date_iso in dates:
         payload = insti.read_json(insti.daily_path(date_iso))
         if payload.get("v") != insti.SNAPSHOT_VERSION:
             stale.append(date_iso)
             continue
         tables[date_iso] = insti.foreign_table(payload)
+        closes[date_iso] = insti.payload_closes(payload)
         # 官方合計優先；那天真的抓不到就退回估算值，並標上 e:1 讓畫面講得出來
         official = payload.get("total")
         entry = {"d": date_iso, "n": payload.get("n") or 0}
@@ -140,6 +200,9 @@ def main() -> int:
         # 欄位，畫面因此分得出「這份資料還沒建連續榜」與「檔案掛了」。
         "streak": {"v": insti.RUN_VERSION, "min": insti.RUN_MIN_DAYS,
                    "leg": insti.RUN_LEG, "fields": list(insti.RUN_FIELDS)},
+        # 買超分頁自己的一行自我描述，用途與上面那個 streak 相同：舊的資料集還沒有
+        # chg/ 這個目錄，少了這一行，畫面就分不出「還沒算漲跌」與「檔案掛了」。
+        "chg": {"v": insti.CHG_VERSION},
         # 一天一格：交易日、留下幾檔，以及兩個市場各自三邊的買賣超合計（億元，官方金額）
         "days": days,
     }
@@ -158,10 +221,17 @@ def main() -> int:
     print(f"已寫入 {insti.INSTI_INDEX_PATH.relative_to(twse.ROOT)}")
 
     print()
-    wrote = build_runs(dates, tables)
-    if wrote < 0:
+    trading, before = trading_context(dates)
+    if trading is None:
         return 1
+
+    wrote = build_runs(dates, tables, trading, before)
     folder = insti.INSTI_RUN_DIR.relative_to(twse.ROOT).as_posix()
+    print(f"已寫入 {folder}/ 底下 {wrote} 個檔案")
+
+    print()
+    wrote = build_chg(dates, closes, before)
+    folder = insti.INSTI_CHG_DIR.relative_to(twse.ROOT).as_posix()
     print(f"已寫入 {folder}/ 底下 {wrote} 個檔案")
     return 0
 

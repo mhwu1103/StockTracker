@@ -207,6 +207,16 @@ def write_json(path: Path, payload) -> Path:
     return path
 
 
+def write_if_changed(path: Path, payload) -> bool:
+    """內容沒變就不重寫，避免每天產生無謂的 git 差異。"""
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if path.exists() and path.read_text(encoding="utf-8") == text:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return True
+
+
 def write_daily(payload: dict, scope: str = "twse") -> Path:
     return write_json(daily_path(payload["date"], scope), payload)
 
