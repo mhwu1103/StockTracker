@@ -221,3 +221,54 @@ def corr_pct(rows: list, span: int):
     tail = rows[-span:]
     r = pearson([x for _, x, _ in tail], [y for _, _, y in tail])
     return None if r is None else round(r * 100)
+
+
+# 滾動窗至少要湊得出這麼多個，那個「範圍」才講得出穩定度。
+#
+# 120 日窗在目前的 130 個交易日上只湊得出 11 個窗，而且彼此重疊九成以上 ——
+# 那個範圍講的是同一段資料被切了 11 次，不是它在半年裡怎麼擺盪。寧可留白。
+# kline 的歷史長出來之後，120 日窗會自己開始有數字，格式不必改。
+MIN_WINDOWS = 20
+
+
+def rolling_corr(rows: list, span: int) -> list:
+    """滑動窗的相關係數序列，每次往後挪一個對齊日。
+
+    用**滾動和**算，不是每個窗重跑一次 pearson()：後者是 O(n·span)，2,137 組配對
+    乘三個觀察窗要跑好幾分鐘，而這是每天都要跑的建置步驟。這裡是 O(n)。
+
+    日報酬的量級是 1e-2，滾動和的相消最多吃掉四、五位有效數字，float64 還剩十位以上，
+    對一個四捨五入成整數百分比的結果綽綽有餘。
+    """
+    n = len(rows)
+    if n < span + MIN_WINDOWS - 1:
+        return []
+    xs = [x for _, x, _ in rows]
+    ys = [y for _, _, y in rows]
+    sx = sy = sxy = sxx = syy = 0.0
+    out = []
+    for i in range(n):
+        x, y = xs[i], ys[i]
+        sx += x; sy += y; sxy += x * y; sxx += x * x; syy += y * y
+        if i >= span:
+            o, p = xs[i - span], ys[i - span]
+            sx -= o; sy -= p; sxy -= o * p; sxx -= o * o; syy -= p * p
+        if i >= span - 1:
+            cov = sxy - sx * sy / span
+            vx = sxx - sx * sx / span
+            vy = syy - sy * sy / span
+            out.append(None if vx <= 0 or vy <= 0 else cov / (vx * vy) ** 0.5)
+    return out
+
+
+def corr_range(rows: list, span: int):
+    """滾動相關在整段資料裡的擺盪範圍 (最低, 最高)，整數百分比。
+
+    回答的是「這個相關係數穩不穩」——同樣是 +50%，一路都在 40~60 之間，
+    與半年前還是 −20%、最近才衝上來，是完全不同的兩件事，而單一個數字分不出來。
+    窗數不夠就回 (None, None)。
+    """
+    vals = [v for v in rolling_corr(rows, span) if v is not None]
+    if len(vals) < MIN_WINDOWS:
+        return None, None
+    return round(min(vals) * 100), round(max(vals) * 100)

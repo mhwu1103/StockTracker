@@ -554,6 +554,33 @@ select, input, button {
   background: var(--line);
 }
 .corr-bar i { position: absolute; top: 0; height: 100%; border-radius: 2px; background: currentColor; }
+
+/* 滾動相關的擺盪範圍。用 --muted 而不是紅綠 —— 一段區間常常橫跨零，給不出方向。 */
+.corr-bar .band {
+  background: var(--muted);
+  opacity: .34;
+  border-radius: 2px;
+}
+
+/* 零點：沒有它就看不出豎標是正的還是負的 */
+.corr-bar .zero {
+  left: 50%;
+  width: 1px;
+  margin-left: -0.5px;
+  top: -2px;
+  height: calc(100% + 4px);
+  background: var(--muted);
+  opacity: .5;
+}
+
+/* 現在的值。比帶子高、比帶子實，才會被讀成「主角」而不是另一段區間 */
+.corr-bar .now {
+  width: 3px;
+  margin-left: -1.5px;
+  top: -4px;
+  height: calc(100% + 8px);
+  border-radius: 1.5px;
+}
 .rank .no.sm { font-size: 13px; }
 .figures .value.sm { font-size: 13px; font-weight: 600; }
 

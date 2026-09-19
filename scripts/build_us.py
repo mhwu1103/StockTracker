@@ -52,6 +52,17 @@ def changes(closes: list) -> dict:
     return out
 
 
+# 一個觀察窗佔四欄：r（原始）、x（超額）、lo／hi（滾動相關的擺盪範圍）。
+# 這個 4 與下面 cols 的四個鍵是同一件事，所以兩邊都從這裡長出來 ——
+# 加欄位時漏改另一處的那種錯，這一支上已經發生過一次。
+SPAN_KEYS = ("r", "x", "lo", "hi")
+COL_HEAD = ("code", "name", "label", "s")
+
+def col_at(span: int) -> int:
+    """某個觀察窗的第一欄（r）在一列裡的位置。"""
+    return len(COL_HEAD) + us.SPANS.index(span) * len(SPAN_KEYS)
+
+
 def excess(series: dict, base: dict) -> dict:
     """個股報酬扣掉自己市場的大盤報酬。大盤那天沒資料就整天不算。"""
     return {d: v - base[d] for d, v in series.items() if d in base}
@@ -128,12 +139,15 @@ def main() -> int:
             for span in us.SPANS:
                 row.append(us.corr_pct(aligned, span))
                 row.append(us.corr_pct(aligned_x, span))
+                # 同一個相關係數的擺盪範圍：一路都在 40~60 之間，與半年前還是 −20%
+                # 最近才衝上來，是完全不同的兩件事，而單一個數字分不出來。
+                row.extend(us.corr_range(aligned, span))
             row.append(len(aligned))
             rows.append(row)
         if not rows:
             continue
         # 排序用中段的原始相關（r60）：短窗太跳、長窗受限於 kline 的起點
-        mid = us.SPANS.index(60) * 2 + 4
+        mid = col_at(60)
         rows.sort(key=lambda r: (r[mid] is None, -(r[mid] or 0)))
         scores = [r[mid] for r in rows if r[mid] is not None]
         # ★★★ 的配對一律留著，不管排第幾名：那正是這一頁要驗證的東西。
@@ -177,8 +191,10 @@ def main() -> int:
         "from": tw_dates[0],
         "spans": list(us.SPANS),
         "minPoints": us.MIN_POINTS,
-        "cols": ["code", "name", "label", "s"]
-                + [f"{k}{s}" for s in us.SPANS for k in ("r", "x")] + ["n"],
+        # 前端照名字查位置（不是照算式），所以這裡加欄位不必兩邊一起改
+        "cols": list(COL_HEAD)
+                + [f"{k}{s}" for s in us.SPANS for k in SPAN_KEYS] + ["n"],
+        "minWindows": us.MIN_WINDOWS,
         "labels": labels,
         "items": items,
         "bench": bench,
@@ -202,9 +218,11 @@ def main() -> int:
         item = next((i for i in items if i["t"] == sym), None)
         row = next((r for r in (item or {}).get("links", []) if r[0] == code), None)
         if row:
-            mid = us.SPANS.index(60) * 2 + 4
-            print(f"  {sym:<6} vs {code} {row[1]:<6} r60={row[mid]}% x60={row[mid + 1]}%"
-                  f"（{row[-1]} 天）")
+            at = col_at(60)
+            band = (f" 擺盪 {row[at + 2]}~{row[at + 3]}%"
+                    if row[at + 2] is not None else " 擺盪 —")
+            print(f"  {sym:<6} vs {code} {row[1]:<6} r60={row[at]}% x60={row[at + 1]}%"
+                  f"{band}（{row[-1]} 天）")
     return 0
 
 

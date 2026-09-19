@@ -58,12 +58,20 @@ function pills(name, options, current) {
 // --------------------------------------------------------------------------
 // 取數
 //
-// cols 的長相是 [code, name, label, s, r20, x20, r60, x60, r120, x120, n]：
-// 每個觀察窗兩欄、原始在前超額在後。欄位順序由 build_us.py 決定，這裡照 spans 算位置，
-// 不要寫死 —— 以後多加一個觀察窗時才不用兩邊一起改。
+// 一列的長相是 [code, name, label, s, r20, x20, lo20, hi20, r60, …, n]：每個觀察窗
+// 四欄（原始、超額、滾動相關的最低與最高）。
+//
+// **照名字查位置，不要照算式算**。第一版是 `4 + spans.indexOf(span) * 2`，後來一個
+// 觀察窗從兩欄變四欄，那個 2 就散在前後端各一份 —— build_us.py 裡的同一個算式當時
+// 正好漏改了一處。改成讀 cols 這份自帶的欄名表，加欄位時兩邊都不必動。
 // --------------------------------------------------------------------------
-const colAt = (span, kind) => 4 + state.data.spans.indexOf(span) * 2 + (kind === 'x' ? 1 : 0);
-const corrOf = (row, kind = 'r') => row[colAt(state.span, kind)];
+let colIdx = new Map();
+const colAt = (kind, span = state.span) => colIdx.get(`${kind}${span}`);
+const cellOf = (row, kind) => {
+  const at = colAt(kind);
+  return at === undefined ? null : row[at];
+};
+const corrOf = (row, kind = 'r') => cellOf(row, kind);
 
 /** 這一檔美股在目前觀察窗下的中位相關；沒有任何一組算得出來就回 null。 */
 function midOf(item) {
@@ -92,13 +100,26 @@ function sortedItems() {
 // 畫面
 // --------------------------------------------------------------------------
 
-/** 相關性的長條。負相關往左畫，跟族群頁的資金流向同一套視覺語言。 */
-function corrBar(v) {
+/**
+ * 相關性那一格底下的小圖：**擺盪範圍是主體，現在的值是一根豎標**。
+ *
+ * 淡帶是滾動相關的範圍（把觀察窗從資料起點一路滑到今天，最低與最高到過哪裡）。
+ * 同樣是 +50%，一路都在 40~60 之間，與半年前還是 −20%、最近才衝上來，是完全不同的
+ * 兩件事，而單一個數字分不出來。豎標落在帶子的哪裡，就是現在在自己的歷史區間哪裡。
+ *
+ * 第一版是把現值畫成「從 0 拉到現值」的長條、帶子墊在底下 —— 實測是**看不見的**：
+ * 這批資料的最低點大多接近 0、而現值又常常就是最高點，於是兩個矩形幾乎重合
+ * （量到帶子 [27,14]px、長條 [26,15]px）。長度在這一格沒有意義，位置才有，
+ * 所以現值改成一根豎標，長條退場。數值本來就印在正上方，不必再用長度講一次。
+ */
+function corrBar(v, lo, hi) {
   if (v === null || v === undefined) return '<span class="corr-bar"></span>';
-  const w = Math.min(Math.abs(v), 100) / 2;      // 100% 對應半格，左右各一半
-  return `<span class="corr-bar"><i class="${trend(v)}" style="${v >= 0
-    ? `left:50%;width:${w}%`
-    : `right:50%;width:${w}%`}"></i></span>`;
+  const at = (n) => 50 + Math.max(-100, Math.min(100, n)) / 2;   // 0% 在正中間
+  const band = (lo === null || lo === undefined || hi === null || hi === undefined)
+    ? ''
+    : `<i class="band" style="left:${at(lo)}%;width:${Math.max(at(hi) - at(lo), 2)}%"></i>`;
+  return `<span class="corr-bar">${band}<i class="zero"></i>
+    <i class="now ${trend(v)}" style="left:${at(v)}%"></i></span>`;
 }
 
 /** 中位數。空陣列回 null —— 0 在這一頁是「完全不相關」，不是「沒有資料」。 */
@@ -241,9 +262,14 @@ function linkRow(row, labels) {
   const [code, name, label, s] = row;
   const r = corrOf(row, 'r');
   const x = corrOf(row, 'x');
-  return `<a class="row" href="index.html#/stock/${esc(code)}">
+  const lo = corrOf(row, 'lo');
+  const hi = corrOf(row, 'hi');
+  const band = (lo === null || lo === undefined)
+    ? `${state.span} 日窗的資料還不夠長，算不出擺盪範圍`
+    : `這半年間，${state.span} 日窗在 ${corrText(lo)} ~ ${corrText(hi)} 之間擺盪`;
+  return `<a class="row" href="index.html#/stock/${esc(code)}" title="${esc(band)}">
       <div class="rank"><span class="no sm ${trend(r)}">${corrText(r)}</span>
-        ${corrBar(r)}</div>
+        ${corrBar(r, lo, hi)}</div>
       <div class="ident"><span class="name">${esc(name)}</span>
         <span class="code">${esc(code)} · ${esc(labels[label] || '')}</span></div>
       <div class="figures"><span class="value sm">超額 ${tint(x, corrText(x))}</span>
@@ -354,6 +380,16 @@ function render() {
       <p class="note">左邊的百分比是這一檔美股對它所有對照台股的<b>相關性中位數</b>，
         右邊是它自己的漲跌幅（昨夜／週／月／年）。展開後每一列是一檔台股，
         點進去會回到排行榜的個股頁。</p>
+      <p class="note">每一列數字底下那條小圖：淡灰的帶子是<b>擺盪範圍</b>——把
+        ${state.span} 日的窗從資料起點一路滑到今天，中間最低與最高到過哪裡；那根豎標是
+        <b>現在的值</b>（中間那條細線是 0，右邊為正、左邊為負）。
+        <b>豎標貼在帶子右緣</b>＝現在是這半年來最相關的時候，那個數字要打折看；
+        <b>帶子很窄</b>＝這組連動一直都這麼強（或這麼弱），數字比較可信。
+        滑鼠移上去會顯示區間的數字。</p>
+      <p class="note">湊不出 ${data.minWindows} 個窗就不畫帶子。台股 K 線從
+        ${esc(data.from)} 才開始，${Math.max(...data.spans)} 日窗只滑得出十來個、
+        而且彼此重疊九成以上——那個「範圍」講的是同一段資料被切了幾次，不是它的穩定度，
+        寧可留白。K 線的歷史長出來之後，長窗會自己開始有數字。</p>
     </section>
     ${methodNote(data)}`;
 
@@ -397,6 +433,7 @@ async function start() {
     const res = await fetch(`${DATA}/us/index.json`, { cache: 'reload' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.data = await res.json();
+    colIdx = new Map((state.data.cols || []).map((c, i) => [c, i]));
   } catch (err) {
     $('#meta').textContent = '載入失敗';
     $('#view').innerHTML = `<p class="hint">讀不到 <code>data/us/index.json</code>（${esc(err.message)}）。
