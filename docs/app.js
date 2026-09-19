@@ -5611,75 +5611,10 @@ async function renderCompare(view, params) {
 // --------------------------------------------------------------------------
 // 外框：日期選單、分頁、路由
 // --------------------------------------------------------------------------
-/**
- * 導覽的兩層：群組 -> 分頁。
- *
- * 十幾個分頁擠在同一列，手機上一次只看得到六個，捲出去的那幾個等於不存在。
- * 分組的軸是「這一頁回答什麼問題」，不是「資料從哪來」——使用者腦中的問題是
- * 「誰在買」而不是「這份資料來自集保還是三大法人」。
- *
- * 群組列 sticky、分頁列不 sticky：上面已經有 app-bar 與群組列兩層，
- * 第三層黏在頂上會把手機畫面吃掉三分之一。
- *
- * 帶 href 的那一項是站外的獨立頁面（美股連動不吃日期與範圍那組狀態，所以它不在
- * 這支 SPA 裡）；其餘都是 hash 路由。
+/*
+ * 導覽（群組 → 分頁）整組搬到 docs/nav.js 了：us.html 以前是照著這裡的 NAV 手抄
+ * 一份寫死在它自己的 HTML 裡，兩邊得靠記性同步。現在兩頁共用同一份，這裡只剩呼叫。
  */
-const NAV = [
-  { key: 'rank', label: '排行', views: [
-    { v: 'rank', label: '排行' }, { v: 'streak', label: '站穩' },
-    { v: 'moves', label: '異動' }, { v: 'entry', label: '後續' },
-    { v: 'period', label: '週月' }] },
-  { key: 'tech', label: '技術', views: [
-    { v: 'burst', label: '爆量' }, { v: 'ma', label: '均線' }, { v: 'macd', label: 'MACD' }] },
-  { key: 'chips', label: '籌碼', views: [
-    { v: 'holders', label: '大戶' }, { v: 'insti', label: '法人' },
-    { v: 'instirank', label: '買超' }, { v: 'instirun', label: '連買' },
-    { v: 'radar', label: '雷達' }] },
-  { key: 'money', label: '資金', views: [
-    { v: 'sector', label: '族群' }, { v: 'flow', label: '流向' }, { v: 'market', label: '大盤' }] },
-  { key: 'world', label: '環境', views: [
-    { v: 'quote', label: '報價' }, { v: 'us', label: '美股', href: 'us.html' }] },
-  { key: 'find', label: '查詢', views: [
-    { v: 'stock', label: '個股' }, { v: 'compare', label: '對照' }] },
-];
-
-const NAV_KEY = 'stocktracker.nav';
-
-/** 每個群組上次停在哪一個網址。存整串 hash，回到「查詢」時才會回到原本那一檔個股。 */
-function loadNavLast() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(NAV_KEY) || '{}');
-    return raw && typeof raw === 'object' ? raw : {};
-  } catch (err) {
-    return {};
-  }
-}
-
-const navLast = loadNavLast();
-
-const groupOf = (view) => NAV.find((g) => g.views.some((t) => t.v === view)) || NAV[0];
-
-/** 畫兩層導覽。在 render() 的最前面呼叫：載入中也要看得到自己在哪一頁。 */
-function paintNav(view) {
-  const group = groupOf(view);
-  navLast[group.key] = location.hash || `#/${group.views[0].v}`;
-  try {
-    localStorage.setItem(NAV_KEY, JSON.stringify(navLast));
-  } catch (err) {
-    /* 記不住就算了，下次從該群組的第一頁開始 */
-  }
-
-  document.querySelectorAll('.tabs a').forEach((a) => {
-    const g = NAV.find((x) => x.key === a.dataset.group);
-    if (!g) return;
-    a.classList.toggle('active', g.key === group.key);
-    a.href = navLast[g.key] || `#/${g.views[0].v}`;
-  });
-
-  $('#subtabs').innerHTML = group.views.map((t) => (t.href
-    ? `<a href="${esc(t.href)}">${esc(t.label)} ↗</a>`
-    : `<a class="${t.v === view ? 'active' : ''}" href="#/${t.v}">${esc(t.label)}</a>`)).join('');
-}
 
 // --------------------------------------------------------------------------
 // 匯出與分享
@@ -5818,15 +5753,33 @@ function paintChrome() {
   banner.textContent = banner.hidden ? '' : `⚠ 最新資料只到 ${idx.latest}，已 ${stale} 天沒有更新`;
 }
 
+/** 上一次畫的是哪一頁。用來分辨「換頁」與「同一頁換條件」，見 render()。 */
+let lastRouteKey = null;
+
 async function render() {
   const route = parseHash();
   // 分享連結帶來的日期與範圍。套用之後就從網址上拿掉，不然使用者自己換日期會被蓋回去
   applyShareParams(route);
-  paintNav(route.view);
+  StockNav.paintNav(route.view);
   destroyCharts();
   const view = $('#view');
   // 流向頁那兩張圖看的是面積，寬螢幕不跟其他分頁一樣限在 720px
   view.classList.toggle('wide', route.view === 'flow');
+
+  /*
+   * 換頁要回到頂端，換篩選不要。
+   *
+   * render() 不只在 hashchange 時跑——換日期、換範圍、按藥丸都會叫它一次，而那些
+   * 都不動 hash。正在比較兩組條件時被彈回頂端很煩，所以比對的是「哪一頁」而不是
+   * 「有沒有重畫」。個股頁換代號（#/stock/2330 → 2454）算換頁，所以 arg 也要比。
+   */
+  const routeKey = `${route.view}/${route.arg || ''}`;
+  if (routeKey !== lastRouteKey) {
+    lastRouteKey = routeKey;
+    window.scrollTo(0, 0);
+    view.scrollTop = 0;   // 桌面版捲的是 .view（固定外殼），不是 window
+  }
+
   view.innerHTML = '<p class="hint">載入中…</p>';
   // 上一頁的匯出資料不能留到下一頁 —— 那會讓人在圖表頁按下匯出、拿到別頁的清單
   state.csv = null;

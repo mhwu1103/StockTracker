@@ -1,0 +1,40 @@
+name: 前端檢查
+
+# 只在外殼檔改動時跑。docs/data/ 底下每天都有新檔，那些不該觸發這個流程。
+on:
+  push:
+    paths:
+      - "docs/*.html"
+      - "docs/*.js"
+      - "docs/*.css"
+      - "scripts/check_frontend_version.py"
+      - ".github/workflows/check.yml"
+  pull_request:
+    paths:
+      - "docs/*.html"
+      - "docs/*.js"
+      - "docs/*.css"
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 三處版號一錯開，使用者就會拿到「新資料配舊前端」，而且畫面看起來一切正常。
+      # 這種漏掉的成本很高、檢查的成本是一秒鐘。
+      - name: 前端版號三處一致
+        run: python scripts/check_frontend_version.py
+
+      # 前端沒有打包步驟，語法錯誤會直接是線上整頁空白。node --check 不需要任何相依套件。
+      - name: JS 語法
+        run: |
+          for f in docs/*.js; do
+            node --check "$f" || exit 1
+          done
+          echo "docs/*.js 全部通過"

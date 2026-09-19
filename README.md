@@ -159,8 +159,11 @@ scripts/
   build_holders.py  由每週快照算出 holders/index.json 與 holders/stock/
   notify_telegram.py 把當日新進榜／連續 2、3、5 天的清單推播到 Telegram
   serve.py          本機開發用的靜態伺服器（送出 no-store，不會被快取咬）
+  check_frontend_version.py  檢查前端版號三處一致（--set N 一次改完）
 docs/               GitHub Pages 網站根目錄
   index.html app.js style.css sw.js manifest.webmanifest icons/
+  nav.js             兩層導覽與底部 tab bar 的行為，index.html 與 us.html 共用。
+                    導覽清單（NAV）只有這一份，兩頁的 <nav> 都是空殼
   us.html us.js      「美股 × 台股連動」——獨立的一頁，不是排行榜那支 SPA 的分頁，
                     只共用 style.css。入口在排行榜頂部工具列的「美股」，
                     頁尾與族群頁的說明裡也各有一個
@@ -949,6 +952,19 @@ cd docs && python -m http.server 8765
 ```
 
 瀏覽器開 <http://localhost:8765>。
+
+### 改前端的時候
+
+動到 `docs/` 底下任何一支外殼檔（html／js／css），**三處版號要一起加一**：`sw.js` 的 `VERSION`、`index.html` 與 `us.html` 的每一個 `?v=`。
+版號一換就是新網址，瀏覽器不可能再拿到舊的外殼去配新的 `data/index.json`。
+
+```bash
+python scripts/check_frontend_version.py          # 檢查三處一致
+python scripts/check_frontend_version.py --set 39 # 三處一起改成 39
+```
+
+漏掉不會有任何徵兆——`us.html` 曾經卡在 `?v=25` 而 `index.html` 已經到 35，中間十個版本裡它一直載另一份 `style.css` 快取，畫面看起來完全正常。
+所以 `.github/workflows/check.yml` 會在每次 push 時擋一道。
 
 回補更多歷史（每次請求間隔 4 秒以免被證交所限流，兩年約需 35 分鐘）：
 

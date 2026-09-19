@@ -12,9 +12,10 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
-<!-- ?v= 是前端版號，改 app.js／style.css 時要跟 docs/sw.js 的 VERSION 一起加一。
+<!-- ?v= 是前端版號。改任何一支外殼檔時，這裡、us.html、docs/sw.js 的 VERSION 要一起加一
+     （python scripts/check_frontend_version.py --set N 一次改完，CI 也會擋）。
      版號一換就是新網址，瀏覽器不可能再拿到舊的外殼去配新的 data/index.json。 -->
-<link rel="stylesheet" href="style.css?v=37">
+<link rel="stylesheet" href="style.css?v=38">
 </head>
 <body>
 
@@ -35,17 +36,10 @@
   <p class="app-bar__stale" id="stale" hidden></p>
 </header>
 
-<!-- 導覽分兩層：這一列是六個群組（sticky），底下的 #subtabs 是該群組的分頁。
-     群組的 href 由 app.js 依「上次看的是哪一頁」改寫，所以中鍵開新分頁也是對的。
-     分頁清單只寫在 app.js 的 NAV 一處，這裡不列，免得兩邊對不起來。 -->
-<nav class="tabs" id="tabs">
-  <a href="#/rank" data-group="rank">排行</a>
-  <a href="#/burst" data-group="tech">技術</a>
-  <a href="#/holders" data-group="chips">籌碼</a>
-  <a href="#/sector" data-group="money">資金</a>
-  <a href="#/quote" data-group="world">環境</a>
-  <a href="#/stock" data-group="find">查詢</a>
-</nav>
+<!-- 導覽分兩層：上面一列是六個群組，底下是該群組的分頁。兩列都由 nav.js 依它那份
+     NAV 畫出來，這裡只留空殼——清單寫死在 HTML 就會變成第二份要同步的來源。
+     群組的 href 帶「上次看的是哪一頁」，所以中鍵開新分頁也是對的。 -->
+<nav class="tabs" id="tabs"></nav>
 <nav class="subtabs" id="subtabs"></nav>
 
 <main id="view" class="view">
@@ -57,7 +51,7 @@
   <a class="linky" href="us.html">美股 × 台股連動</a>
 </footer>
 
-<script src="nav.js?v=37" defer></script>
-<script src="app.js?v=37" defer></script>
+<script src="nav.js?v=38" defer></script>
+<script src="app.js?v=38" defer></script>
 </body>
 </html>

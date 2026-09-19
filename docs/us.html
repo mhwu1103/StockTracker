@@ -8,10 +8,11 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#0f1216">
 <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
-<!-- ?v= 是前端版號，改 us.js／style.css 時要跟 docs/sw.js 的 VERSION 一起加一 -->
-<link rel="stylesheet" href="style.css?v=37">
+<!-- ?v= 是前端版號，三處要一致，見 index.html 的說明 -->
+<link rel="stylesheet" href="style.css?v=38">
 </head>
-<body>
+<!-- data-view 告訴 nav.js：這是獨立頁面，而且停在「美股」那一項 -->
+<body data-view="us">
 
 <header class="app-bar">
   <div class="app-bar__top">
@@ -20,21 +21,10 @@
   <p class="app-bar__meta" id="meta">載入中…</p>
 </header>
 
-<!-- 與排行榜同一套兩層導覽。這一頁是獨立的，所以是寫死的靜態版本：
-     群組列指回 index.html 的各群組，分頁列停在「環境 › 美股」。
-     群組與分頁的分法改了的話，這裡要跟著 app.js 的 NAV 一起改。 -->
-<nav class="tabs">
-  <a href="index.html#/rank">排行</a>
-  <a href="index.html#/burst">技術</a>
-  <a href="index.html#/holders">籌碼</a>
-  <a href="index.html#/sector">資金</a>
-  <a href="index.html#/quote" class="active">環境</a>
-  <a href="index.html#/stock">查詢</a>
-</nav>
-<nav class="subtabs">
-  <a href="index.html#/quote">報價</a>
-  <a class="active" href="us.html">美股</a>
-</nav>
+<!-- 與排行榜同一套兩層導覽，由 nav.js 從同一份 NAV 畫出來。以前這裡是手抄的
+     靜態副本，得靠「記得兩邊一起改」維持——那個約定已經漏過一次。 -->
+<nav class="tabs"></nav>
+<nav class="subtabs"></nav>
 
 <main id="view" class="view">
   <p class="hint">載入中…</p>
@@ -44,7 +34,7 @@
   美股報價來源：Yahoo Finance。相關性是統計上的同向程度，不是因果。僅供參考，非投資建議。
 </footer>
 
-<script src="nav.js?v=37" defer></script>
-<script src="us.js?v=37" defer></script>
+<script src="nav.js?v=38" defer></script>
+<script src="us.js?v=38" defer></script>
 </body>
 </html>
