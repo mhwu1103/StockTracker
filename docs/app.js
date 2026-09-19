@@ -713,7 +713,9 @@ async function renderRank(view) {
     const watchNote = state.sector === '!WATCH'
       ? `<p class="note">自選清單：<code id="watch-codes">${[...state.watch].sort().join(',')}</code>
           <button class="linky" id="copy-watch">複製</button><br>
-          自選股只存在這台裝置的瀏覽器。要讓 Telegram 也只推這幾檔，把上面這串設成 <code>WATCHLIST</code> secret。</p>`
+          自選股只存在這台裝置的瀏覽器。要讓 Telegram 也只推這幾檔，把上面這串設成 <code>WATCHLIST</code> secret
+          —— 推播會帶上每一檔的<b>籌碼動靜</b>（土洋同買／對作、外資連買天數、力道、逆勢），
+          而且<b>檔數沒有上限</b>。</p>`
       : '';
     $('#rank-list').innerHTML =
       (rows.length ? rows.join('') : '<p class="hint">找不到符合的股票</p>') + watchNote;

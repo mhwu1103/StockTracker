@@ -5,9 +5,11 @@
     TELEGRAM_CHAT_ID
 選用：
     SITE_URL   有設定的話，訊息末端會附上網站連結
-    WATCHLIST  逗號分隔的代號（例如 2330,2454）。有設定時只推這幾檔的動態，
-               不再推全市場的新進榜清單。網站上的自選股存在瀏覽器裡，
-               不會自動同步到這裡，要自己把清單設成 secret。
+    WATCHLIST  逗號分隔的代號（例如 2330,2454）。有設定時只推這幾檔的動態
+               （進出榜 + 逐檔的籌碼動靜），不再推全市場的新進榜清單。
+               **檔數沒有上限** —— 排程本來就對全市場算一次，選幾檔不影響成本。
+               網站上的自選股存在瀏覽器裡，不會自動同步到這裡，要自己把清單設成
+               secret（刻意不寫進 repo：那會讓「誰在看哪幾檔」永久留在 git 歷史裡）。
 
 用法：
     python scripts/notify_telegram.py             # 只在有當日新資料時發送
@@ -161,13 +163,111 @@ def insti_lines(groups, min_oku: float = INSTI_MIN_OKU, only: set = None) -> lis
     lines.append("<i>金額為估算（買賣超股數 × 收盤價），非官方數字。</i>")
     return lines
 
+# --------------------------------------------------------------------------- #
+# 自選股的籌碼監控
+# --------------------------------------------------------------------------- #
+# 商用 App 把「能監控幾檔」做成付費階梯，是因為他們得為每個使用者在伺服器上跑掃描。
+# 這裡沒有伺服器：排程對全市場算一次，使用者選幾檔完全不影響成本 ——
+# 所以「不限檔數」在這個架構下不是功能，是預設。
+#
+# 真正要修的是另一件事：**送不送信的判斷本來只看進出榜**。自選股有籌碼異動、卻剛好
+# 沒進前 200 名的話，整封信不會發 —— 而那正是最該通知的情況之一。實測 2026-09-03
+# 有土洋標記的 75 檔裡，有 8 檔不在前 200 名。
+#
+# 四種事件，全部以**外資**為主軸（與「連買」頁同一個口徑）：
+#   土洋標記   同買／同賣／對作，門檻與網站一致
+#   連買連賣   3 天以上（insti/streak/ 只留 3 天以上的）
+#   力道       今天是平常的幾倍，2 倍以上才算事件
+#   逆勢       外資買而股價收黑、或外資賣而股價收紅
+#
+# 每一種都是**描述**不是判斷 —— 全站不提供買賣訊號，通知裡更不能有。
+WATCH_FORCE_MIN = 2.0       # 力道幾倍以上才當成一則事件
+
+
+def _json_or_none(path):
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def insti_watch_events(date_iso: str, codes: list, min_oku: float = INSTI_MIN_OKU) -> dict:
+    """自選股在這一天的籌碼動靜 -> {代號: (簡稱, 漲跌, 外資金額, [事件, ...])}。
+
+    只回「真的有事件」的那幾檔。那一天還沒有法人資料就回 {}。
+    衍生檔缺哪一份就少哪一種事件（例如資料起點附近沒有 base/，就沒有力道）——
+    不是錯誤，是那一天還算不出來。
+    """
+    daily = _json_or_none(insti.daily_path(date_iso))
+    if not daily:
+        return {}
+    wanted = set(codes)
+    chg = (_json_or_none(insti.chg_path(date_iso)) or {}).get("chg") or {}
+    base = (_json_or_none(insti.base_path(date_iso)) or {}).get("base") or {}
+    runs = _json_or_none(insti.run_path(date_iso)) or {}
+    cut = daily.get("cut") or insti.MIN_OKU
+
+    # 連買／連賣天數：攤平成 {代號: 天數}
+    streak = {}
+    for stocks in (runs.get("stocks") or {}).values():
+        for code, row in stocks.items():
+            streak[code] = row[1]        # RUN_FIELDS 的 days，正買負賣
+
+    out = {}
+    for stocks in (daily.get("stocks") or {}).values():
+        for code, row in stocks.items():
+            if code not in wanted:
+                continue
+            name = row[insti.F_NAME]
+            close = row[insti.F_CLOSE]
+            fo = insti.oku(row[insti.F_FO], close)
+            tr = insti.oku(row[insti.F_TR], close)
+            moved = chg.get(code)
+            events = []
+
+            tag = insti_tag_of(fo, tr, min_oku)
+            if tag:
+                events.append(dict(INSTI_GROUPS)[tag].split(" ", 1)[-1])
+
+            days = streak.get(code)
+            if days:
+                events.append(f"連{'買' if days > 0 else '賣'} {abs(days)} 天")
+
+            norms = base.get(code)
+            if norms:
+                force = abs(fo) / max(norms[0], cut)
+                if force >= WATCH_FORCE_MIN:
+                    events.append(f"力道 {force:.1f} 倍")
+
+            if moved and fo:
+                if fo > 0 and moved < 0:
+                    events.append("逆勢買超")
+                elif fo < 0 and moved > 0:
+                    events.append("逆勢賣超")
+
+            if events:
+                out[code] = (name, moved, fo, events)
+    return out
+
+
+def watch_insti_lines(events: dict) -> list:
+    """自選股籌碼監控那一段的訊息行。沒有任何一檔有事件就整段不出現。"""
+    if not events:
+        return []
+    lines = ["", f"<b>🧭 籌碼動靜（{len(events)} 檔）</b>"]
+    # 事件多的排前面，同樣多就比外資金額 —— 一次動到三件事的比只動一件的值得先看
+    for code, (name, moved, fo, items) in sorted(
+            events.items(), key=lambda kv: (len(kv[1][3]), abs(kv[1][2])), reverse=True):
+        pct = "" if moved is None else f" · {moved:+.2f}%"
+        lines.append(f"{escape(name)} {code}{pct} · 外資 {fo:+,.1f} 億 · "
+                     + "、".join(escape(e) for e in items))
+    lines.append("<i>金額為估算（買賣超股數 × 收盤價），非官方數字。</i>")
+    return lines
+
 def parse_watchlist(raw: str) -> list:
     return [c.strip() for c in str(raw or "").replace("\n", ",").split(",") if c.strip()]
 
 
 def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = "",
                         scope_name: str = "", total_label: str = "大盤",
-                        insti_rows=None) -> str:
+                        insti_events=None) -> str:
     """只講自選股：今天在不在榜上、名次多少、是不是剛進榜或剛掉出榜。"""
     today = {s["code"]: s for s in payload["stocks"] if s["rank"] <= twse.STREAK_RANK}
     before = {s["code"]: s for s in (prev or {}).get("stocks", []) if s["rank"] <= twse.STREAK_RANK}
@@ -203,9 +303,9 @@ def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = 
     if missing:
         lines += ["", f"<i>未在榜上：{escape('、'.join(missing))}</i>"]
 
-    # 自選股那一封只講自選的籌碼異動。進不進榜與有沒有法人異動是兩件事，
-    # 所以這一段不受上面的「在榜上／掉出榜」影響，自選股全部都看。
-    lines += insti_lines(insti_rows, only=set(codes))
+    # 自選股那一封講的是**逐檔**的籌碼動靜，不是全市場的分組名單。進不進榜與有沒有
+    # 籌碼異動是兩件事，所以這一段不受上面的「在榜上／掉出榜」影響，自選股全部都看。
+    lines += watch_insti_lines(insti_events or {})
 
     if site_url:
         lines += ["", f'<a href="{escape(site_url)}">看完整排行</a>']
@@ -277,12 +377,18 @@ def main() -> int:
         )
         on_board = {s["code"] for s in payload["stocks"] if s["rank"] <= twse.STREAK_RANK}
         was_on = {s["code"] for s in (prev or {}).get("stocks", []) if s["rank"] <= twse.STREAK_RANK}
-        # 自選股完全沒動靜就別發，每天一封「今天沒事」只會讓人關掉通知
-        if not any(c in on_board or c in was_on for c in codes):
-            print(f"自選股（{len(codes)} 檔）在 {date_iso} 都沒有進出榜，不發送。")
+        events = insti_watch_events(date_iso, codes)
+        # 自選股完全沒動靜就別發，每天一封「今天沒事」只會讓人關掉通知。
+        # 但「沒動靜」要把籌碼算進去 —— 只看進出榜的話，自選股有土洋對作卻剛好沒進
+        # 前 200 名時整封信都不會發，而那正是最該通知的情況之一。
+        ranked = any(c in on_board or c in was_on for c in codes)
+        if not ranked and not events:
+            print(f"自選股（{len(codes)} 檔）在 {date_iso} 既沒有進出榜、也沒有籌碼動靜，不發送。")
             return 0
+        if not ranked:
+            print(f"自選股沒有進出榜，但有 {len(events)} 檔出現籌碼動靜，照發。")
         message = build_watch_message(payload, prev, codes, site_url, scope_name,
-                                      total_label, insti_rows)
+                                      total_label, events)
     else:
         message = build_message(payload, site_url, scope_name, total_label, insti_rows)
 
