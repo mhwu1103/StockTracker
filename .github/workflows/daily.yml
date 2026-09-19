@@ -78,6 +78,8 @@ jobs:
 
       - name: 重建索引與歷史序列
         run: python scripts/build_history.py
+      - name: 統計新進榜之後的表現
+        run: python scripts/build_entry.py
 
       - name: 重建報價序列
         continue-on-error: true

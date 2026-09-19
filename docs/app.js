@@ -100,6 +100,7 @@ const state = {
   quoteChart: 365,     // 「報價」個別品項的圖表要顯示幾天；0 代表全部
   quotes: null,        // Promise<quotes/index.json>，進到報價頁才載
   quoteSeries: new Map(),// 品類 -> Promise<quotes/series/{cat}.json|null>
+  entry: null,         // Promise<entry.json>，進到「後續」頁才載
   daily: new Map(),    // date -> Promise<payload>
   history: new Map(),  // year -> Promise<payload>
   kline: new Map(),    // market/code/month -> Promise<payload|null>
@@ -518,8 +519,10 @@ function listCard(title, subtitle, rows, emptyText = '無') {
 // 四個分頁共用同一個外形：標題、一句話、四格重點數字、一段註解。只有一句話而沒有
 // 數字的版本看起來就是一段孤零零的字；數字沒有句子又回到「自己去讀」——兩個要一起給。
 //
-// 只有四個分頁有：排行（合計與集中度不在畫面上）、大盤（今天對比期間平均）、
-// 族群（改用佔比位移挑，跟預設排序看到的不同）、流向（把兩張抽象的圖翻成人話）。
+// 只有這幾個分頁有：排行（合計與集中度不在畫面上）、大盤（今天對比期間平均）、
+// 族群（改用佔比位移挑，跟預設排序看到的不同）、流向（把兩張抽象的圖翻成人話）、
+// 報價（把上游報價翻成「哪一族的成本在漲」）、後續（數字本身看不出「這等於沒有
+// 預測力」，而那正是那一頁最該先講的一句）。
 // 其他分頁上面本來就有統計格、下面的清單也已經排好序，再寫一句只是把畫面唸一遍——
 // 一半的一句話在複述，讀者就會學會跳過這張卡，連真的有話說的那幾張一起跳過。
 // --------------------------------------------------------------------------
@@ -848,6 +851,122 @@ async function renderMoves(view) {
   const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(baseDate)]);
   view.innerHTML = `<div class="controls">${pills('baseline', BASELINES, state.baseline)}</div>
     ${diffSections(today, base, baseDate, state.date)}`;
+}
+
+// --------------------------------------------------------------------------
+// 分頁：後續（新進榜之後通常怎麼走）
+//
+// 全站其他頁都在講「今天發生了什麼」，這一頁講的是「歷史上這件事之後通常怎麼樣」。
+// 資料是 scripts/build_entry.py 算好的分布，前端只負責排版。
+//
+// ## 這一頁最重要的一句話是「沒有預測力」
+//
+// 全部新進榜的 +1 日中位數是 0.00%、上漲比例 49% —— 擲硬幣。把這個結論擺在最上面，
+// 是因為「成交值衝進前 200」在坊間很容易被讀成利多，而資料不支持那個讀法。
+//
+// 一頁統計如果只列數字不講結論，讀者會自己挑一個想看的數字當結論；
+// 而這一頁最容易被挑走的就是「站穩 5 天以上那一組後來漲很多」。
+//
+// ## 「站穩幾天」那一組有兩個坑，都要講死
+//
+// 1. **事後才知道。** 進榜當天你不知道它會不會站穩五天，所以這個分組不能拿來決策。
+// 2. **+1 日那一格還有循環性。** 「站穩五天」有一部分就是因為它這五天一直漲、
+//    成交值一直大 —— 用被測期間內發生的事去分組，再去測那一段的報酬，會自己證明自己。
+//
+// 這兩件事不寫出來的話，那一格 +4.33% 會被當成一個可以照做的發現。
+//
+// ## 中位數，不是平均
+//
+// +20 日的平均是 +4.90%、中位數只有 +0.91% —— 右偏，少數大漲的把平均整個拉高。
+// 所以表格一律給中位數與四分位，平均只在說明裡當對照出現一次。
+// --------------------------------------------------------------------------
+function loadEntry() {
+  if (!state.entry) state.entry = getJSON(`${DATA}/entry.json`, { cache: 'reload' });
+  return state.entry;
+}
+
+/** 一格：中位數、四分位、上漲比例與樣本數。樣本不足的那一格留白而不是給數字。 */
+const entryCell = (cell) => (cell
+  ? `<td><b class="${trend(cell.med)}">${cell.med > 0 ? '+' : ''}${cell.med.toFixed(2)}%</b>
+      <span>${cell.p25 > 0 ? '+' : ''}${cell.p25.toFixed(1)} ~ ${cell.p75 > 0 ? '+' : ''}${cell.p75.toFixed(1)}</span>
+      <span>漲 ${cell.pos.toFixed(0)}% · ${cell.n} 筆</span></td>`
+  : '<td><b class="flat">—</b><span>樣本不足</span></td>');
+
+const entryTable = (group, horizons) => `<div class="tbl-wrap"><table class="tbl">
+  <thead><tr><th>${esc(group.label)}</th>${horizons
+    .map((h) => `<th>+${h} 日</th>`).join('')}</tr></thead>
+  <tbody>${group.rows.map((row) => `<tr><th>${esc(row.label)}</th>${horizons
+    .map((h) => entryCell(row.h[String(h)])).join('')}</tr>`).join('')}</tbody>
+</table></div>`;
+
+async function renderEntry(view) {
+  let data;
+  try {
+    data = await loadEntry();
+  } catch (err) {
+    view.innerHTML = `<p class="hint">還沒有進榜後表現的統計（${esc(err.message)}）。<br>
+      請執行 <code>scripts/build_entry.py</code>（它由 <code>docs/data/history/</code>
+      與 <code>docs/data/close/</code> 算出來，不用重抓）。</p>`;
+    return;
+  }
+
+  const hs = data.horizons;
+  const all = data.groups[0].rows[0].h;
+  const stat = (h) => {
+    const cell = all[String(h)];
+    return cell
+      ? { b: `${cell.med > 0 ? '+' : ''}${cell.med.toFixed(2)}%`, cls: trend(cell.med),
+        span: `+${h} 日中位數 · 漲 ${cell.pos.toFixed(0)}%` }
+      : { b: '—', cls: 'flat', span: `+${h} 日` };
+  };
+
+  view.innerHTML = `
+    <section class="card takeaway">
+      <h2>一句話 <small>${esc(data.first)} ~ ${esc(data.last)}．${data.n} 次進榜</small></h2>
+      <p class="lede">進榜<b>本身</b>看不出後續 —— 全部新進榜的隔日中位數是
+        ${all['1'] ? `${all['1'].med > 0 ? '+' : ''}${all['1'].med.toFixed(2)}%、上漲比例 ${all['1'].pos.toFixed(0)}%` : '—'}，
+        和擲硬幣沒有分別。</p>
+      <div class="stat-grid">${hs.map((h) => {
+    const s = stat(h);
+    return `<div class="stat"><b class="${s.cls}">${s.b}</b><span>${s.span}</span></div>`;
+  }).join('')}</div>
+      <p class="note">「新進榜」＝成交值名次進入前 ${data.top}，而<b>前一個交易日不在前 ${data.top}</b>。
+        成交值衝上來是一件關於<b>量</b>的事，這一頁問的是它之後跟<b>價</b>有沒有關係。</p>
+    </section>
+    ${data.groups.slice(1).map((g) => `<section class="card">
+      <h2>${esc(g.label)} <small>中位數 · 四分位 · 上漲比例</small></h2>
+      ${entryTable(g, hs)}
+      ${g.key === 'stay' ? `<p class="note"><b>⚠️ 這一組不能拿來做決策。</b>「站穩幾天」是
+        <b>事後</b>才知道的 —— 進榜當天你不知道它會不會站穩五天。而且「+1 日」那一格還有
+        循環性：一檔能站穩五天，有一部分原因就是它這五天一直漲、成交值一直大；
+        用被測期間內發生的事去分組，再去測那一段的報酬，等於自己證明自己。
+        這一組講的是「事後回頭看，那一群長什麼樣」，不是「看到什麼就該做什麼」。</p>` : ''}
+      ${g.key === 'rank' ? `<p class="note">進榜名次越前面樣本越少 —— 能一進榜就直接衝到前 50 名的
+        本來就罕見（${g.rows[0].n} 筆）。少於 ${data.min} 筆的那一格留白，不給數字：
+        十幾筆的中位數只是噪音。</p>` : ''}
+    </section>`).join('')}
+    <section class="card">
+      <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
+      <p class="note"><b>這是歷史統計描述，不是訊號，也不是投資建議。</b>它回答的是
+        「過去這一群後來怎麼走」，沒有回答「為什麼」，更沒有回答「下一次會怎樣」。</p>
+      <p class="note">表格給的是<b>中位數與四分位</b>，不是平均。+20 日的平均是 +4.9%、
+        中位數只有 ${all['20'] ? `${all['20'].med.toFixed(2)}%` : '—'} —— 分布右偏，
+        少數大漲的把平均整個拉高。中位數才是「典型的那一檔」，而四分位那一行才看得出
+        <b>範圍有多寬</b>：+20 日的四分位是
+        ${all['20'] ? `${all['20'].p25.toFixed(1)}% ~ +${all['20'].p75.toFixed(1)}%` : '—'}，
+        中間那一半就橫跨了二十幾個百分點。</p>
+      <p class="note"><b>價格沒有還原權值。</b>收盤價就是收盤價，除權息當天的跳空算進報酬裡。
+        台股的除權息集中在 7~8 月，而這份統計的價格區間（${esc(data.first)} ~ ${esc(data.last)}）
+        正好涵蓋那一段 —— 所以這個偏差是<b>系統性偏負</b>的。中位數比平均耐得住一些，
+        但擋不住整群同時除息。</p>
+      <p class="note">名次序列從 ${esc(state.index.dates[0])} 就有（${state.index.dates.length} 個交易日、
+        全期間 16,647 次進榜），但<b>全市場收盤價是後來才開始存的</b>，只有
+        ${esc(data.first)} 起的 ${data.days} 天。一檔「一日行情」的股票隔天就掉出前 ${KEPT} 名，
+        每日檔從此沒有它的價，所以價格一定要讀 <code>docs/data/close/</code> ——
+        那份的起點就是這份統計的起點，${data.n} 筆是這樣來的。</p>
+      <p class="note">這一頁<b>不吃頂部的日期與範圍選單</b>：它是整段歷史的彙總，不是某一天的
+        快照。市場的差別在上面「依市場」那張表裡。</p>
+    </section>`;
 }
 
 // --------------------------------------------------------------------------
@@ -5297,7 +5416,8 @@ async function renderCompare(view, params) {
  */
 const NAV = [
   { key: 'rank', label: '排行', views: [
-    { v: 'rank', label: '排行' }, { v: 'streak', label: '站穩' }, { v: 'moves', label: '異動' }] },
+    { v: 'rank', label: '排行' }, { v: 'streak', label: '站穩' },
+    { v: 'moves', label: '異動' }, { v: 'entry', label: '後續' }] },
   { key: 'tech', label: '技術', views: [
     { v: 'burst', label: '爆量' }, { v: 'ma', label: '均線' }, { v: 'macd', label: 'MACD' }] },
   { key: 'chips', label: '籌碼', views: [
@@ -5405,6 +5525,7 @@ async function render() {
     else if (route.view === 'flow') await renderFlow(view);
     else if (route.view === 'streak') await renderStreak(view);
     else if (route.view === 'moves') await renderMoves(view);
+    else if (route.view === 'entry') await renderEntry(view);
     else if (route.view === 'burst') await renderBurst(view);
     else if (route.view === 'ma') await renderMa(view);
     else if (route.view === 'macd') await renderMacd(view);

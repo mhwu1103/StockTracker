@@ -255,6 +255,60 @@ select, input, button {
 }
 
 /* --------------------------------------------------------------------------
+ * 統計表（「後續」分頁）
+ *
+ * 全站其他地方都用 .row（名次｜名稱｜數字）排版，但「N 組 × 3 個期間」是一個矩陣，
+ * 那個形狀就是表格。這是全站唯一的 <table>。
+ *
+ * 手機上四欄很擠，所以字級壓小、外面再包一層 overflow-x —— 寧可讓表格自己橫捲，
+ * 也不要讓整頁的 body 橫捲。
+ * -------------------------------------------------------------------------- */
+.tbl-wrap { overflow-x: auto; }
+
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.tbl th,
+.tbl td {
+  padding: 7px 6px;
+  text-align: right;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.tbl thead th {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.tbl tbody th {
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tbl tbody tr:last-child th,
+.tbl tbody tr:last-child td { border-bottom: 0; }
+
+.tbl td b {
+  display: block;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tbl td span {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------------------
  * 籌碼雷達的條件組合器
  *
  * 全站其他地方的 pill 列都是「一頁一兩組、每一顆自己說得清自己」（「0.5 億」
