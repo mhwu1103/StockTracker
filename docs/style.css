@@ -151,8 +151,8 @@ select, input, button {
   display: flex;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
-  /* 分頁夠多時（現在是九個）窄螢幕會排不下，讓它橫向捲，
-     不要把兩個字折成上下兩行——那比捲動難讀得多。捲軸本身藏起來。 */
+  /* 目前六個群組在 390px 上剛好排得下（各 63px），這條橫向捲是留給「哪天又多一個」
+     的安全網：寧可整排捲，也不要把兩個字折成上下兩行——那比捲動難讀得多。 */
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -884,6 +884,61 @@ select, input, button {
   font-size: 11px;
   color: var(--muted);
   text-align: center;
+}
+
+/* ==========================================================================
+ * 直立手機（≤767px）：群組列搬到螢幕底部
+ *
+ * 全站現在有三層：基礎（手機優先）、這一層（只有直立手機）、最後的桌面版。
+ * 平板（768〜1023px）刻意兩邊都不套，維持基礎版的頂部兩層導覽——底部 bar 是為了
+ * 拇指搆得到，平板橫放時螢幕底部離拇指比頂部還遠，搬下去只有壞處。
+ *
+ * 要先說清楚這個改動**不省高度**：頂部從 190px 掉到 142px，但底部多了 50px 加上
+ * iPhone 的安全區域，在 iPhone 上其實還多吃了三十幾 px。換到的是「單手搆得到」——
+ * 六吋以上的手機，伸到螢幕最頂端切群組是單手做不到的事。
+ * ========================================================================== */
+@media (max-width: 767px) {
+  :root { --tabbar-h: 50px; }
+
+  /* 內容捲到底時最後一列不能被 bar 蓋住。安全區域那段是 iPhone 的 home indicator。 */
+  body { padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom)); }
+
+  .tabs {
+    position: fixed;
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    min-height: var(--tabbar-h);
+    padding-bottom: env(safe-area-inset-bottom);
+    border-bottom: none;
+    border-top: 1px solid var(--line);
+  }
+
+  /* 一格填滿整個 bar 的高度，靶才是 50px 而不是文字那 21px */
+  .tabs a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 3px;
+    min-height: var(--tabbar-h);
+    /* 作用中的線翻到上緣：貼著螢幕最底下那條邊，在瀏海機上根本看不見 */
+    border-bottom: none;
+    border-top: 2px solid transparent;
+  }
+
+  .tabs a.active { border-top-color: var(--accent); }
+
+  /* 自動收合（nav.js）。只動 transform，padding 那一段留著不收——
+     bar 藏起來時順手把 body 的 padding 也收掉的話，整頁會 reflow、捲動位置跳一下，
+     那比 bar 本身還顯眼。 */
+  .tabs { transition: transform .2s ease; }
+  .tabs.is-away { transform: translateY(100%); }
+}
+
+@media (max-width: 767px) and (prefers-reduced-motion: reduce) {
+  .tabs { transition: none; }
 }
 
 /* ==========================================================================

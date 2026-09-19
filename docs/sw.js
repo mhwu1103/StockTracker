@@ -6,10 +6,10 @@
  * 只有 CDN 上帶版號的第三方程式庫走 cache-first，因為同一個網址內容永不改變。
  */
 
-const VERSION = '36';                 // 前端版號，與 index.html 的 ?v= 一起改
+const VERSION = '37';                 // 前端版號，與 index.html 的 ?v= 一起改
 const CACHE = `stocktracker-v${VERSION}`;
 const SHELL = ['./', 'index.html', `style.css?v=${VERSION}`, `app.js?v=${VERSION}`,
-  'manifest.webmanifest', 'icons/icon.svg'];
+  `nav.js?v=${VERSION}`, 'manifest.webmanifest', 'icons/icon.svg'];
 
 // 外殼檔案（HTML／JS／CSS）不可以吃瀏覽器的 HTTP 快取。
 // data/index.json 永遠是 cache: 'reload' 抓最新的，外殼卻可能是幾天前的舊版，
