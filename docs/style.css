@@ -1,4 +1,4 @@
-/* 手機優先。寬螢幕只做置中限寬，不另做桌面版。 */
+/* 手機優先。≥1024px 另有一層桌面版（固定外殼＋左側導覽），在檔案最後面。 */
 
 :root {
   --bg: #f6f7f9;
@@ -560,9 +560,9 @@ select, input, button {
 .map-box { padding: 10px; }
 
 /*
- * 全站的原則是手機優先、寬螢幕只做置中限寬，這裡是唯一的例外：
- * 地圖的塊夠不夠大放得下字，看的是「面積」不是寬度。手機寬度窄，就得靠高度
- * 把面積補回來，所以手機用直的、桌機用寬的——桌機本來就有寬度，不必再吃高度。
+ * 地圖的塊夠不夠大放得下字，看的是「面積」不是寬度。手機寬度窄，就得靠高度把面積
+ * 補回來，所以手機用直的、桌機用寬的——桌機本來就有寬度，不必再吃高度。
+ * （這個 560px 斷點比桌面版的 1024px 早，平板直立時就該換過來了。）
  */
 .treemap {
   position: relative;
@@ -884,4 +884,169 @@ select, input, button {
   font-size: 11px;
   color: var(--muted);
   text-align: center;
+}
+
+/* ==========================================================================
+ * 桌面版（≥1024px）
+ *
+ * 手機版是一條直的捲軸：app-bar、群組列、分頁列、清單由上往下疊。寬螢幕照搬這個
+ * 形狀要付兩個代價——右半邊整片空著，而且捲到第 80 名時導覽早就捲出畫面外了。
+ *
+ * 所以桌面換一種形狀：**固定外殼**。頂列與左側導覽不動，只有中間的內容窗格捲動。
+ * 兩層導覽從「兩條橫列」轉成「一個側欄」，六個群組與當前群組的分頁一次全露出來，
+ * 不必點進去才知道有哪幾頁——這是寬螢幕真正該換到的東西，不只是把清單拉寬。
+ *
+ * 外殼不捲，所以 .app-bar 與 .tabs 的 sticky 在這裡全部關掉：沒有東西會捲走，
+ * 也就沒有「第幾層黏在第幾層底下」要算。純 CSS，同一份 DOM，app.js 一行沒動。
+ * ========================================================================== */
+@media (min-width: 1024px) {
+  html { height: 100%; }
+
+  body {
+    height: 100%;
+    overflow: hidden;
+    display: grid;
+    /* 側欄｜內容。列是：頂列／群組／分頁（吃掉剩下的高度、自己捲）／頁尾 */
+    grid-template-columns: 216px minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+
+  /* ---- 頂列：橫跨整個寬度 ---- */
+  .app-bar {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    position: static;
+    padding: 12px 20px 10px;
+  }
+
+  /* ---- 側欄上段：六個群組 ---- */
+  .tabs {
+    grid-column: 1;
+    grid-row: 2;
+    position: static;
+    flex-direction: column;
+    overflow: visible;
+    padding: 8px 0;
+    border-bottom: none;
+    border-right: 1px solid var(--line);
+  }
+
+  /* 直的導覽，作用中的標記從底線換成左邊的直線——底線在直列裡會變成分隔線，
+     看起來像「這一項下面斷開了」，而不是「這一項選中了」。 */
+  .tabs a {
+    flex: 0 0 auto;
+    text-align: left;
+    padding: 9px 16px;
+    border-bottom: none;
+    border-left: 3px solid transparent;
+  }
+
+  .tabs a.active {
+    border-left-color: var(--accent);
+    background: var(--bg);
+  }
+
+  /* ---- 側欄下段：當前群組的分頁 ---- */
+  .subtabs {
+    grid-column: 1;
+    grid-row: 3;
+    flex-direction: column;
+    /* 手機版那個「靠 padding 把內容對齊 720px」的算式在側欄裡沒有意義，整條清掉 */
+    padding: 8px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: none;
+    border-right: 1px solid var(--line);
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  /* 只有一頁的群組不會塞任何東西進來，那條分隔線就會變成一條沒有下文的橫線 */
+  .subtabs:empty { border-top: none; }
+
+  .subtabs a {
+    flex: 0 0 auto;
+    padding: 7px 16px 7px 19px;
+    border-bottom: none;
+    border-left: 3px solid transparent;
+  }
+
+  .subtabs a.active { border-left-color: var(--accent); }
+
+  /* ---- 側欄底：免責聲明 ----
+     手機版它在兩百列之後，等於沒人看得到；側欄有一塊天生空著的底部，放這裡反而常駐。 */
+  .foot {
+    grid-column: 1;
+    grid-row: 4;
+    max-width: none;
+    margin: 0;
+    padding: 12px 16px 16px;
+    text-align: left;
+    line-height: 1.6;
+    border-right: 1px solid var(--line);
+  }
+
+  /* ---- 內容窗格：整頁唯一會捲的地方 ---- */
+  .view {
+    grid-column: 2;
+    grid-row: 2 / -1;
+    max-width: none;
+    /* 手機版的 margin: 0 auto 一定要清掉：grid 項目帶 auto 邊界就不伸展了，
+       會縮成 fit-content 再置中——窗格只剩內容那麼寬，右邊空一整塊。 */
+    margin: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 18px 24px 48px;
+  }
+
+  /*
+   * 限寬要下在「窗格裡的內容」而不是窗格本身：.view 自己是捲動容器，給它 max-width
+   * 會連捲軸一起被推到螢幕中間去。
+   */
+  .view > * {
+    max-width: 1180px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .view.wide > * { max-width: none; }
+
+  /* ---- 密度 ----
+     手機的 56px 是拇指的尺寸。用滑鼠不需要那麼大的靶，列矮一點同一個畫面就多看幾檔。 */
+  .row { min-height: 48px; padding: 9px 16px; }
+  select, input, button { min-height: 36px; }
+  .pill { min-height: 32px; padding: 5px 12px; }
+
+  /*
+   * 一列的第二段本來是「代號那行、連續天數那行、法人標籤那行」各佔一行：手機只有
+   * 一欄寬，排直的才讀得完。桌面橫向有的是空間，讓它們並排——列高從 90px 掉到 56px，
+   * 同一個畫面多看四成的檔數，名稱與數字中間那片空白也順便被填掉了。
+   * 太長時照樣會自己折行，只是折的時機晚很多。
+   */
+  .ident .code,
+  .ident .streak { display: inline; }
+  .ident .streak { margin-left: 10px; }
+
+  /* 報價 × 族群同理：名稱獨佔一整列是因為「手機寬度塞不下三格加名稱」，桌面塞得下 */
+  .row--theme {
+    grid-template-columns: 1fr repeat(3, minmax(6.5rem, auto));
+    row-gap: 0;
+  }
+  .row--theme .ident { grid-column: auto; }
+  .row--theme .figures,
+  .row--theme .figures:first-of-type { text-align: right; }
+
+  /* 反過來，圖表與表格是「給多少面積用多少」的東西，桌面有高度就給它 */
+  .chart-box { height: 300px; }
+  .chart-box.tall { height: 400px; }
+  .tbl { font-size: 13px; }
+  .tbl thead th { font-size: 12px; }
+}
+
+/* 手機只有 :active（按下去那一瞬間），滑鼠要的是「游標在哪裡」的持續回饋 */
+@media (min-width: 1024px) and (hover: hover) {
+  a.row:hover { background: var(--bg); }
+  .tabs a:hover,
+  .subtabs a:hover { color: var(--text); }
+  .pill:hover { border-color: var(--accent); }
+  .linky:hover { text-decoration: underline; }
 }
