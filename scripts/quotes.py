@@ -389,6 +389,15 @@ def _parse_row(header, cells, tr_html: str):
 # --------------------------------------------------------------------------- #
 # 抓取
 # --------------------------------------------------------------------------- #
+# 重試救得回來的是「這一次連線不順」：逾時、斷線、5xx、429。**404 與 410 不在其內**
+# —— 那是「這個東西不存在」，隔三秒再問一次還是不存在。
+#
+# 這件事在美股那支上會放大成分鐘級的浪費：一個下市的代號每天都要磨掉 9 秒（3 秒 +
+# 6 秒兩次等待），而 fetch_us.py 是用「連續失敗幾檔」在猜有沒有被限流 —— 一串
+# 404 混進去會讓那個訊號失去意義。
+NO_RETRY_STATUS = {404, 410}
+
+
 def fetch_text(url, *, retries=3, timeout=30, backoff=3.0) -> str:
     last_err = None
     for attempt in range(1, retries + 1):
@@ -400,6 +409,9 @@ def fetch_text(url, *, retries=3, timeout=30, backoff=3.0) -> str:
             return resp.text
         except Exception as err:
             last_err = err
+            status = getattr(getattr(err, "response", None), "status_code", None)
+            if status in NO_RETRY_STATUS:
+                break
             if attempt < retries:
                 wait = backoff * attempt
                 print(f"  ! {type(err).__name__}: {err} —— {wait:.0f} 秒後重試 ({attempt}/{retries})")

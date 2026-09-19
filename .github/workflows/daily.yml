@@ -76,6 +76,20 @@ jobs:
         continue-on-error: true
         run: python scripts/backfill_holders.py --source stock --weeks 3 --top 200
 
+      # 美股日線。177 檔是全流程裡請求數最多的一步（其他第三方來源都是個位數到
+      # 二十幾），實測一趟 148 秒、0.7 秒一檔。Yahoo 本來就有人在打（上面的
+      # fetch_quotes.py 每天抓 8 個原物料與指數），會不會因為量級而限流是另一回事，
+      # 所以：
+      #   · continue-on-error —— 同其他第三方來源，不該連帶讓當日行情更新失敗
+      #   · fetch_us.py 連續失敗 12 檔就自己放棄，剩下的沿用舊資料（被限流時每一檔
+      #     都走完重試的話，177 檔要磨五十分鐘才知道整批都失敗）
+      #   · timeout-minutes 是最後一道：即使上面兩層都沒攔住，也不會拖垮整個流程
+      # 真的被限流的話，先調大 --sleep（預設 0.7）。
+      - name: 抓美股日線
+        continue-on-error: true
+        timeout-minutes: 8
+        run: python scripts/fetch_us.py
+
       - name: 重建索引與歷史序列
         run: python scripts/build_history.py
       - name: 統計新進榜之後的表現
@@ -94,6 +108,13 @@ jobs:
       - name: 重建法人目錄與外資連續買賣超
         continue-on-error: true
         run: python scripts/build_institutions.py
+
+      # 要放在 build_history.py 後面：相關性的台股那一邊吃 index.json 的交易日軸與
+      # kline/，兩者都是那一步寫的。排在它前面的話，算出來的 twAsof 會停在上一次
+      # 跑 build_history 的日期 —— 而畫面看起來一切正常，只有那行小字會透露。
+      - name: 重算美股連動
+        continue-on-error: true
+        run: python scripts/build_us.py
 
       - name: 提交資料變更
         run: |
