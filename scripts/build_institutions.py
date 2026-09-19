@@ -187,8 +187,11 @@ def build_sum(dates: list, legs: dict, trading: list, before: dict, close_at) ->
                 short[window] += 1
             base_day = before.get(dates[at - days + 1])
             totals, ident = insti.accumulate(dates, legs, at, days)
+            keep = insti.sum_keep(totals, ident)
+            prices = insti.avg_prices(dates, legs, at, days,
+                                      {c: totals[c] for c in keep})
             rows = {}
-            for code in insti.sum_keep(totals, ident):
+            for code in keep:
                 acc = totals[code]
                 market, name = ident[code]
                 # 當日收盤價取 close/ 的全市場行情：這一檔今天可能沒進法人的每日檔
@@ -197,7 +200,8 @@ def build_sum(dates: list, legs: dict, trading: list, before: dict, close_at) ->
                 base = close_at(base_day, market).get(code) if base_day else None
                 ret = round((close / base - 1) * 100, 2) if close and base else None
                 rows[code] = [round(acc[0], 2), round(acc[1], 2), round(acc[2], 2),
-                              int(acc[3]), int(acc[4]), int(acc[5]), ret]
+                              int(acc[3]), int(acc[4]), int(acc[5]), ret,
+                              *prices.get(code, [None] * 4)]
                 if code not in meta:
                     meta[code] = [name, market, close]
             wins[window] = (days, rows)

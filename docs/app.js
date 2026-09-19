@@ -2643,10 +2643,13 @@ const INSTI_SORT_KEY = 'stocktracker.instisort';
 // 倍數再高也只是零頭的倍數 —— 地板擋掉了最誇張的，這一道擋掉剩下的。
 const FORCE_MIN = 0.5;
 
-// insti/base/ 每一檔四個值的順序，即 scripts/institutions.py 的 BASE_FIELDS。
-// 第四個是「三大法人」，它是**另外算**的：中位數不可加，三邊的中位數相加會把
-// 分母灌水（台積電三邊相加 104.8 億，實際的三大法人淨額中位數只有 89.4 億）。
-const BASE_AT = { fo: 0, tr: 1, de: 2, sum: 3 };
+// 四個 pill 在「每一邊各存一個值」那幾份資料裡的位置。insti/base/ 的 BASE_FIELDS
+// 與 insti/sum/ 的四個均價欄共用這個順序。
+//
+// 第四個「三大法人」在兩份檔案裡都是**另外算**的，不是前三個的合成：中位數不可加
+// （台積電三邊中位數相加 104.8 億，實際的三大法人淨額中位數只有 89.4 億），
+// 均價更不可加。
+const LEG_AT = { fo: 0, tr: 1, de: 2, sum: 3 };
 
 const RANK_TOP = 30;   // 每張榜最多列幾檔
 
@@ -2698,6 +2701,7 @@ const W_LFO = 3;       // 外資累計買賣超股數
 const W_LTR = 4;       // 投信累計股數
 const W_LDE = 5;       // 自營商累計股數
 const W_RET = 6;       // 期間漲跌（%）：窗口第一天的前一個交易日收盤 -> 當日收盤
+const W_PRICE = 7;     // 之後四個是三邊 + 三大法人的均價，順序同 LEG_AT
 // meta 的三個值
 const M_NAME = 0;
 const M_MARKET = 1;
@@ -2728,6 +2732,7 @@ function sumRows(payload, win) {
       tr: row[W_TR],
       de: row[W_DE],
       chg: row[W_RET],
+      avgs: row.slice(W_PRICE, W_PRICE + 4),
     });
   }
   return out;
@@ -2784,12 +2789,23 @@ const instiChips = (entry) => {
 function instiRankRow(entry, seq, ranked, leg, win) {
   const stock = ranked.get(entry.code);
   const oku = legOku(entry, leg);
-  // 「佔成交值」只有當日算得出來：單日的成交值不能當 N 日累計的分母，而本站沒有
-  // 存 N 日累計成交值。與其擺一個分母是錯的百分比，不如那一格不要。
-  const share = win !== 'd' ? ''
-    : ` · ${stock && stock.value
+  // 當日擺「佔成交值」，跨日擺「買均／賣均」。
+  //
+  // 佔成交值只有當日算得出來（單日的成交值不能當 N 日累計的分母，而本站沒有存
+  // N 日累計成交值）；均價則反過來，只有跨日才有意義 —— 當日的「均價」就是那天的
+  // 收盤價本身，右邊那一格已經在顯示了。
+  let tail = '';
+  if (win === 'd') {
+    tail = ` · ${stock && stock.value
       ? `佔成交值 ${num((Math.abs(oku) * 1e8 / stock.value) * 100, 1)}%`
       : '—'}`;
+  } else {
+    const avg = (entry.avgs || [])[LEG_AT[leg]];
+    // 買均／賣均由淨額的方向決定：均價算的就是「與淨額同方向的那幾天」
+    if (avg !== null && avg !== undefined) {
+      tail = ` · ${oku > 0 ? '買均' : '賣均'} ${num(avg, 2)}`;
+    }
+  }
   return `<a class="row" href="#/stock/${entry.code}">
     <div class="rank"><span class="no">${seq}</span>
       <span class="delta ${trend(entry.chg)}">${chgText(entry.chg)}</span></div>
@@ -2803,7 +2819,7 @@ function instiRankRow(entry, seq, ranked, leg, win) {
     <div class="figures">
       <span class="value ${trend(oku)}">${signedOku(oku)}</span>
       <span class="price">${signedLots(legLots(entry, leg))}${forceText(entry.force)}</span>
-      <span class="price">${num(entry.close, 2)}${share}</span>
+      <span class="price">${num(entry.close, 2)}${tail}</span>
     </div>
   </a>`;
 }
@@ -2877,7 +2893,7 @@ async function renderInstiRank(view) {
     const chg = moves.chg || {};
     base = norms;
     // 力道的分母地板取每日檔自己的 cut —— 比它小的金額檔案裡根本沒有記錄
-    const at = BASE_AT[state.instiLeg];
+    const at = LEG_AT[state.instiLeg];
     const table = (norms && norms.base) || {};
     rows = instiRows(payload)
       .filter((r) => markets.includes(r.market))
@@ -3003,6 +3019,21 @@ async function renderInstiRank(view) {
       <p class="note"><b>跨日的兩個期間沒有力道標。</b>它要的是「5 日（或 20 日）累計的平常是多少」，
         而要有 20 個 20 日累計的樣本得回頭看 40 個交易日以上 —— 本站的法人資料目前只有
         ${days.length} 個交易日。這是「還不夠」不是「做不到」，資料長到那裡就補得上。</p>
+      ${win === 'd' ? '' : `<p class="note">跨日的每一列最後是<b>買均／賣均</b>：這段期間裡，
+        <b>與淨額同方向的那幾天</b>的股數加權收盤均價。淨買超就只算買進的那幾天、
+        淨賣超就只算賣出的那幾天。</p>
+      <p class="note">為什麼不直接拿「累計金額 ÷ 累計股數」——那個商數看起來就是均價，
+        其實不是：<b>淨額是相減的結果，拿它當分母沒有物理意義</b>。實測近 20 日有外資
+        淨額的 1,412 檔，只有 228 檔期間內是單邊（只買或只賣），其餘 1,184 檔有買有賣；
+        用淨額算出來的「均價」有 219 檔落在期間的價格區間外，包括<b>負的價格</b>
+        （竹陞科技 -4,849 元）與台積電的 2,597 元（那 20 天的收盤只在 2,350~2,440）。
+        只取同方向的那幾天之後，權重全部同號，結果必定落在那幾天的收盤區間內。</p>
+      <p class="note"><b>它描述的是那幾天，不是淨額。</b>一檔買 10,000 張、賣 9,900 張的股票，
+        淨額只有 100 張，但買均描述的是那 10,000 張。</p>
+      <p class="note"><b>而且它不是法人的成本。</b>官方的個股資料從頭到尾只有股數，本站的
+        「金額」一律是股數 × <b>收盤價</b>，所以這裡的均價是「收盤價的加權平均」——
+        真正的成交均價在盤中，日報表裡沒有任何一欄摸得到它。當天振幅越大差越遠。
+        拿它去算「法人套住了沒」，那個結論建立在一個假的數字上。</p>`}
       <p class="note">漲跌是<b>收盤對收盤</b>算的。它與官方的「漲跌價差」差在一件事 ——
         官方是對除權息參考價算的，這裡沒有還原，所以<b>除權息會被算成下跌</b>，
         那一檔會出現在逆勢買超榜上而其實只是配息。金額大的那幾檔值得回頭確認一下

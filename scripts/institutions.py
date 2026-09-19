@@ -601,7 +601,7 @@ def build_chg_payload(date_iso: str, prev_iso, closes: dict, prev_closes: dict) 
 #
 # 取窗口第一天的**前一個交易日**收盤：法人是在第一天當天買的，那天的收盤價已經含了
 # 這筆買盤推上去的部分，拿它當起點會少算第一天。
-SUM_VERSION = 1
+SUM_VERSION = 2
 
 # 兩個窗口。5 日是一週、20 日是一個月，都是市場上講累計買超時的習慣長度。
 SUM_WINDOWS = (5, 20)
@@ -627,14 +627,20 @@ SUM_FLOOR = 0.1
 # 一檔的靜態欄位，兩個窗口共用一份，省掉重複。
 SUM_META_FIELDS = ("name", "market", "close")
 
-# 每一個窗口、每一檔存的七個值，順序即 index。
+# 每一個窗口、每一檔存的十一個值，順序即 index。
 #   fo/tr/de        三邊的累計估算金額（億，逐日以當日收盤價換算後相加）
 #   lfo/ltr/lde     三邊的累計買賣超股數
 #   ret             期間漲跌（%）：窗口第一天的前一個交易日收盤 -> 當日收盤
+#   pfo/ptr/pde     三邊「與淨額同方向那幾天」的股數加權收盤均價（見 avg_prices）
+#   psum            三大法人那一邊的同一個數字
+#
+# 均價為什麼要另外算、不能拿 fo ÷ lfo：見 avg_prices() 的說明。簡單說淨額是相減的
+# 結果，拿它當分母會算出負的價格。
 #
 # 「實際算了幾個交易日」不在這裡 —— 同一天同一個窗口裡，每一檔的天數都一樣，
 # 它是窗口的性質不是個股的性質，所以放在窗口那一層（w.{窗口}.days）。
-SUM_FIELDS = ("fo", "tr", "de", "lfo", "ltr", "lde", "ret")
+SUM_FIELDS = ("fo", "tr", "de", "lfo", "ltr", "lde", "ret",
+              "pfo", "ptr", "pde", "psum")
 
 
 def sum_path(date_iso: str) -> Path:
@@ -710,10 +716,74 @@ def sum_keep(totals: dict, ident: dict) -> set:
     return keep
 
 
+def avg_prices(dates: list, tables: dict, at: int, days: int, totals: dict) -> dict:
+    """窗口內「與淨額同方向」那幾天的股數加權收盤均價。
+
+    -> {代號: [外資, 投信, 自營, 三大法人]}，算不出來的那一格是 None。
+
+    ## 為什麼不能直接用 累計金額 ÷ 累計股數
+
+    那個商數看起來就是均價，實際上不是：淨額是**相減**的結果，拿它當分母沒有物理
+    意義。實測近 20 日有外資淨額的 1,412 檔，只有 228 檔期間內是單邊（只買或只賣），
+    其餘 1,184 檔有買有賣 —— 而用淨額算出來的「均價」有 219 檔落在期間的價格區間外，
+    包括負的價格（竹陞科技 -4,849 元）與台積電的 2,597 元（期間收盤只在 2,350~2,440）。
+
+    ## 只取同方向的那幾天
+
+    淨買超就只看買進的那幾天、淨賣超就只看賣出的那幾天。權重全部同號，所以結果
+    必定落在那幾天的收盤價區間內（實測 1,409/1,412 落在區間內，其餘 3 檔的偏差是
+    1e-15 等級的浮點誤差，四捨五入到兩位小數就沒了）。
+
+    ## 它描述的是那幾天，不是淨額
+
+    一檔買 10,000 張、賣 9,900 張的股票，淨額只有 100 張，但均價描述的是那 10,000 張。
+    畫面上要標成「買均／賣均」而不是「均價」，而且**絕對不能叫它法人成本** ——
+    官方的個股資料只有股數，這裡的收盤價本來就不是成交均價（見模組說明）。
+    """
+    # leg_table 的 fo / tr / de，第四個是三邊相加
+    picks = (lambda r: r[2], lambda r: r[3], lambda r: r[4],
+             lambda r: r[2] + r[3] + r[4])
+    # 代號 -> 每一邊 [買進金額, 買進股數, 賣出金額, 賣出股數]
+    acc = {}
+    for i in range(at - days + 1, at + 1):
+        for code, row in tables[dates[i]].items():
+            if code not in totals:
+                continue
+            close = row[5]
+            slot = acc.get(code)
+            if slot is None:
+                slot = acc[code] = [[0.0, 0.0, 0.0, 0.0] for _ in picks]
+            for k, pick in enumerate(picks):
+                shares = pick(row)
+                if shares > 0:
+                    slot[k][0] += shares * close
+                    slot[k][1] += shares
+                elif shares < 0:
+                    slot[k][2] += shares * close
+                    slot[k][3] += shares
+
+    out = {}
+    for code, slot in acc.items():
+        total = totals[code]
+        # totals 的後三個是累計股數；第四邊的淨額是三者相加
+        nets = (total[3], total[4], total[5], total[3] + total[4] + total[5])
+        row = []
+        for k, net in enumerate(nets):
+            buy_amt, buy_sh, sell_amt, sell_sh = slot[k]
+            if net > 0 and buy_sh:
+                row.append(round(buy_amt / buy_sh, 2))
+            elif net < 0 and sell_sh:
+                row.append(round(sell_amt / sell_sh, 2))
+            else:
+                row.append(None)
+        out[code] = row
+    return out
+
+
 def build_sum_payload(date_iso: str, wins: dict, meta: dict) -> dict:
     """一天的累計檔。
 
-    wins 是 {窗口長度: (實際天數, {代號: [fo, tr, de, lfo, ltr, lde, ret]})}，
+    wins 是 {窗口長度: (實際天數, {代號: SUM_FIELDS 那十一個值})}，
     meta 是 {代號: [簡稱, 市場, 當日收盤價]}，只留真的有進到某一個窗口的那些。
     """
     kept = {str(w): {"days": days, "rows": dict(sorted(rows.items()))}
