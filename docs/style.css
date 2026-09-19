@@ -18,6 +18,12 @@
   --q-edge: #dde3ea;
   --q-mesh: #c4d1e2;
   --q-halo: #f5f8fb;
+
+  /* 美股頁的星等。避開紅綠（全站的紅綠是漲跌，拿來標星等會被讀成「這一組在漲」），
+     用一條藍→紫→琥珀的色相帶；星等同時也用點的半徑編碼，不只靠顏色。 */
+  --star3: #2f6fed;
+  --star2: #7b61ff;
+  --star1: #c77700;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -37,6 +43,10 @@
     --q-edge: #24303c;
     --q-mesh: #22303e;
     --q-halo: #0d131a;
+
+    --star3: #6f9dff;
+    --star2: #a48cff;
+    --star1: #f0a640;
   }
 }
 
@@ -860,6 +870,57 @@ select, input, button {
 .chart-box { padding: 10px 8px 14px; height: 220px; }
 /* K 線要看得出實體與影線的差別，220px 太擠 */
 .chart-box.tall { height: 300px; }
+
+/* ---------- 美股頁的散點圖 ----------
+   兩軸同一個尺度，對角線才是 45 度、落差才讀得出來，所以圖是方的。
+   桌面上限寬置中（再寬只是把點拉散），手機吃滿。 */
+.scatter { padding: 8px 6px 4px; }
+
+.scatter svg {
+  display: block;
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+  overflow: visible;
+}
+
+.scatter .g { stroke: var(--line); stroke-width: 1; }
+.scatter .z { stroke: var(--line); stroke-width: 1.5; }
+
+/* 判讀的基準線，要比格線明顯但不能搶過點 */
+.scatter .diag {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+  opacity: .75;
+}
+
+.scatter .tk,
+.scatter .ax { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.scatter .ax { font-size: 12px; }
+
+/* 點會重疊，所以給一圈與底色同色的描邊：疊在一起時還看得出是幾個點。
+   兩千多組配對一定會糊，所以星等越低畫得越淡 —— 全部畫實的話，一千多個 ★☆☆
+   會把一百多個 ★★★ 埋掉，而 ★★★ 正是這張圖要看的那一群。 */
+.scatter .d { stroke: var(--surface); stroke-width: 1; }
+.scatter .d.s3 { fill: var(--star3); }
+.scatter .d.s2 { fill: var(--star2); opacity: .72; }
+.scatter .d.s1 { fill: var(--star1); opacity: .5; }
+
+.scatter__sum { margin: 10px auto 0; max-width: 520px; }
+.scatter__sum td:first-child { white-space: nowrap; }
+
+.scatter .dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: -1px;
+}
+.scatter .dot.s3 { background: var(--star3); }
+.scatter .dot.s2 { background: var(--star2); }
+.scatter .dot.s1 { background: var(--star1); }
 
 /* ---------- 報價 ---------- */
 /* 報價列：左邊品項名、中間迷你走勢、右邊數字。沒有名次欄，所以不沿用 .row 的三欄。 */

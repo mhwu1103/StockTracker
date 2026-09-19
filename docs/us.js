@@ -101,6 +101,125 @@ function corrBar(v) {
     : `right:50%;width:${w}%`}"></i></span>`;
 }
 
+/** 中位數。空陣列回 null —— 0 在這一頁是「完全不相關」，不是「沒有資料」。 */
+function median(vals) {
+  if (!vals.length) return null;
+  const s = vals.slice().sort((a, b) => a - b);
+  return s[(s.length - 1) >> 1];
+}
+
+/** 攤平成一組一個點：{美股, 台股代號, 名稱, 星等, 原始相關, 超額相關, 天數}。 */
+function pairsOf(items) {
+  const out = [];
+  for (const item of items) {
+    for (const row of item.links) {
+      const r = corrOf(row, 'r');
+      const x = corrOf(row, 'x');
+      if (r === null || r === undefined || x === null || x === undefined) continue;
+      out.push({ t: item.t, code: row[0], name: row[1], s: row[3], r, x, n: row[row.length - 1] });
+    }
+  }
+  return out;
+}
+
+// --------------------------------------------------------------------------
+// 散點圖：原始相關 × 超額相關
+//
+// 這一頁的兩個問題本來都只用文字講：「標註對不對得上資料」寫在一句話裡，
+// 「原始相關會被整個市場一起動灌水」寫在方法那一段。一張圖同時回答兩個 ——
+//
+//   · 橫軸是原始相關、縱軸是超額相關，兩軸同一個尺度，所以**對角線**就是
+//     「市場因子一點貢獻都沒有」。點落在對角線底下多遠，就是有多少相關性
+//     是整個市場一起動來的。那件事用文字講要三行，用圖講是一眼。
+//   · 顏色是人工標的星等。★★★ 如果散得跟 ★☆☆ 一樣開，那份標註就沒有鑑別力——
+//     這正是這一頁存在的理由，而文字版只講得出「最弱的那一組是誰」。
+//
+// 純 SVG，不依賴任何圖表庫（這一頁本來就沒載）。星等同時用顏色與半徑編碼，
+// 不要只靠顏色。
+// --------------------------------------------------------------------------
+const SCATTER = { side: 460, l: 46, r: 14, t: 14, b: 40 };
+const STAR_R = { 3: 5, 2: 4, 1: 3.2 };
+
+/** 兩軸共用的範圍：同一個尺度，對角線才是 45 度，落差才讀得出來。 */
+function scatterBound(pairs) {
+  const vals = pairs.flatMap((p) => [p.r, p.x]);
+  const lo = Math.min(-20, ...vals);
+  const hi = Math.max(20, ...vals);
+  return [Math.floor(lo / 20) * 20, Math.ceil(hi / 20) * 20];
+}
+
+function scatterCard(items) {
+  const pairs = pairsOf(items);
+  if (pairs.length < 4) return '';
+
+  const [lo, hi] = scatterBound(pairs);
+  const { side, l, t, b } = SCATTER;
+  const W = l + side + SCATTER.r;
+  const H = t + side + b;
+  const px = (v) => l + ((v - lo) / (hi - lo)) * side;
+  const py = (v) => t + side - ((v - lo) / (hi - lo)) * side;
+
+  const ticks = [];
+  for (let v = lo; v <= hi; v += 20) ticks.push(v);
+
+  const grid = ticks.map((v) => `<line class="g" x1="${px(v)}" y1="${t}" x2="${px(v)}" y2="${t + side}"/>`
+    + `<line class="g" x1="${l}" y1="${py(v)}" x2="${l + side}" y2="${py(v)}"/>`).join('');
+  const labels = ticks.map((v) => `<text class="tk" x="${px(v)}" y="${t + side + 16}" text-anchor="middle">${v}</text>`
+    + `<text class="tk" x="${l - 8}" y="${py(v) + 4}" text-anchor="end">${v}</text>`).join('');
+
+  // 兩條零線與那條對角線。對角線是這張圖的判讀基準，所以畫得比零線明顯。
+  const axes = `<line class="z" x1="${px(0)}" y1="${t}" x2="${px(0)}" y2="${t + side}"/>
+    <line class="z" x1="${l}" y1="${py(0)}" x2="${l + side}" y2="${py(0)}"/>
+    <line class="diag" x1="${px(lo)}" y1="${py(lo)}" x2="${px(hi)}" y2="${py(hi)}"/>`;
+
+  // 星等低的先畫。★☆☆ 有一千多組、★★★ 只有一百多，順序反過來的話要看的那一群
+  // 會被整片蓋掉 —— 第一版就是這樣，圖上幾乎找不到藍點。
+  const dots = pairs.slice().sort((a, b) => a.s - b.s)
+    .map((p) => `<circle class="d s${p.s}" cx="${px(p.r).toFixed(1)}" cy="${py(p.x).toFixed(1)}"
+      r="${STAR_R[p.s] || 3.2}"><title>${esc(p.t)} × ${esc(p.name)} ${esc(p.code)}
+原始 ${corrText(p.r)}　超額 ${corrText(p.x)}　標註 ${STARS[p.s] || ''}　${p.n} 天</title></circle>`).join('');
+
+  const rows = [3, 2, 1].map((s) => {
+    const group = pairs.filter((p) => p.s === s);
+    if (!group.length) return '';
+    return `<tr><td><i class="dot s${s}"></i>${STARS[s]}</td><td>${group.length}</td>
+      <td class="${trend(median(group.map((p) => p.r)))}">${corrText(median(group.map((p) => p.r)))}</td>
+      <td class="${trend(median(group.map((p) => p.x)))}">${corrText(median(group.map((p) => p.x)))}</td></tr>`;
+  }).join('');
+
+  return `<section class="card">
+    <h2>標註站不站得住 <small>${pairs.length} 組配對 · 最近 ${state.span} 個交易日</small></h2>
+    <div class="scatter">
+      <svg viewBox="0 0 ${W} ${H}" role="img"
+        aria-label="橫軸原始相關、縱軸超額相關的散點圖，顏色是人工標註的星等">
+        ${grid}${axes}${dots}${labels}
+        <text class="ax" x="${l + side / 2}" y="${H - 6}" text-anchor="middle">原始相關 %</text>
+        <text class="ax" x="${-(t + side / 2)}" y="13" text-anchor="middle"
+          transform="rotate(-90)">超額相關 %</text>
+      </svg>
+      <table class="tbl scatter__sum">
+        <thead><tr><th>標註</th><th>組數</th><th>原始中位</th><th>超額中位</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="note">一個點是一組配對。<b>越往右</b>＝一起漲跌的程度越高，
+      <b>越往上</b>＝扣掉兩邊各自的大盤之後還剩下的關係。</p>
+    <p class="note"><b>那條斜線是判讀的基準</b>：落在線上代表這組的相關性完全不是
+      「整個市場一起動」來的；離線越遠（越往右下），就有越多相關性只是共同的市場因子。
+      台股電子股彼此本來就有五、六成的相關，所以絕大多數的點都會在線的下方——
+      這張圖要看的是<b>離線多遠</b>，不是絕對位置。</p>
+    <p class="note">顏色是人工在 <code>us_link.json</code> 標的星等，上面那張表是同一件事的
+      數字版。★★★ 如果沒有比 ★☆☆ 更靠右上，那份標註就沒有鑑別力——這一頁存在的理由
+      就是讓這件事被看見。</p>
+    <p class="note"><b>但兩欄要一起看，不要只看超額那一欄。</b>
+      看到 ★★★ 在原始那一欄領先、卻在超額那一欄落後時，先別急著判定標註是亂標的：
+      ★★★ 多半標在權值股上，而權值股正是被扣大盤扣得最兇的那一群 ——
+      台積電自己就佔台股加權約三成，扣掉大盤等於把它自己扣掉一大半，
+      它的點會被壓到右下角。那是算法的限制，不是它跟美股脫鉤，
+      更不是標註的人搞錯了。</p>
+  </section>`;
+}
+
 function benchCard(data) {
   const idx = data.spans.indexOf(state.span);
   const rows = data.bench.map((b) => `<div class="row">
@@ -208,7 +327,9 @@ function methodNote(data) {
       只算那份對照表畫出來的組合，不是拿每一檔美股去掃全市場。
       標 ★★★ 的配對一律列出（不管相關性排第幾），其餘每檔美股最多列前幾名。<br>
       <b>更新</b>：美股日線 <code>scripts/fetch_us.py</code>、相關性 <code>scripts/build_us.py</code>，
-      兩支都是手動執行，沒有接進每日排程。這一份算於 ${esc(data.updated.slice(0, 16).replace('T', ' '))}。
+      兩支都在每日排程裡（<code>build_us.py</code> 排在 <code>build_history.py</code> 之後，
+      台股那一邊要吃它寫的交易日軸與 K 線）。這一份算於
+      ${esc(data.updated.slice(0, 16).replace('T', ' '))}。
     </p>
   </section>`;
 }
@@ -225,6 +346,7 @@ function render() {
     ${lede(data, items)}
     <div class="controls">${pills('span', spanOpts, String(state.span))}</div>
     <div class="controls">${pills('sort', SORTS, state.sort)}</div>
+    ${scatterCard(items)}
     ${benchCard(data)}
     <section class="card">
       <h2>美股 <small>${items.length} 檔 · 點一列展開它對照的台股</small></h2>
@@ -278,7 +400,7 @@ async function start() {
   } catch (err) {
     $('#meta').textContent = '載入失敗';
     $('#view').innerHTML = `<p class="hint">讀不到 <code>data/us/index.json</code>（${esc(err.message)}）。
-      這一份不由每日排程產生，請先執行
+      正常情況下每日排程會產生它；本機環境請先執行
       <code>python scripts/fetch_us.py</code> 與 <code>python scripts/build_us.py</code>。
       前端版本 ${esc(APP_VERSION)}。</p>`;
     return;
