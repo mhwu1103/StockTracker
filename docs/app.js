@@ -80,12 +80,14 @@ const state = {
   instiMin: 0.5,       // 「法人」分頁的同買／同賣門檻（億），INSTI_MINS 的 value
   instiLeg: 'fo',      // 「買超」分頁看哪一邊法人（INSTI_LEGS 的 value），sum 是三邊相加
   instiWin: 'd',       // 「買超」分頁看哪一個期間（INSTI_WINS 的 value），d 是當日
+  instiSort: 'oku',    // 「買超」分頁排序：oku 依金額／force 依力道（只有當日有力道）
   runDays: 3,          // 「連買」分頁的連續天數門檻，RUN_DAYS 的 value
   runOku: 0,           // 「連買」分頁的累計金額門檻（億），0 是不限
   insti: null,         // Promise<insti/index.json>，進到法人頁才載
   instiDay: new Map(), // 交易日 -> Promise<insti/daily/{日期}.json>
   instiChg: new Map(), // 交易日 -> Promise<insti/chg/{日期}.json>
   instiSum: new Map(), // 交易日 -> Promise<insti/sum/{日期}.json>
+  instiBase: new Map(),// 交易日 -> Promise<insti/base/{日期}.json|null>
   instiRun: new Map(), // 交易日 -> Promise<insti/streak/{日期}.json>
   holders: null,       // Promise<holders/index.json>，進到大戶頁才載
   holderWeek: new Map(),// 集保資料日 -> Promise<holders/weekly/{日期}.json>
@@ -2608,6 +2610,44 @@ const INSTI_WINS = [
 ];
 const INSTI_WIN_KEY = 'stocktracker.instiwin';
 
+// --------------------------------------------------------------------------
+// 力道標：今天這筆買賣超，是這一檔平常的幾倍
+//
+// 「佔成交值」問的是「相對於**今天的量**大不大」，力道標問的是另一件事：
+// 「相對於**這一檔自己的平常**大不大」。兩個都需要 —— 聯發科買超 50.9 億看起來很大，
+// 但它平常就動 19.8 億，力道只有 2.6 倍；強茂買超 26.5 億而平常只有 2.7 億，
+// 那是 9.8 倍。金額榜上兩檔挨在一起，異常程度差了四倍。
+//
+// 分母是後端算好的「平常的量」（過去 20 個交易日、日金額絕對值的中位數，
+// 見 insti/base/）。這裡只負責除，外加一道**地板**：
+//
+//     力道 ＝ |今日金額| ÷ max(平常的量, 每日檔的收錄門檻)
+//
+// 地板是必要的：平常沒人動的個股分母趨近 0，今天動一次就是好幾百倍，那個數字
+// 看起來最聳動、資訊量卻最低。而地板取每日檔自己的 cut（0.05 億）不是隨便挑的
+// —— 比它小的金額，每日檔裡根本沒有記錄，那是這份資料的**解析度下限**。
+// 真正的中位數是多少我們不知道，只知道在那之下；拿它當分母的地板，等於說
+// 「最多只能講到這個倍數」，而不是假裝那一格沒有答案。
+//
+// 為什麼不乾脆把分母太小的列藏起來：實測 1,445 檔曾進過每日檔的個股裡，570 檔的
+// 外資日金額中位數是 0、另有 98 檔不到 0.05 億 —— 藏起來等於對 58% 的個股留白，
+// 而那裡面正好是最有意思的一類（平常沒人碰、今天忽然有人買三億）。
+// --------------------------------------------------------------------------
+const INSTI_SORTS = [
+  { value: 'oku', label: '依金額' },
+  { value: 'force', label: '依力道' },
+];
+const INSTI_SORT_KEY = 'stocktracker.instisort';
+
+// 依力道排序時，金額至少要這麼多（億）才進榜。倍數高而金額是零頭的那些，
+// 倍數再高也只是零頭的倍數 —— 地板擋掉了最誇張的，這一道擋掉剩下的。
+const FORCE_MIN = 0.5;
+
+// insti/base/ 每一檔四個值的順序，即 scripts/institutions.py 的 BASE_FIELDS。
+// 第四個是「三大法人」，它是**另外算**的：中位數不可加，三邊的中位數相加會把
+// 分母灌水（台積電三邊相加 104.8 億，實際的三大法人淨額中位數只有 89.4 億）。
+const BASE_AT = { fo: 0, tr: 1, de: 2, sum: 3 };
+
 const RANK_TOP = 30;   // 每張榜最多列幾檔
 
 /** 選定那一邊的估算金額（億）。'sum' 是三邊相加。 */
@@ -2630,6 +2670,25 @@ function loadInstiSum(date) {
   }
   return state.instiSum.get(date);
 }
+
+/**
+ * 平常的量。資料起點往後那幾天前面湊不滿 10 個交易日，後端整天不寫檔 ——
+ * 那不是錯誤，是「還講不出這一檔的平常」，所以 404 當成 null，力道標那一格留白。
+ */
+function loadInstiBase(date) {
+  if (!state.instiBase.has(date)) {
+    state.instiBase.set(date, getJSON(`${DATA}/insti/base/${date}.json`).catch(() => null));
+  }
+  return state.instiBase.get(date);
+}
+
+/** 力道倍數。算不出來（沒有那一天的檔、或這一檔不在裡面）回 null。 */
+const forceOf = (norms, oku, floor) =>
+  (norms === undefined || norms === null ? null : Math.abs(oku) / Math.max(norms, floor));
+
+/** 力道那一格。10 倍以下給一位小數，以上就不必了。 */
+const forceText = (force) =>
+  (force === null || force === undefined ? '' : ` · 力道 ${num(force, force < 10 ? 1 : 0)} 倍`);
 
 // 跨日累計檔的每一列。順序即 scripts/institutions.py 的 SUM_FIELDS，兩邊必須一致。
 const W_FO = 0;        // 外資累計估算金額（億，逐日以當日收盤價換算後相加）
@@ -2698,6 +2757,19 @@ const legPick = (rows, leg, side, against = false) => {
     .sort((a, b) => (legOku(b, leg) - legOku(a, leg)) * want);
 };
 
+/**
+ * 把一張榜改成依力道排序。力道算不出來的（那一天沒有 base 檔）與金額是零頭的
+ * 都不進來 —— 零頭的倍數再高還是零頭。
+ *
+ * 刻意寫成「重排既有的榜」而不是 legPick 的一個模式：**統計用的母體必須是依金額
+ * 那一份**。力道排序會套金額門檻，拿它去算「今天有幾檔買超」會少一大半，
+ * 而那是另一個問題（今天有幾檔買超，與其中幾檔值得看，不是同一件事）。
+ */
+const byForce = (list, leg) => list
+  .filter((r) => r.force !== null && r.force !== undefined
+    && Math.abs(legOku(r, leg)) >= FORCE_MIN)
+  .sort((a, b) => b.force - a.force);
+
 /** 三邊的估算金額與張數，三個 chip。法人頁與買超頁共用。 */
 const instiChips = (entry) => {
   const chip = (label, oku, shares) =>
@@ -2730,7 +2802,7 @@ function instiRankRow(entry, seq, ranked, leg, win) {
     </div>
     <div class="figures">
       <span class="value ${trend(oku)}">${signedOku(oku)}</span>
-      <span class="price">${signedLots(legLots(entry, leg))}</span>
+      <span class="price">${signedLots(legLots(entry, leg))}${forceText(entry.force)}</span>
       <span class="price">${num(entry.close, 2)}${share}</span>
     </div>
   </a>`;
@@ -2771,8 +2843,11 @@ async function renderInstiRank(view) {
     return;
   }
 
+  // 排序那一排只在當日出現：跨日沒有力道可排，擺一顆按不動的 pill 比不擺更讓人困惑
+  const sortRow = state.instiWin === 'd'
+    ? `<div class="controls">${pills('instisort', INSTI_SORTS, state.instiSort)}</div>` : '';
   const controls = `<div class="controls">${pills('instileg', INSTI_LEGS, state.instiLeg)}</div>
-    <div class="controls">${pills('instiwin', INSTI_WINS, state.instiWin)}</div>`;
+    <div class="controls">${pills('instiwin', INSTI_WINS, state.instiWin)}</div>${sortRow}`;
   if (!days.some((d) => d.d === state.date)) {
     view.innerHTML = `${controls}
       <p class="hint">${state.date} 還沒有法人資料。<br>
@@ -2795,13 +2870,22 @@ async function renderInstiRank(view) {
   let span;            // 這個窗口實際算了幾個交易日
   let pool;            // 這份資料檔在這個範圍下總共有幾檔，說明文要用
   let cutText;
+  let base = null;     // 平常的量。只有當日算得出力道，跨日的沒有（理由見說明卡）
   if (win === 'd') {
-    const [payload, moves] = await Promise.all([
-      loadInstiDay(state.date), loadInstiChg(state.date)]);
+    const [payload, moves, norms] = await Promise.all([
+      loadInstiDay(state.date), loadInstiChg(state.date), loadInstiBase(state.date)]);
     const chg = moves.chg || {};
+    base = norms;
+    // 力道的分母地板取每日檔自己的 cut —— 比它小的金額檔案裡根本沒有記錄
+    const at = BASE_AT[state.instiLeg];
+    const table = (norms && norms.base) || {};
     rows = instiRows(payload)
       .filter((r) => markets.includes(r.market))
-      .map((r) => ({ ...r, chg: chg[r.code] }));
+      .map((r) => ({
+        ...r,
+        chg: chg[r.code],
+        force: forceOf((table[r.code] || [])[at], legOku(r, state.instiLeg), payload.cut),
+      }));
     span = 1;
     pool = rows.length;
     cutText = `三邊的估算金額都不到 ${payload.cut} 億的不收`;
@@ -2813,6 +2897,12 @@ async function renderInstiRank(view) {
     cutText = `每個市場每一邊各留前 ${payload.keep} 名、不到 ${payload.floor} 億的不留`;
   }
 
+  // 力道只有當日算得出來，所以排序軸也只在當日有作用；跨日一律依金額
+  const canForce = win === 'd' && !!base;
+  const sort = canForce ? state.instiSort : 'oku';
+  const sortText = sort === 'force'
+    ? `依力道排序 · 金額 ${FORCE_MIN} 億以上` : '依估算金額排序';
+
   const leg = state.instiLeg;
   const name = LEG_NAMES[leg];
   const winName = win === 'd' ? '' : `近 ${win} 日`;
@@ -2821,10 +2911,13 @@ async function renderInstiRank(view) {
   const spanText = win === 'd' ? '當日'
     : `近 ${win} 日${shortfall ? `（實際只算得到 ${span} 天）` : ''}`;
 
+  // 母體：四張榜的檔數統計一律取自這四份，與排序方式無關
   const buys = legPick(rows, leg, 'buy');
   const sells = legPick(rows, leg, 'sell');
   const buysAgainst = legPick(rows, leg, 'buy', true);
   const sellsAgainst = legPick(rows, leg, 'sell', true);
+  // 顯示：依力道時重排並套金額門檻，依金額時就是母體本身
+  const shown = (list) => (sort === 'force' ? byForce(list, leg) : list);
 
   const known = rows.filter((r) => r.chg !== null && r.chg !== undefined);
   const up = known.filter((r) => r.chg > 0).length;
@@ -2849,29 +2942,35 @@ async function renderInstiRank(view) {
         其中 ${known.length} 檔算得出${win === 'd' ? '當日漲跌' : '期間漲跌'} —— ${up} 檔漲、${down} 檔跌。
         ${esc(name)}${esc(spanText)}買超的有 ${buys.length} 檔，其中 ${buysAgainst.length} 檔（${shareOfBuys}）
         是在自己${win === 'd' ? '收黑' : '期間下跌'}的情況下被買的。</p>
+      ${!canForce ? '' : `<p class="note">每一列的張數後面是<b>力道</b>：今天這筆是這一檔平常的幾倍
+        （平常＝過去 ${base.win} 個交易日日金額絕對值的中位數，用了前 ${base.used} 天）。
+        ${sort === 'force' ? `目前<b>依力道排序</b>，所以上面四張榜挑的是「對自己來說最異常」的，
+        不是金額最大的 —— 金額不到 ${FORCE_MIN} 億的不進榜（買超 ${buys.length} 檔裡有
+        ${byForce(buys, leg).length} 檔進得了力道榜）。上面那三格統計仍然是全部的檔數，
+        不受排序影響。` : '權值股的力道常常只有一、兩倍：金額很大，但那是它的日常。'}</p>`}
       ${win === 'd' ? '' : `<p class="note">累計金額是逐日「買賣超股數 × <b>當日</b>收盤價」相加的，不是用最後一天
         的價格回推 —— 一段 ${win} 天的期間裡股價本來就在動，用同一個價格乘完會算錯。
         期間漲跌的基準是窗口第一天的<b>前一個交易日</b>收盤，與「連買」頁同一個慣例。
         ${shortfall ? `<b>這一天的窗口湊不滿</b>：本站的法人資料從 ${esc(index.first)} 開始，
         往前只接得到 ${span} 個交易日，所以這是 ${span} 日的累計、不是 ${win} 日的。` : ''}</p>`}
-      <p class="note">四張榜都依<b>估算金額</b>排序。逆勢那兩張不是另外挑出來的股票，而是上面那兩張
+      <p class="note">四張榜都依<b>${sort === 'force' ? '力道' : '估算金額'}</b>排序。逆勢那兩張不是另外挑出來的股票，而是上面那兩張
         <b>濾掉順勢的那一半</b>：買超榜裡${win === 'd' ? '當天收紅' : '期間上漲'}的拿掉，剩下的就是逆勢買超。
         順勢的那一半常常是果不是因 —— 股價自己在漲、買盤跟著追進去，「因為在漲所以有人買」
         這個解釋排除不掉；逆勢的那一半排除得掉。</p>
     </section>
-    ${listCard(`${name}${winName}買超排行`, `依估算金額排序 · 取前 ${RANK_TOP}`,
-      buys.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+    ${listCard(`${name}${winName}買超排行`, `${sortText} · 取前 ${RANK_TOP}`,
+      shown(buys).slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
       `${state.date} ${scopeLabel()}沒有任何一檔${name}${winName}買超`)}
     ${listCard(`${name}${winName}逆勢買超`,
-      `買超、${win === 'd' ? '當天卻收黑' : '期間卻下跌'} · 依估算金額排序 · 取前 ${RANK_TOP}`,
-      buysAgainst.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+      `買超、${win === 'd' ? '當天卻收黑' : '期間卻下跌'} · ${sortText} · 取前 ${RANK_TOP}`,
+      shown(buysAgainst).slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
       `${state.date} 沒有任何一檔${name}${winName}買超而股價${win === 'd' ? '收黑' : '下跌'}`)}
-    ${listCard(`${name}${winName}賣超排行`, `依估算金額排序 · 取前 ${RANK_TOP}`,
-      sells.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+    ${listCard(`${name}${winName}賣超排行`, `${sortText} · 取前 ${RANK_TOP}`,
+      shown(sells).slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
       `${state.date} ${scopeLabel()}沒有任何一檔${name}${winName}賣超`)}
     ${listCard(`${name}${winName}逆勢賣超`,
-      `賣超、${win === 'd' ? '當天卻收紅' : '期間卻上漲'} · 依估算金額排序 · 取前 ${RANK_TOP}`,
-      sellsAgainst.slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
+      `賣超、${win === 'd' ? '當天卻收紅' : '期間卻上漲'} · ${sortText} · 取前 ${RANK_TOP}`,
+      shown(sellsAgainst).slice(0, RANK_TOP).map((r, i) => instiRankRow(r, i + 1, ranked, leg, win)),
       `${state.date} 沒有任何一檔${name}${winName}賣超而股價${win === 'd' ? '收紅' : '上漲'}`)}
     <section class="card">
       <h2>這一頁在講什麼 <small>以及不能拿它講什麼</small></h2>
@@ -2889,6 +2988,21 @@ async function renderInstiRank(view) {
         這一邊的買賣超 ÷ 當日成交值：權值股常常不到 1%，中小型股可以到十幾趴。
         <b>跨日的兩個期間沒有這一格</b>：單日的成交值不能拿來當 N 日累計的分母，
         而本站沒有存 N 日累計成交值。成交值名次仍在中間的 chip 上（只有前 ${KEPT} 名有）。</p>
+      <p class="note"><b>力道</b>＝今日金額 ÷ 這一檔<b>平常</b>的量（過去 ${(base && base.win) || 20} 個交易日、
+        日金額絕對值的<b>中位數</b>）。「佔成交值」問的是「相對於今天的量大不大」，力道問的是
+        「相對於這一檔自己的平常大不大」—— 兩個是不同的問題。${esc(state.date)} 的例子：
+        聯發科外資買超 50.9 億看起來最大，但它平常就動 19.8 億，力道只有 2.6 倍；
+        強茂買超 26.5 億、平常只有 2.7 億，那是 9.8 倍。金額榜上兩檔挨在一起，
+        異常的程度差了快四倍。用中位數不用平均，是因為平均會被過去 20 天裡某一天的
+        大額整個吃掉，算出來的「平常」其實是那一天。</p>
+      <p class="note">分母有一道<b>地板</b>：平常沒人動的個股分母趨近 0，今天動一次就是好幾百倍，
+        那個數字看起來最聳動、資訊量卻最低。地板取每日檔自己的收錄門檻（0.05 億）——
+        比它小的金額，檔案裡根本沒有記錄，那是這份資料的<b>解析度下限</b>；真正的中位數是多少
+        我們不知道，只知道在那之下。所以力道標的意思是「<b>最多</b>只能講到這個倍數」。
+        依力道排序時另外要求金額至少 ${FORCE_MIN} 億：零頭的倍數再高還是零頭。</p>
+      <p class="note"><b>跨日的兩個期間沒有力道標。</b>它要的是「5 日（或 20 日）累計的平常是多少」，
+        而要有 20 個 20 日累計的樣本得回頭看 40 個交易日以上 —— 本站的法人資料目前只有
+        ${days.length} 個交易日。這是「還不夠」不是「做不到」，資料長到那裡就補得上。</p>
       <p class="note">漲跌是<b>收盤對收盤</b>算的。它與官方的「漲跌價差」差在一件事 ——
         官方是對除權息參考價算的，這裡沒有還原，所以<b>除權息會被算成下跌</b>，
         那一檔會出現在逆勢買超榜上而其實只是配息。金額大的那幾檔值得回頭確認一下
@@ -4827,6 +4941,14 @@ function bindGlobalControls() {
         /* 記不住就算了，下次回到預設的當日 */
       }
     }
+    if (pill.dataset.instisort) {
+      state.instiSort = pill.dataset.instisort;
+      try {
+        localStorage.setItem(INSTI_SORT_KEY, state.instiSort);
+      } catch (err) {
+        /* 記不住就算了，下次回到預設的依金額 */
+      }
+    }
     if (pill.dataset.rundays) {
       state.runDays = Number(pill.dataset.rundays);
       try {
@@ -4922,6 +5044,8 @@ async function start() {
     if (INSTI_LEGS.some((o) => o.value === instiLeg)) state.instiLeg = instiLeg;
     const instiWin = localStorage.getItem(INSTI_WIN_KEY);
     if (INSTI_WINS.some((o) => o.value === instiWin)) state.instiWin = instiWin;
+    const instiSort = localStorage.getItem(INSTI_SORT_KEY);
+    if (INSTI_SORTS.some((o) => o.value === instiSort)) state.instiSort = instiSort;
     // 「不限」是 0，而讀不到時 Number(null) 也是 0 —— 兩者的結果一樣，所以不用分辨
     const runDays = Number(localStorage.getItem(RUN_DAYS_KEY));
     if (RUN_DAYS.some((o) => o.value === runDays)) state.runDays = runDays;

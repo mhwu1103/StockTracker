@@ -81,6 +81,12 @@ T86 把外資拆成「外陸資（不含外資自營商）」與「外資自營�
 `insti/sum/{日期}.json`，含三邊 × 兩個窗口（5／20 日）的累計金額、累計股數與
 期間漲跌。**累計買超不是連續買超** —— 前者不管中間翻不翻向，後者一翻就斷，
 兩張榜挑出來的是不同的股票，所以 `streak/` 與 `sum/` 並存。
+
+## 「平常的量」也一樣
+
+力道標（今天這筆是平常的幾倍）要的是每一檔自己過去 20 天的中位數，同樣得回頭讀
+20 個每日檔。一天寫一個 `insti/base/{日期}.json`，存的是**分母**不是倍數 ——
+倍數由前端除出來，日後改顯示方式不必重算整段歷史。
 """
 
 from __future__ import annotations
@@ -97,6 +103,7 @@ INSTI_DAILY_DIR = INSTI_DIR / "daily"
 INSTI_RUN_DIR = INSTI_DIR / "streak"
 INSTI_CHG_DIR = INSTI_DIR / "chg"
 INSTI_SUM_DIR = INSTI_DIR / "sum"
+INSTI_BASE_DIR = INSTI_DIR / "base"
 INSTI_INDEX_PATH = INSTI_DIR / "index.json"
 
 # 上市：三大法人買賣超日報。selectType=ALLBUT0999 是「全部（不含權證、牛熊證）」
@@ -722,6 +729,130 @@ def build_sum_payload(date_iso: str, wins: dict, meta: dict) -> dict:
         "n": {w: len(b["rows"]) for w, b in kept.items()},
         "meta": {c: meta[c] for c in sorted(used) if c in meta},
         "w": kept,
+    }
+
+# --------------------------------------------------------------------------- #
+# 平常的量（力道標的分母）
+# --------------------------------------------------------------------------- #
+# 「買超」分頁的第四個軸：今天這筆買賣超，**對這一檔來說**算大嗎。
+#
+# 頁面上已經有「佔成交值」，但它問的是「相對於**今天的量**大不大」。力道標問的是
+# 另一件事：「相對於**這一檔自己的平常**大不大」。兩個都需要 —— 一檔平常每天被外資
+# 買賣幾百萬、今天忽然買超 2 億，佔成交值可能只有 3%（因為今天量也放大了），
+# 但對這一檔來說是空前的。
+#
+# 這一份存的是**分母**（平常的量），不是倍數。倍數由前端除出來 —— 存分母的話，
+# 同一份檔案換個顯示方式（例如日後要改成分位數）不必重算整段歷史。
+#
+# ## 中位數，不是平均
+#
+# 平均會被過去 20 天裡某一天的大額整個吃掉，算出來的「平常」其實是那一天。
+# 中位數不會。
+#
+# ## 不含今天
+#
+# 「平常」取今天**之前**那 BASE_WINDOW 個有法人資料的交易日。含今天的話，今天那筆
+# 大額會墊高自己的分母，力道標會系統性地偏小。
+#
+# ## 不要求相鄰
+#
+# 連續榜與累計檔都很在意「相鄰的交易日」，這一份不用：中位數是統計量，不是連續性。
+# 中間缺一天不會讓「這一檔平常被買多少」這個問題變得不成立，所以取的是「前 N 個
+# **有法人資料**的交易日」，缺口照跨。
+#
+# ## 分母的地板：夾住，不是藏起來
+#
+# 最大的坑是分母趨近 0：平常沒人動的個股，今天動一次就是 50 倍、200 倍 ——
+# 那個數字看起來最聳動，資訊量卻最低。
+#
+# 第一版想的是「中位數不到 0.1 億就不給力道標」。實測否決了它：1,445 檔曾進過每日檔
+# 的個股裡，有 570 檔的外資日金額中位數是 **0**（大部分交易日根本沒進檔案），
+# 再加 98 檔不到 0.05 億 —— 藏起來等於對 58% 的個股留白，而那裡面正好是最有意思的
+# 那一類（平常沒人碰、今天忽然有人買三億）。
+#
+# 所以改成**夾**：前端算的是 今日金額 ÷ max(中位數, daily 的收錄門檻)。
+# 比 MIN_OKU（0.05 億）小的數字，每日檔裡根本沒有記錄，所以那是這份資料的**解析度
+# 下限** —— 真正的中位數是多少我們不知道，只知道它在那之下。拿它當地板，
+# 等於說「最多只能講到這個倍數」，而不是假裝那一格沒有答案。
+BASE_VERSION = 1
+
+# 拿今天之前幾個「有法人資料的交易日」來算「平常」。與累計檔的長窗口同長，
+# 讓兩者講的是同一段期間。
+BASE_WINDOW = 20
+
+# 前面至少要有幾天才給得出「平常」。少於這個數就整天不寫任何一檔 —— 用三、四天
+# 算出來的中位數不是「平常」，是「剛好那幾天」。
+BASE_MIN_DAYS = 10
+
+
+def base_path(date_iso: str) -> Path:
+    return INSTI_BASE_DIR / f"{date_iso}.json"
+
+
+def median(values: list) -> float:
+    """中位數。偶數筆取中間兩個的平均，空的回 0。"""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+# 存的四個值，順序即 index。前三個對應畫面上的三個 pill，第四個是「三大法人」。
+#
+# 第四個**必須另外算**，不能拿前三個相加：中位數不可加。某一檔可能外資與投信天天
+# 一買一賣、各自的中位數都是 3 億，而三邊相加後的淨額中位數只有 0.2 億 ——
+# 拿 3+3+0 當「三大法人的平常」，力道標會系統性地偏小到看不出任何異常。
+BASE_FIELDS = ("fo", "tr", "de", "sum")
+
+
+def daily_norms(dates: list, tables: dict, at: int) -> dict:
+    """dates[at] 那一天每一檔的「平常的量」-> {代號: [外資, 投信, 自營, 三大法人]}（億）。
+
+    取 dates[at] **之前**最多 BASE_WINDOW 個有法人資料的交易日，每一邊各取
+    日金額絕對值的中位數。那幾天沒進檔案的算 0 —— 缺席代表三邊都不到 MIN_OKU，
+    那天這一檔確實幾乎沒有淨額，算 0 就是對的。
+
+    只算 dates[at] 當天在檔案裡的那些代號：力道標是掛在今天的列上的，
+    今天不在榜上的個股算了也沒有地方顯示。
+    """
+    window = dates[max(0, at - BASE_WINDOW):at]
+    if len(window) < BASE_MIN_DAYS:
+        return {}
+    history = [tables[d] for d in window]
+    out = {}
+    for code in tables[dates[at]]:
+        past = [table.get(code) for table in history]
+        legs = [round(median([
+            abs(oku(row[index], row[5])) if row else 0.0 for row in past
+        ]), 2) for index in (2, 3, 4)]      # leg_table 的 fo / tr / de
+        # 三大法人：先把每一天的三邊相加再取絕對值，才是「那一天三大法人淨動多少」
+        legs.append(round(median([
+            abs(oku(row[2] + row[3] + row[4], row[5])) if row else 0.0 for row in past
+        ]), 2))
+        out[code] = legs
+    return out
+
+
+def build_base_payload(date_iso: str, norms: dict, used: int) -> dict:
+    """一天的「平常的量」檔。
+
+    used 是實際拿幾個交易日算的 —— 同一天所有個股都一樣（它是窗口的性質，
+    不是個股的性質），所以放在最上層。
+    """
+    return {
+        "date": date_iso,
+        "v": BASE_VERSION,
+        "win": BASE_WINDOW,
+        # 實際用了幾個交易日。小於 win 代表資料起點附近，湊不滿
+        "used": used,
+        "min": BASE_MIN_DAYS,
+        "n": len(norms),
+        "fields": list(BASE_FIELDS),
+        # {代號: [外資, 投信, 自營, 三大法人]}，日買賣超金額絕對值的中位數（億）
+        "base": dict(sorted(norms.items())),
     }
 
 # --------------------------------------------------------------------------- #

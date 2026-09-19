@@ -4,6 +4,7 @@
     docs/data/insti/streak/{日期}.json  截至那一天，外資連續買（賣）超 3 天以上的名單
     docs/data/insti/chg/{日期}.json     那一天每一檔的漲跌（%），「逆勢買超」要的第二個軸
     docs/data/insti/sum/{日期}.json     截至那一天，三邊法人近 5／20 日的累計買賣超
+    docs/data/insti/base/{日期}.json    每一檔「平常」被買賣多少（力道標的分母）
 
 前端需要目錄檔的理由：法人資料是後來才開始累積的，它涵蓋的交易日比 data/index.json
 那份短。少了目錄，畫面就只能拿主索引的日期去猜，猜錯就是一則 404 載入失敗 ——
@@ -20,7 +21,7 @@
 跨日累計與連續榜是兩件事，所以兩份檔案並存：累計不管中間翻不翻向（問「總共買了
 多少」），連續一翻就斷（問「有沒有一路買」），挑出來的是不同的股票。
 
-四份都是純衍生資料，每次都由 daily/ 從頭重算。
+五份都是純衍生資料，每次都由 daily/ 從頭重算。
 
 用法：
     python scripts/build_institutions.py
@@ -233,6 +234,41 @@ def build_sum(dates: list, legs: dict, trading: list, before: dict, close_at) ->
     return len(dates)
 
 
+def build_base(dates: list, legs: dict) -> int:
+    """一天寫一個「每一檔平常被買賣多少」的檔案（力道標的分母）。回傳寫了幾天。
+
+    前面湊不滿 BASE_MIN_DAYS 天的那幾天整天不寫 —— 用三、四天算出來的中位數不是
+    「平常」，是「剛好那幾天」，而它看起來與真的中位數一模一樣。
+    """
+    thin = []
+    wrote = 0
+    latest = None
+    for at, date_iso in enumerate(dates):
+        norms = insti.daily_norms(dates, legs, at)
+        if not norms:
+            thin.append(date_iso)
+            continue
+        used = min(insti.BASE_WINDOW, at)
+        payload = insti.build_base_payload(date_iso, norms, used)
+        insti.write_json(insti.base_path(date_iso), payload)
+        latest = payload
+        wrote += 1
+
+    drop_orphans(insti.INSTI_BASE_DIR, {d for d in dates}, "平常的量")
+    # 寫不出來的那幾天也要清掉舊檔，不然改了 BASE_MIN_DAYS 之後會留下孤兒
+    drop_orphans(insti.INSTI_BASE_DIR, set(dates) - set(thin), "天數不足")
+
+    print(f"平常的量（前 {insti.BASE_WINDOW} 個交易日的日金額中位數）：寫了 {wrote} 天")
+    if thin:
+        print(f"  ! 這 {len(thin)} 天前面不滿 {insti.BASE_MIN_DAYS} 天，整天不寫："
+              f"{', '.join(thin[:5])}{' 等' if len(thin) > 5 else ''}")
+    if latest:
+        zero = sum(1 for v in latest["base"].values() if not v[0])
+        print(f"  最新那一天 {latest['date']}：{latest['n']} 檔（用了前 {latest['used']} 個交易日），"
+              f"其中 {zero} 檔的外資中位數是 0（平常大多沒進每日檔）")
+    return wrote
+
+
 def main() -> int:
     dates = insti.existing_dates()
     if not dates:
@@ -287,6 +323,10 @@ def main() -> int:
         "sum": {"v": insti.SUM_VERSION, "wins": list(insti.SUM_WINDOWS),
                 "keep": insti.SUM_KEEP, "floor": insti.SUM_FLOOR,
                 "fields": list(insti.SUM_FIELDS)},
+        # 力道標的自我描述。前面湊不滿的那幾天沒有檔案，所以畫面除了看這一行，
+        # 還要能接受個別日期的 404。
+        "base": {"v": insti.BASE_VERSION, "win": insti.BASE_WINDOW,
+                 "min": insti.BASE_MIN_DAYS, "fields": list(insti.BASE_FIELDS)},
         # 一天一格：交易日、留下幾檔，以及兩個市場各自三邊的買賣超合計（億元，官方金額）
         "days": days,
     }
@@ -323,6 +363,11 @@ def main() -> int:
     print()
     wrote = build_sum(dates, legs, trading, before, close_at)
     folder = insti.INSTI_SUM_DIR.relative_to(twse.ROOT).as_posix()
+    print(f"已寫入 {folder}/ 底下 {wrote} 個檔案")
+
+    print()
+    wrote = build_base(dates, legs)
+    folder = insti.INSTI_BASE_DIR.relative_to(twse.ROOT).as_posix()
     print(f"已寫入 {folder}/ 底下 {wrote} 個檔案")
     return 0
 
