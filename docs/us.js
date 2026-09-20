@@ -26,15 +26,32 @@ const SORTS = [
   { value: 'code', label: '依代號' },
 ];
 
+/*
+ * 兩個軸看同一份資料。
+ *
+ * 「看美股」問的是「昨晚這一檔在動，台股要盯誰」——一檔對一批，逐檔展開。
+ * 「看族群」問的是「這一族昨晚整體在動嗎，台股這一族今天跟上了沒」——
+ * 那件事在美股軸上看不出來：AI 伺服器有 28 檔美股，要展開 28 次才拼得回一個印象。
+ *
+ * 兩邊都只讀 index.json 的同一批 links，沒有第二份資料。
+ */
+const VIEWS = [
+  { value: 'us', label: '看美股' },
+  { value: 'group', label: '看族群' },
+];
+
 const state = {
   data: null,
   span: 60,          // 相關性的觀察窗（交易日）
   sort: 'corr',
+  view: 'us',        // 'us' 看美股、'group' 看族群
   open: new Set(),   // 展開中的美股代號，重畫之後要留著
+  openG: new Set(),  // 展開中的族群名稱。與 open 分開，切換檢視時互不影響
 };
 
 const SPAN_KEY = 'stocktracker.usspan';
 const SORT_KEY = 'stocktracker.ussort';
+const VIEW_KEY = 'stocktracker.usview';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -72,6 +89,11 @@ const cellOf = (row, kind) => {
   return at === undefined ? null : row[at];
 };
 const corrOf = (row, kind = 'r') => cellOf(row, kind);
+
+// 這兩欄不隨觀察窗變，但也要照欄名查：以前寫成 row[row.length - 1]，
+// 列尾一多欄（twchg）就整個錯位，而且錯得很安靜——天數會變成漲跌幅。
+const daysOf = (row) => row[colIdx.get('n')];
+const twChgOf = (row) => row[colIdx.get('twchg')];
 
 /** 這一檔美股在目前觀察窗下的中位相關；沒有任何一組算得出來就回 null。 */
 function midOf(item) {
@@ -112,6 +134,131 @@ function sortedItems() {
  * （量到帶子 [27,14]px、長條 [26,15]px）。長度在這一格沒有意義，位置才有，
  * 所以現值改成一根豎標，長條退場。數值本來就印在正上方，不必再用長度講一次。
  */
+// --------------------------------------------------------------------------
+// 族群軸
+//
+// 族群名稱本來就在資料裡：labels 是「族群」或「族群 › 子群」，每一筆台股連結都帶著
+// 它的索引。這裡只取頂層那一段重新分組，不需要任何新資料。
+//
+// 一族給三個數字，回答三個不同的問題：
+//   中位相關  這一族綁得緊不緊（所有配對在目前觀察窗下的相關性中位數）
+//   美股昨夜  這一族的因動了沒（族裡每一檔美股 d1 漲跌的中位數）
+//   台股今天  果跟上了沒（族裡每一檔台股當日漲跌的中位數）
+//
+// 用中位數不用平均：一族裡常有一兩檔暴衝（軍工那族只有 6 檔台股），
+// 平均會被它拉著走，中位數講的才是「這一族大致上怎麼樣」。
+// --------------------------------------------------------------------------
+
+/** 「AI 伺服器 › 散熱」-> 「AI 伺服器」。子群在族群軸上併回母族。 */
+const topGroup = (label) => String(label || '').split(' › ')[0];
+
+/**
+ * 依族群重新分組。回傳每一族的美股、台股與三個中位數，已照目前的排序排好。
+ *
+ * 台股會在好幾檔美股底下重複出現（穩懋同時對 AAOI 與 CRDO），所以這裡用 Map 去重，
+ * 留相關性最高的那一組當代表——列出來的是「這一檔台股在這一族裡最強的連動」。
+ */
+function groupsOf(items) {
+  const labels = state.data.labels || [];
+  const byName = new Map();
+  for (const item of items) {
+    for (const row of item.links) {
+      const name = topGroup(labels[row[2]]);
+      if (!name) continue;
+      let g = byName.get(name);
+      if (!g) {
+        g = { name, us: new Map(), tw: new Map(), corrs: [], pairs: 0 };
+        byName.set(name, g);
+      }
+      g.pairs += 1;
+      const r = corrOf(row);
+      if (r !== null && r !== undefined) g.corrs.push(r);
+
+      let u = g.us.get(item.t);
+      if (!u) {
+        u = { t: item.t, n: item.n, chg: item.chg?.d1 ?? null, corrs: [] };
+        g.us.set(item.t, u);
+      }
+      if (r !== null && r !== undefined) u.corrs.push(r);
+
+      const code = row[0];
+      const prev = g.tw.get(code);
+      if (!prev || (r ?? -Infinity) > (prev.r ?? -Infinity)) {
+        g.tw.set(code, { code, name: row[1], chg: twChgOf(row), r, via: item.t, s: row[3] });
+      }
+    }
+  }
+
+  const out = [...byName.values()].map((g) => ({
+    ...g,
+    us: [...g.us.values()].map((u) => ({ ...u, mid: median(u.corrs) }))
+      .sort((a, b) => (b.mid ?? -Infinity) - (a.mid ?? -Infinity)),
+    tw: [...g.tw.values()].sort((a, b) => (b.r ?? -Infinity) - (a.r ?? -Infinity)),
+    corr: median(g.corrs),
+    usChg: median([...g.us.values()].map((u) => u.chg).filter((v) => v !== null && v !== undefined)),
+    twChg: null,   // 下面補：要等 tw 去重之後才算得準
+  }));
+  for (const g of out) {
+    g.twChg = median(g.tw.map((t) => t.chg).filter((v) => v !== null && v !== undefined));
+  }
+
+  if (state.sort === 'chg') {
+    return out.sort((a, b) => (b.usChg ?? -Infinity) - (a.usChg ?? -Infinity));
+  }
+  if (state.sort === 'code') return out.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
+  return out.sort((a, b) => (b.corr ?? -Infinity) - (a.corr ?? -Infinity));
+}
+
+/** 展開後的美股那一列：這一族裡它對到幾檔、它自己昨夜走多少。 */
+const groupUsRow = (u) => `<div class="row">
+    <div class="rank"><span class="no sm ${trend(u.mid)}">${corrText(u.mid)}</span>
+      <span class="delta">中位</span></div>
+    <div class="ident"><span class="name">${esc(u.t)} ${esc(u.n)}</span>
+      <span class="code">${u.corrs.length} 組配對在這一族</span></div>
+    <div class="figures"><span class="value ${trend(u.chg)}">${signedPct(u.chg)}</span>
+      <span class="price">昨夜</span></div>
+  </div>`;
+
+/** 展開後的台股那一列：它今天走多少，以及它在這一族裡最強的那一組連動。 */
+const groupTwRow = (t) => `<a class="row" href="index.html#/stock/${esc(t.code)}">
+    <div class="rank"><span class="no sm ${trend(t.r)}">${corrText(t.r)}</span>
+      <span class="delta">${esc(t.via)}</span></div>
+    <div class="ident"><span class="name">${esc(t.name)}</span>
+      <span class="code">${esc(t.code)} · 標註 ${STARS[t.s] || ''}</span></div>
+    <div class="figures"><span class="value ${trend(t.chg)}">${signedPct(t.chg)}</span>
+      <span class="price">今天</span></div>
+  </a>`;
+
+function groupRow(g) {
+  const summary = `<div class="rank"><span class="no sm ${trend(g.corr)}">${corrText(g.corr)}</span>
+        <span class="delta">中位</span></div>
+      <div class="ident"><span class="name">${esc(g.name)}</span>
+        <span class="code">${g.us.length} 檔美股 · ${g.tw.length} 檔台股
+          · ${g.pairs} 組配對</span></div>
+      <div class="figures"><span class="value ${trend(g.usChg)}">${signedPct(g.usChg)}</span>
+        <span class="price">台股今天 ${tint(g.twChg, signedPct(g.twChg))}</span></div>`;
+  return `<details class="sector" ${state.openG.has(g.name) ? 'open' : ''}>
+    <summary class="row">${summary}</summary>
+    <div class="sector__body" data-group="${esc(g.name)}"></div>
+  </details>`;
+}
+
+function groupCard(groups) {
+  return `<section class="card">
+    <h2>族群 <small>${groups.length} 族 · 點一列展開它兩邊各有誰</small></h2>
+    ${groups.map(groupRow).join('')}
+    <p class="note">左邊是這一族<b>所有配對的相關性中位數</b>——它回答「這一族到底綁得
+      緊不緊」，跟任何單一檔都無關。右邊上面是<b>昨夜美股</b>這一族的漲跌中位數，
+      下面是<b>今天台股</b>這一族的。兩個數字並排，才看得出因動了、果有沒有跟上。</p>
+    <p class="note">都用中位數，不用平均：一族裡常有一兩檔暴衝，平均會被它拉著走。
+      台股在好幾檔美股底下會重複出現（穩懋同時對 AAOI 與 CRDO），這裡去重後只留
+      相關性最高的那一組，左邊那個小標就是它從哪一檔美股來的。</p>
+    <p class="note">⚠️ 台股那一邊是<b>對照表裡的那些</b>，不是這一族的全部成員——
+      人工標註只挑得出代表性的幾檔。要看整族的資金流向，去排行榜的
+      <a class="accent" href="index.html#/sector">族群</a>分頁。</p>
+  </section>`;
+}
+
 function corrBar(v, lo, hi) {
   if (v === null || v === undefined) return '<span class="corr-bar"></span>';
   const at = (n) => 50 + Math.max(-100, Math.min(100, n)) / 2;   // 0% 在正中間
@@ -137,7 +284,7 @@ function pairsOf(items) {
       const r = corrOf(row, 'r');
       const x = corrOf(row, 'x');
       if (r === null || r === undefined || x === null || x === undefined) continue;
-      out.push({ t: item.t, code: row[0], name: row[1], s: row[3], r, x, n: row[row.length - 1] });
+      out.push({ t: item.t, code: row[0], name: row[1], s: row[3], r, x, n: daysOf(row) });
     }
   }
   return out;
@@ -273,7 +420,8 @@ function linkRow(row, labels) {
       <div class="ident"><span class="name">${esc(name)}</span>
         <span class="code">${esc(code)} · ${esc(labels[label] || '')}</span></div>
       <div class="figures"><span class="value sm">超額 ${tint(x, corrText(x))}</span>
-        <span class="price">標註 ${STARS[s] || ''} · ${row[row.length - 1]} 天</span></div>
+        <span class="price">今 ${tint(twChgOf(row), signedPct(twChgOf(row)))}
+          · ${STARS[s] || ''} · ${daysOf(row)} 天</span></div>
     </a>`;
 }
 
@@ -387,8 +535,42 @@ function render() {
   $('#meta').innerHTML = `美股 ${esc(data.asof)} 收盤 · 台股至 ${esc(data.twAsof)}
     · 相關性取最近 ${state.span} 個交易日`;
 
+  if (state.view === 'group') {
+    const groups = groupsOf(items);
+    $('#view').innerHTML = `
+      ${lede(data, items)}
+      <div class="controls">${pills('view', VIEWS, state.view)}</div>
+      <div class="controls">${pills('span', spanOpts, String(state.span))}</div>
+      <div class="controls">${pills('sort', SORTS, state.sort)}</div>
+      ${scatterCard(items)}
+      ${benchCard(data)}
+      ${groupCard(groups)}
+      ${methodNote(data)}`;
+
+    const byName = new Map(groups.map((g) => [g.name, g]));
+    const fillG = (el) => {
+      const box = $('.sector__body', el);
+      if (box.innerHTML) return;
+      const g = byName.get(box.dataset.group);
+      box.innerHTML = `<p class="note">美股 ${g.us.length} 檔（昨夜）</p>
+        ${g.us.map(groupUsRow).join('')}
+        <p class="note">台股 ${g.tw.length} 檔（今天，點進去回排行榜的個股頁）</p>
+        ${g.tw.map(groupTwRow).join('')}`;
+    };
+    $('#view').querySelectorAll('details.sector').forEach((el) => {
+      if (el.open) fillG(el);
+      el.addEventListener('toggle', () => {
+        const name = $('.sector__body', el).dataset.group;
+        el.open ? state.openG.add(name) : state.openG.delete(name);
+        if (el.open) fillG(el);
+      });
+    });
+    return;
+  }
+
   $('#view').innerHTML = `
     ${lede(data, items)}
+    <div class="controls">${pills('view', VIEWS, state.view)}</div>
     <div class="controls">${pills('span', spanOpts, String(state.span))}</div>
     <div class="controls">${pills('sort', SORTS, state.sort)}</div>
     ${scatterCard(items)}
@@ -435,7 +617,10 @@ function render() {
 document.addEventListener('click', (ev) => {
   const pill = ev.target.closest('.pill');
   if (!pill) return;
-  if (pill.dataset.span) {
+  if (pill.dataset.view) {
+    state.view = pill.dataset.view;
+    try { localStorage.setItem(VIEW_KEY, state.view); } catch (err) { /* 無痕模式 */ }
+  } else if (pill.dataset.span) {
     state.span = Number(pill.dataset.span);
     try { localStorage.setItem(SPAN_KEY, String(state.span)); } catch (err) { /* 無痕模式 */ }
   } else if (pill.dataset.sort) {
@@ -466,6 +651,8 @@ async function start() {
     if (state.data.spans.includes(span)) state.span = span;
     const sort = localStorage.getItem(SORT_KEY);
     if (SORTS.some((s) => s.value === sort)) state.sort = sort;
+    const view = localStorage.getItem(VIEW_KEY);
+    if (VIEWS.some((v) => v.value === view)) state.view = view;
   } catch (err) {
     /* 讀不到就用預設值 */
   }

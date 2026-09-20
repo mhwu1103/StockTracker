@@ -52,6 +52,18 @@ def changes(closes: list) -> dict:
     return out
 
 
+def day_change(closes: dict, dates: list):
+    """台股最近一個交易日的漲跌幅。
+
+    要求最後一個交易日本身有價：停牌的那幾檔不可以拿前天對大前天的漲跌充當今天的，
+    畫面上它會跟其他檔並排，看不出那個數字是舊的。
+    """
+    if not dates or dates[-1] not in closes:
+        return None
+    seen = [closes[d] for d in dates if d in closes]
+    return pct(seen[-1], seen[-2]) if len(seen) >= 2 else None
+
+
 # 一個觀察窗佔四欄：r（原始）、x（超額）、lo／hi（滾動相關的擺盪範圍）。
 # 這個 4 與下面 cols 的四個鍵是同一件事，所以兩邊都從這裡長出來 ——
 # 加欄位時漏改另一處的那種錯，這一支上已經發生過一次。
@@ -102,9 +114,13 @@ def main() -> int:
 
     # 台股那一邊只算一次：同一檔會被好幾檔美股配到
     need = {code for rows in pairs.values() for code, *_ in rows}
-    tw_ret, tw_exc, missing = {}, {}, []
+    tw_ret, tw_exc, tw_chg, missing = {}, {}, {}, []
     for code in sorted(need):
-        series = us.returns(us.tw_closes(code), tw_dates)
+        tw_close = us.tw_closes(code)
+        # 當日漲跌與相關性無關，但族群頁要拿它跟美股那一邊並排，
+        # 而 kline 已經在手上，另外讀一次只是浪費。
+        tw_chg[code] = day_change(tw_close, tw_dates)
+        series = us.returns(tw_close, tw_dates)
         if len(series) < us.MIN_POINTS:
             missing.append(code)
             continue
@@ -143,6 +159,7 @@ def main() -> int:
                 # 最近才衝上來，是完全不同的兩件事，而單一個數字分不出來。
                 row.extend(us.corr_range(aligned, span))
             row.append(len(aligned))
+            row.append(tw_chg.get(code))
             rows.append(row)
         if not rows:
             continue
@@ -193,7 +210,7 @@ def main() -> int:
         "minPoints": us.MIN_POINTS,
         # 前端照名字查位置（不是照算式），所以這裡加欄位不必兩邊一起改
         "cols": list(COL_HEAD)
-                + [f"{k}{s}" for s in us.SPANS for k in SPAN_KEYS] + ["n"],
+                + [f"{k}{s}" for s in us.SPANS for k in SPAN_KEYS] + ["n", "twchg"],
         "minWindows": us.MIN_WINDOWS,
         "labels": labels,
         "items": items,
