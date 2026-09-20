@@ -822,6 +822,21 @@ select, input, button {
   font-variant-numeric: tabular-nums;
 }
 
+/* 結構頁的矩陣列名是「突破後未回踩」這種長標，3.4rem 塞不下 */
+.matrix--wide { grid-template-columns: 5.6rem repeat(5, 1fr); }
+.matrix--wide .rowlab { font-size: 10px; line-height: 1.2; }
+
+/* 結構頁沒有名次可放，第一欄改放方向與階段 */
+.row--struct { grid-template-columns: 4.2rem 1fr auto; }
+.row--struct .tag { text-align: center; line-height: 1.25; }
+.row--struct .tag .mark { display: block; font-size: 14px; }
+.row--struct .tag .phase { display: block; font-size: 10px; color: var(--muted); }
+.row--struct .tag.up .mark { color: var(--up); }
+.row--struct .tag.down .mark { color: var(--down); }
+/* 結構那一行資訊比較長（狀態、天數、趨勢），窄螢幕上讓它折行而不是切掉。
+   .ident 在格線裡是 1fr，折行只會讓列變高，擠不到右邊的數字。 */
+.row--struct .streak { white-space: normal; }
+
 .ident .ma-chips,
 .ident .chips { display: block; font-size: 11px; line-height: 1.4; }
 .ma-chip,
@@ -850,6 +865,14 @@ select, input, button {
   gap: 1px;
   background: var(--line);
 }
+
+/* 一格塞不下的統計（例如「上升／震盪／下降」三個數）要兩格寬。
+
+   不能寫 `1 / -1`：auto-fit 只收合「完全沒有項目」的軌道，跨滿整列等於把每一條
+   軌道都佔住，寬螢幕上就會展開成十幾條 96px 的軌道，統計縮在左邊、右邊一片空白。
+   跨兩格則軌道數照常收合，平板與桌面上五格會併成同一列。
+   手機另有一條覆寫（見下面的 767px）：那裡只有四條軌道，跨兩格會剩兩格灰白。 */
+.stat--wide { grid-column: span 2; }
 
 .stat {
   background: var(--surface);
@@ -1002,6 +1025,10 @@ select, input, button {
  * ========================================================================== */
 @media (max-width: 767px) {
   :root { --tabbar-h: 50px; }
+
+  /* 手機寬度下 .stat-grid 只排得出四條軌道，四個統計剛好佔滿第一列。
+     第五格跨兩格的話，右邊那兩格會空著；這裡讓它獨佔一整列。 */
+  .stat--wide { grid-column: 1 / -1; }
 
   /* 內容捲到底時最後一列不能被 bar 蓋住。安全區域那段是 iPhone 的 home indicator。 */
   body { padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom)); }

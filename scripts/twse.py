@@ -198,6 +198,17 @@ def kline_path(code: str, month: str, market: str = "twse") -> Path:
     return KLINE_DIR / market / code / f"{month}.json"
 
 
+def read_json(path: Path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def trim(price):
+    """2420.0 -> 2420、9.8400 -> 9.84。逐日逐檔存的數字，小數點後多一位就是多幾十 KB。"""
+    if price is None:
+        return None
+    return int(price) if float(price).is_integer() else round(price, 2)
+
+
 def write_json(path: Path, payload) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

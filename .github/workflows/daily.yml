@@ -92,6 +92,13 @@ jobs:
 
       - name: 重建索引與歷史序列
         run: python scripts/build_history.py
+
+      # 要放在 build_history.py 後面：電子股的 K 線是由那一步一起寫出來的，
+      # 結構分頁點進個股時要讀。結構本身只吃 close/，與排行無關。
+      - name: 重建電子股價格結構
+        continue-on-error: true
+        run: python scripts/build_structure.py
+
       - name: 統計新進榜之後的表現
         run: python scripts/build_entry.py
 

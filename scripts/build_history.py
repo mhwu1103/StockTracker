@@ -266,13 +266,6 @@ def load_prices(date_iso: str, market: str):
             for code, close in raw["c"].items()}
 
 
-def trim(price):
-    """2420.0 -> 2420、9.8400 -> 9.84。K 線檔逐日逐檔存四個數，小數點後多一位就是多幾十 KB。"""
-    if price is None:
-        return None
-    return int(price) if float(price).is_integer() else round(price, 2)
-
-
 def write_klines(market: str, series: dict, codes: set) -> tuple:
     """把逐日的全市場四價轉置成「一檔一個月一個檔」的 K 線，回傳 (寫出檔數, 重寫檔數)。
 
@@ -295,7 +288,7 @@ def write_klines(market: str, series: dict, codes: set) -> tuple:
                 "code": code,
                 "month": month,
                 "d": [int(date_iso[8:]) for date_iso, _ in rows],
-                "q": [[trim(v) for v in price] for _, price in rows],
+                "q": [[twse.trim(v) for v in price] for _, price in rows],
             }
             written += 1
             if twse.write_if_changed(twse.kline_path(code, month, market), payload):

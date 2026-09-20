@@ -36,7 +36,8 @@ window.StockNav = (function () {
       { v: 'moves', label: '異動' }, { v: 'entry', label: '後續' },
       { v: 'period', label: '週月' }] },
     { key: 'tech', label: '技術', views: [
-      { v: 'burst', label: '爆量' }, { v: 'ma', label: '均線' }, { v: 'macd', label: 'MACD' }] },
+      { v: 'burst', label: '爆量' }, { v: 'ma', label: '均線' }, { v: 'macd', label: 'MACD' },
+      { v: 'structure', label: '結構' }] },
     { key: 'chips', label: '籌碼', views: [
       { v: 'holders', label: '大戶' }, { v: 'insti', label: '法人' },
       { v: 'instirank', label: '買超' }, { v: 'instirun', label: '連買' },

@@ -190,6 +190,10 @@ class StructureTracker:
 
         兩側都要嚴格大於（或小於）才算，平手不算——雙頂那種兩根一樣高的，
         算成兩個樞紐只會讓後面的「前期高點」在兩個一樣的價位之間跳來跳去。
+
+        不必擔心「還沒確認就先被穿過去」：樞紐高之所以成立，正是因為後面那 k 根的
+        最高價全都比它低，收盤自然也低。確認窗裡不可能出現穿越，所以確認之後才開始
+        盯穿越，不會漏掉任何一次突破。
         """
         bars = state["bars"]
         span = 2 * k + 1
@@ -280,10 +284,15 @@ class StructureTracker:
         而且今天收在它之上，就把 ref 往上搬。不搬的話，一路走高的股票會永遠停在
         很久以前的那個前高，回踩根本不會發生。搬的時候 age 不重算，因為突破日
         還是最初那一天；重算的是 phase，新的前高要重新等它的回踩。
+
+        突破失敗之後，被穿回去的那條 `ref` 自己也是一個要盯的價位：收盤再站回它
+        之上就是同一個前高被重新踩過去，那是一次新的突破，age 從頭算。少了這一條，
+        在前高上下來回洗的股票會一路卡在「失敗」，即使收盤早就回到前高之上。
         """
         top = ks["highs"][-1] if ks["highs"] else None
         bottom = ks["lows"][-1] if ks["lows"] else None
-        idle = ks["dir"] == NONE or ks["phase"] == PHASE_FAILED
+        failed = ks["dir"] != NONE and ks["phase"] == PHASE_FAILED
+        idle = ks["dir"] == NONE or failed
 
         if prev is not None:
             if top and prev <= top[1] < close:
@@ -291,6 +300,13 @@ class StructureTracker:
                 return
             if bottom and prev >= bottom[1] > close:
                 self._start(ks, DOWN, now, bottom[1], close)
+                return
+            if failed:
+                ref = ks["ref"]
+                if ks["dir"] == UP and prev < ref <= close:
+                    self._start(ks, UP, now, ref, close)
+                elif ks["dir"] == DOWN and prev > ref >= close:
+                    self._start(ks, DOWN, now, ref, close)
                 return
         if idle:
             return

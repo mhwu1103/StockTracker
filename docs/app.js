@@ -75,6 +75,14 @@ const state = {
   macdSide: 'up',      // 「MACD」分頁：up 黃金交叉／down 死亡交叉
   macdWhen: '3',       // 「MACD」分頁的時點：近 N 日已交叉，或 d1 明天／d2 後天
   macdStack: 'any',    // 「MACD」分頁的四線篩選：沿用均線頁的 any／up／down
+  structK: 3,          // 「結構」分頁的樞紐敏感度：3 短波段、5 大波段
+  structDir: 'any',    // 「結構」分頁的方向篩選：any 不限、up 向上、down 向下
+  structPhase: 1,      // 「結構」分頁選中的階段（STRUCT_PHASES 的索引）
+  structDays: 5,       // 「結構」分頁的「近 N 個交易日內走進這個階段」，0 是不限
+  structInd: '',       // 「結構」分頁的電子子產業篩選；'' 代表全部
+  structure: null,     // Promise<structure/index.json>，進到結構頁才載
+  structCodes: null,   // Promise<structure/codes.json>
+  structDay: new Map(),// 交易日 -> Promise<structure/{日期}.json|null>
   holderLots: 400,     // 「大戶」分頁的大戶門檻（張），HOLDER_LOTS 的 value
   holderSpan: 'q1',    // 「大戶」分頁拿哪一段當基準（HOLDER_SPANS 的 value）
   instiMin: 0.5,       // 「法人」分頁的同買／同賣門檻（億），INSTI_MINS 的 value
@@ -2050,6 +2058,397 @@ async function renderMacd(view) {
 }
 
 // --------------------------------------------------------------------------
+// 分頁：結構（電子股的突破、回踩與趨勢）
+//
+// 這一頁與排行完全脫鉤：不看成交值前 200 名，八個官方電子子產業底下的每一檔都算，
+// 包含從來沒進過榜的那些。資料在 data/structure/，由 scripts/build_structure.py 產生。
+//
+// 它只陳述「現在處在哪個結構狀態」，不寫「該買」「該賣」——與均線、MACD 兩頁同一個
+// 分寸。回踩守住是一個看得到的事實，接下來會怎樣不是這一頁能說的。
+// --------------------------------------------------------------------------
+const STRUCT_KS = [
+  { value: 3, label: 'k=3 短波段' },
+  { value: 5, label: 'k=5 大波段' },
+];
+
+const STRUCT_DIRS = [
+  { value: 'any', label: '不限方向' },
+  { value: 'up', label: '向上' },
+  { value: 'down', label: '向下' },
+];
+
+// 四個階段，向上與向下各一套說法。順序與 scripts/structure.py 的 PHASE_* 一致。
+const STRUCT_PHASES = [
+  { up: '突破後未回踩', down: '破位後未反彈', short: '未回測' },
+  { up: '回踩中', down: '反彈中', short: '回測中' },
+  { up: '回踩守住', down: '反彈受阻', short: '守住／受阻' },
+  { up: '突破失敗', down: '破位失敗', short: '失敗' },
+];
+
+// 「近 N 個交易日內走進這個階段」，0 是不限。與均線頁的 MA_LOOKBACKS 同一套用法。
+const STRUCT_LOOKBACKS = [1, 3, 5, 10, 0];
+
+const STRUCT_TRENDS = { 1: '上升', 0: '震盪', '-1': '下降' };
+
+// 每日檔裡一檔的 14 個數字：k=3 的六個、k=5 的六個、收盤、漲跌幅
+const STRUCT_SLOT = { 3: 0, 5: 6 };
+
+const STRUCT_K_KEY = 'stocktracker.structk';
+
+function loadStructIndex() {
+  if (!state.structure) state.structure = getJSON(`${DATA}/structure/index.json`);
+  return state.structure;
+}
+
+function loadStructCodes() {
+  if (!state.structCodes) state.structCodes = getJSON(`${DATA}/structure/codes.json`);
+  return state.structCodes;
+}
+
+/** 某一天的結構。結構只涵蓋 close/ 有四價的那些日子，更早的日子讀不到就回 null。 */
+function loadStructDay(date) {
+  if (!state.structDay.has(date)) {
+    state.structDay.set(date, getJSON(`${DATA}/structure/${date}.json`).catch(() => null));
+  }
+  return state.structDay.get(date);
+}
+
+/** 把每日檔那 14 個數字攤成看得懂的欄位 */
+function structAt(row, k) {
+  const o = STRUCT_SLOT[k];
+  return {
+    dir: row[o], phase: row[o + 1], age: row[o + 2], pdays: row[o + 3],
+    ref: row[o + 4], trend: row[o + 5], close: row[12], chg: row[13],
+  };
+}
+
+const structLabel = (s) =>
+  (s.dir === 0 ? '無結構' : STRUCT_PHASES[s.phase][s.dir > 0 ? 'up' : 'down']);
+
+/**
+ * 把狀態寫成一句話。
+ *
+ * 「突破失敗」本身是一天的事，之後那段才是它真正的意思：前高被踩回去、
+ * 到現在也還沒有任何前高前低被突破——也就是趨勢結束之後的震盪消化。
+ * 寫成「失敗第 24 天」會讓人以為今天還在失敗，所以這裡分開講。
+ */
+function structPhaseText(s) {
+  const label = structLabel(s);
+  if (s.phase === 3) {
+    return s.pdays === 0 ? `今天${label}` : `${label}，之後 ${s.pdays} 天沒有新結構`;
+  }
+  return s.pdays === 0 ? `今天走進${label}` : `${label}第 ${s.pdays + 1} 天`;
+}
+
+/** 矩陣的列名：篩了方向就講那個方向的說法，沒篩就用兩邊共用的短標 */
+function structPhaseLabel(phase) {
+  const p = STRUCT_PHASES[phase];
+  if (state.structDir === 'up') return p.up;
+  if (state.structDir === 'down') return p.down;
+  return p.short;
+}
+
+const structSpanLabel = (days) => (days ? `近 ${days} 日` : '不限');
+
+/** 命中：有結構、階段對得上，而且是在近 N 個交易日內走進這個階段的 */
+const structHit = (s, phase, days) =>
+  s.dir !== 0 && s.phase === phase && (!days || s.pdays < days);
+
+/**
+ * 樞紐高低點。與 scripts/structure.py 的 _confirm_pivots() 是同一套規則，
+ * 改動時兩邊要一起看：某一根的最高價比前後各 k 根都高就是樞紐高，
+ * 兩側都要嚴格大於，平手不算。
+ *
+ * 這裡是拿 K 線檔自己的四價現算的（與 movingAverage() 同一個做法），不另外存檔——
+ * 樞紐是四價的純函式，存成一檔一份只會多出一堆每天都要重寫的轉置檔。
+ */
+function structPivots(candles, k) {
+  const out = [];
+  for (let i = k; i < candles.length - k; i += 1) {
+    let isHigh = true;
+    let isLow = true;
+    for (let j = i - k; j <= i + k; j += 1) {
+      if (j === i) continue;
+      if (candles[j].h >= candles[i].h) isHigh = false;
+      if (candles[j].l <= candles[i].l) isLow = false;
+    }
+    if (isHigh) out.push({ i, type: 'h', price: candles[i].h });
+    if (isLow) out.push({ i, type: 'l', price: candles[i].l });
+  }
+  return out;
+}
+
+/**
+ * 疊在 K 線上的結構圖層：樞紐高低點各一組標記，加上目前被突破的那條水平線。
+ * 樞紐要用完整序列（含暖身段）才算得準，算完再切回看得到的那一段。
+ */
+function structExtras(series, offset, k, s) {
+  const highs = series.map(() => null);
+  const lows = series.map(() => null);
+  structPivots(series, k).forEach((p) => {
+    (p.type === 'h' ? highs : lows)[p.i] = p.price;
+  });
+  const mark = (label, data, color, rotation) => ({
+    type: 'line',
+    label,
+    data: data.slice(offset),
+    borderColor: color,
+    backgroundColor: color,
+    showLine: false,
+    pointRadius: 3,
+    pointStyle: 'triangle',
+    rotation,
+    order: 0,
+  });
+  const out = [
+    mark(`前期高點 k=${k}`, highs, CANDLE.up, 0),
+    mark(`前期低點 k=${k}`, lows, CANDLE.down, 180),
+  ];
+  if (s && s.dir !== 0 && s.ref !== null && s.ref !== undefined) {
+    out.push({
+      type: 'line',
+      label: s.dir > 0 ? '被突破的前期高點' : '被跌破的前期低點',
+      data: series.slice(offset).map(() => s.ref),
+      borderColor: '#f79009',
+      borderWidth: 1.4,
+      borderDash: [5, 4],
+      pointRadius: 0,
+      order: 0,
+    });
+  }
+  return out;
+}
+
+/** 四個階段 ×「近 1／3／5／10 日」的檔數矩陣，每一格都是可以按的選擇鈕 */
+function structMatrix(pool) {
+  const head = STRUCT_LOOKBACKS.map((d) => `<div class="head">${structSpanLabel(d)}</div>`).join('');
+  const body = STRUCT_PHASES.map((p, phase) => {
+    const cells = STRUCT_LOOKBACKS.map((d) => {
+      const on = phase === state.structPhase && d === state.structDays;
+      const count = pool.filter((s) => structHit(s, phase, d)).length;
+      return `<button class="pill cell ${on ? 'active' : ''}" data-structphase="${phase}" data-structdays="${d}"
+        aria-label="${structSpanLabel(d)}${esc(p.up)}">${count}</button>`;
+    }).join('');
+    return `<div class="rowlab">${esc(structPhaseLabel(phase))}</div>${cells}`;
+  }).join('');
+  return `<div class="matrix matrix--wide"><div class="rowlab"></div>${head}${body}</div>`;
+}
+
+function structRow(code, meta, s) {
+  const [name, market, industry] = meta;
+  const gap = s.ref ? (s.close / s.ref - 1) * 100 : null;
+  const chg = s.chg === null || s.chg === undefined
+    ? '' : `<em class="${trend(s.chg)}">${signed(s.chg)}</em>`;
+  return `<a class="row row--struct" href="#/structure/${code}">
+    <div class="tag ${s.dir > 0 ? 'up' : 'down'}">
+      <span class="mark">${s.dir > 0 ? '▲' : '▼'}</span>
+      <span class="phase">${esc(STRUCT_PHASES[s.phase].short)}</span>
+    </div>
+    <div class="ident">
+      <span class="name">${state.watch.has(code) ? '<span class="star">★</span>' : ''}${esc(name)}</span>
+      <span class="code">${code} · ${esc(MARKET_TAGS[market] || market)} · ${esc(industry || '—')}</span>
+      <span class="streak">${esc(structPhaseText(s))}${s.phase === 3
+    ? '' : ` · 突破後第 ${s.age + 1} 天`} · 趨勢${STRUCT_TRENDS[s.trend]}</span>
+    </div>
+    <div class="figures">
+      <span class="value">${num(s.close, 2)} ${chg}</span>
+      <span class="price">${s.dir > 0 ? '前高' : '前低'} ${num(s.ref, 2)}${gap === null
+    ? '' : ` · 離 <em class="${trend(gap)}">${signed(gap)}</em>`}</span>
+    </div>
+  </a>`;
+}
+
+/** 這一天沒有結構資料時，講清楚為什麼、以及要怎麼補 */
+/**
+ * 結構清單。手機那一列（structRow）把方向、階段、天數、趨勢四件事擠成兩行小字，
+ * 桌面有欄位可以放，就一件一欄——兩百列上下對齊，才看得出「哪一群在同一步」。
+ *
+ * 產業是可丟的那一欄（窄一點的桌面會先捨它），其餘都是這一頁的主詞。
+ */
+const structList = (hits) => listOf(hits,
+  (s) => structRow(s.code, s.meta, s),
+  () => ({
+    href: (s) => `#/structure/${s.code}`,
+    cols: [
+      colSeq,
+      col('方向', W.seq, 'w-num',
+        (s) => `<em class="${s.dir > 0 ? 'up' : 'down'}">${s.dir > 0 ? '▲' : '▼'}</em>`),
+      col('名稱', W.name, 'w-name', (s) => wideName(s.code, s.meta[0], s.meta[1])),
+      optional(col('產業', W.ind, 'w-ind', (s) => esc(s.meta[2] || '—'))),
+      col('收盤', W.price, 'w-num', (s) => cellNum(s.close)),
+      col('漲跌%', W.pct, 'w-num', (s) => widePct(s.chg)),
+      col('前高／前低', W.price, 'w-num', (s) => cellNum(s.ref)),
+      col('離', W.pct, 'w-num',
+        (s) => widePct(s.ref ? (s.close / s.ref - 1) * 100 : null)),
+      col('狀態', W.note, 'w-num w-streak', (s) => esc(structPhaseText(s))),
+      col('突破後', W.days, 'w-num',
+        (s) => (s.phase === 3 ? '—' : `第 ${s.age + 1} 天`)),
+      col('趨勢', W.kind, 'w-num', (s) => STRUCT_TRENDS[s.trend]),
+    ],
+  }));
+
+function structGapBox(index) {
+  const span = index && index.dates.length
+    ? `${index.dates[0]} ~ ${index.dates[index.dates.length - 1]}` : '尚未產生';
+  return `<p class="hint">${state.date} 沒有結構資料。</p>
+    <section class="card"><h2>要怎麼補</h2>
+      <p class="note">樞紐要連續的四價才數得準，用的是 <code>docs/data/close/</code> 底下的全市場收盤價
+        （排行用的 <code>daily/</code> 只留前 ${KEPT} 名，中間掉出榜的日子是空的，湊不出連續的 K 棒）。
+        目前涵蓋 ${span}。</p>
+      <p class="note">補這一天要連同它之前的日子一起補，樞紐才確認得了：
+        <code>python scripts/backfill.py --to ${state.date} --days 40</code>，
+        再跑一次 <code>python scripts/build_structure.py</code>。</p>
+    </section>`;
+}
+
+async function renderStructure(view, code) {
+  const [index, codesPayload] = await Promise.all([loadStructIndex(), loadStructCodes()]);
+  const codes = codesPayload.codes;
+  if (code) return renderStructureStock(view, code, index, codes);
+
+  const day = await loadStructDay(state.date);
+  if (!day) {
+    view.innerHTML = structGapBox(index);
+    return;
+  }
+
+  const k = state.structK;
+  // 兩個篩選先套在池子上，矩陣的每一格與下面的清單都只算這個池子裡的
+  const pool = [];
+  for (const [c, row] of Object.entries(day.s)) {
+    const meta = codes[c];
+    if (!meta) continue;
+    if (state.structInd && meta[2] !== state.structInd) continue;
+    const s = structAt(row, k);
+    if (state.structDir === 'up' && s.dir !== 1) continue;
+    if (state.structDir === 'down' && s.dir !== -1) continue;
+    pool.push({ code: c, meta, ...s });
+  }
+
+  const hits = pool
+    .filter((s) => structHit(s, state.structPhase, state.structDays))
+    .sort((a, b) => a.pdays - b.pdays
+      || Math.abs(a.close / a.ref - 1) - Math.abs(b.close / b.ref - 1)
+      || a.code.localeCompare(b.code));
+
+  const live = pool.filter((s) => s.dir !== 0).length;
+  const days = state.structDays;
+  const counts = STRUCT_PHASES.map((_, phase) => pool.filter((s) => structHit(s, phase, days)).length);
+  const trends = [1, 0, -1].map((t) => pool.filter((s) => s.trend === t).length);
+  const inds = [{ value: '', label: '全部電子' }]
+    .concat(index.industries.map((name) => ({ value: name, label: name })));
+  const picked = [
+    state.structInd || '全部電子股',
+    state.structDir === 'up' ? '向上' : state.structDir === 'down' ? '向下' : '',
+  ].filter(Boolean).join('、');
+
+  view.innerHTML = `
+    <div class="controls">${pills('structk', STRUCT_KS, k)}${pills('structdir', STRUCT_DIRS, state.structDir)}</div>
+    <div class="controls">${pills('structind', inds, state.structInd)}</div>
+    <section class="card">
+      <h2>走到哪一步了 <small>${esc(picked)}　${pool.length} 檔裡 ${live} 檔有結構</small></h2>
+      <div class="matrix-box">${structMatrix(pool)}</div>
+      ${live ? '' : `<p class="note">這一天還在暖身：樞紐要連續 ${2 * k + 1} 根 K 棒才確認得了，
+        四價從 ${index.dates[0]} 起才有，所以前 ${2 * k} 個交易日一定是空的。</p>`}
+    </section>
+    <div class="card"><div class="stat-grid">
+      <div class="stat"><b>${counts[0]}</b><span>${esc(structSpanLabel(days))}${esc(structPhaseLabel(0))}</span></div>
+      <div class="stat"><b>${counts[1]}</b><span>${esc(structSpanLabel(days))}${esc(structPhaseLabel(1))}</span></div>
+      <div class="stat"><b class="up">${counts[2]}</b><span>${esc(structSpanLabel(days))}${esc(structPhaseLabel(2))}</span></div>
+      <div class="stat"><b class="down">${counts[3]}</b><span>${esc(structSpanLabel(days))}${esc(structPhaseLabel(3))}</span></div>
+      <div class="stat stat--wide"><b>${trends[0]} / ${trends[1]} / ${trends[2]}</b><span>趨勢 上升／震盪／下降</span></div>
+    </div></div>
+    <section class="card">
+      <h2>${esc(structSpanLabel(state.structDays))}${esc(structPhaseLabel(state.structPhase))}
+        <small>${hits.length} 檔，剛走進這個階段的排前面</small></h2>
+      ${hits.length
+    ? structList(hits)
+    : '<p class="hint">這個條件在這一天沒有命中任何一檔。</p>'}
+    </section>
+    <section class="card">
+      <h2>這一頁在算什麼</h2>
+      <p class="note">前期高點＝<b>樞紐高點</b>：某一根的最高價比前後各 ${k} 根都高。
+        <b>樞紐要等 ${k} 個交易日後才確認得了</b>——第 i 根是不是高點，要看完第 i+${k} 根才知道。
+        這是這套算法的本質，不是延遲；今天畫得出來的最新樞紐，最近也是 ${k} 天前那一根。</p>
+      <p class="note">「破不破」一律看<b>收盤價</b>：盤中最低跌破前高不算破，收盤跌破才算突破失敗。
+        向下是完全鏡像的一套：跌破前期低點是破位，彈回前低附近是反彈，
+        反彈衝不過前低又跌破反彈前的低點就是「反彈受阻」。</p>
+      <p class="note">趨勢看的是樞紐序列本身：高點更高且低點更高＝上升，兩個都更低＝下降，其餘＝震盪。
+        它與上面的突破狀態是兩件事，可以同時出現「趨勢下降」與「向上突破」。</p>
+      <p class="note">「失敗，之後 N 天沒有新結構」講的是：那次突破被收盤踩回去之後，
+        到今天為止沒有任何前高被站上、也沒有任何前低被跌破。N 拉得愈長，代表這一檔
+        在這個 k 的尺度上愈是在原地消化。矩陣的「近 N 日」欄就是用來把剛發生的
+        與陳年的分開。</p>
+      <p class="note">涵蓋 ${index.counts ? Object.values(index.counts).reduce((a, b) => a + b, 0) : '—'} 檔電子股
+        （八個官方電子子產業，不看成交值排名）。這一頁只講狀態，不給買賣建議。</p>
+    </section>`;
+}
+
+async function renderStructureStock(view, code, index, codes) {
+  const meta = codes[code];
+  if (!meta) {
+    view.innerHTML = `<p class="hint">${esc(code)} 不在電子類股名單裡。<br>
+      <a class="linky" href="#/structure">回結構總覽</a></p>`;
+    return;
+  }
+  const [name, market, industry] = meta;
+  const day = await loadStructDay(state.date);
+  const row = day && day.s[code];
+  const k = state.structK;
+  const s = row ? structAt(row, k) : null;
+
+  // K 線：多抓幾個月當均線與樞紐的暖身，畫的時候再切回看得到的那一段
+  const upTo = state.index.dates.indexOf(state.date) + 1;
+  const labels = state.index.dates.slice(Math.max(0, upTo - state.span), upTo);
+  const series = fillCandles(await loadKlineAuto(
+    code, market, monthBack(labels[0].slice(0, 7), KLINE_LEAD_MONTHS), state.date.slice(0, 7),
+  )).filter((r) => r.date <= state.date);
+  const from = series.findIndex((r) => r.date >= labels[0]);
+  const drawn = from < 0 ? 0 : series.length - from;
+
+  const both = STRUCT_KS.map((opt) => {
+    const cur = row ? structAt(row, opt.value) : null;
+    if (!cur || cur.dir === 0) {
+      return `<div class="stat"><b>—</b><span>k=${opt.value} 無結構</span></div>`;
+    }
+    return `<div class="stat"><b class="${cur.dir > 0 ? 'up' : 'down'}">${esc(STRUCT_PHASES[cur.phase].short)}</b>
+      <span>k=${opt.value}　${cur.dir > 0 ? '前高' : '前低'} ${num(cur.ref, 2)}<br>${esc(structPhaseText(cur))}</span></div>`;
+  }).join('');
+
+  view.innerHTML = `
+    <p class="hint"><a class="linky" href="#/structure">← 回結構總覽</a></p>
+    <section class="card">
+      <h2>${esc(name)} <small>${code} · ${esc(MARKET_TAGS[market] || market)} · ${esc(industry || '—')}</small></h2>
+      <div class="stat-grid">${both}
+        <div class="stat"><b>${s ? num(s.close, 2) : '—'}</b><span>${state.date} 收盤</span></div>
+        <div class="stat"><b>${s ? STRUCT_TRENDS[s.trend] : '—'}</b><span>k=${k} 樞紐趨勢</span></div>
+      </div>
+    </section>
+    <div class="controls">${pills('structk', STRUCT_KS, k)}</div>
+    <section class="card">
+      <h2>日 K 線與結構 <small>近 ${drawn} 個交易日</small></h2>
+      ${drawn
+    ? `<div class="chart-box tall"><canvas id="c-struct"></canvas></div>
+       <p class="note">▲ 是樞紐高點、▼ 是樞紐低點，兩者都要等 ${k} 個交易日後才確認得了，
+         所以最右邊那 ${k} 根一定還沒有標記。橘色虛線是目前這次${s && s.dir < 0 ? '破位' : '突破'}
+         被${s && s.dir < 0 ? '跌破' : '踩過去'}的那個價位。
+         價格沒有還原權值，除權息當天的跳空是真的跳空。</p>`
+    : `<p class="hint">這一段期間沒有四價資料，畫不出 K 線。</p>`}
+    </section>
+    <p class="hint"><a class="linky" href="#/stock/${code}">看這一檔的排名與成交值走勢 →</a></p>`;
+
+  if (!drawn) return;
+  try {
+    const Chart = await loadChartJs();
+    drawCandles(Chart, $('#c-struct'), series, from, structExtras(series, from, k, s));
+  } catch (err) {
+    document.querySelectorAll('.chart-box').forEach((box) => {
+      box.innerHTML = `<p class="hint">${esc(err.message)}</p>`;
+    });
+  }
+}
+
+// --------------------------------------------------------------------------
 // 分頁三：個股排名走勢
 // --------------------------------------------------------------------------
 async function seriesFor(code) {
@@ -2216,10 +2615,29 @@ function fillCandles(rows) {
  * 所以補一個隨價格區間縮放的最小厚度，讓它至少還是一條看得見的橫線。
  */
 /**
- * K 線。level 給了就在圖上疊一條水平線（目前用來畫法人的買均／賣均）。
- * 水平線用一個「每一格都同值」的 line dataset 畫，不必為了一條線多載一個外掛。
+ * 一條水平線的 dataset：用「每一格都同值」畫，不必為了一條線多載一個外掛。
+ * 法人均價（買均／賣均）與結構頁的前期高低點都是這個形狀。
  */
-function drawCandles(Chart, canvas, series, offset = 0, level = null) {
+function levelLine(value, label, color) {
+  return {
+    type: 'line',
+    label,
+    data: null,          // drawCandles 知道有幾格，填在那裡
+    borderColor: color,
+    borderWidth: 1.2,
+    borderDash: [5, 4],
+    pointRadius: 0,
+    order: 1,
+    _level: value,
+  };
+}
+
+/**
+ * K 線。`extras` 是要疊在圖上的額外 dataset（法人均價那條水平線、
+ * 結構頁的樞紐標記與被突破的前期高點），資料長度必須已經是切掉 offset 之後的那一段；
+ * levelLine() 產的那種例外——它的值由這裡照格數填。
+ */
+function drawCandles(Chart, canvas, series, offset = 0, extras = []) {
   // 均線要用完整序列（含 offset 之前那段暖身）才算得準，算完再切掉暖身段
   const warmed = series.map((r) => r.c);
   const mas = KLINE_MAS.map((ma) => movingAverage(warmed, ma.win).slice(offset));
@@ -2258,16 +2676,8 @@ function drawCandles(Chart, canvas, series, offset = 0, level = null) {
           spanGaps: false,
           order: 1,
         })),
-        ...(level ? [{
-          type: 'line',
-          label: level.label,
-          data: labels.map(() => level.value),
-          borderColor: level.color,
-          borderWidth: 1.2,
-          borderDash: [5, 4],
-          pointRadius: 0,
-          order: 1,
-        }] : []),
+        ...extras.map((d) => (d._level === undefined
+          ? d : { ...d, data: labels.map(() => d._level) })),
       ],
     },
     options: {
@@ -2589,7 +2999,7 @@ async function renderStock(view, code) {
     const Chart = await loadChartJs();
     if (drawn) {
       drawCandles(Chart, $('#c-kline'), series, klineFrom,
-        avgPrice === null ? null : { value: avgPrice, label: avgLabel, color: INSTI_COLORS.fo });
+        avgPrice === null ? [] : [levelLine(avgPrice, avgLabel, INSTI_COLORS.fo)]);
     }
     if (insti.length) {
       drawStack(Chart, $('#c-insti'), insti.map((r) => r.date), [
@@ -6320,6 +6730,7 @@ async function render() {
     else if (route.view === 'burst') await renderBurst(view);
     else if (route.view === 'ma') await renderMa(view);
     else if (route.view === 'macd') await renderMacd(view);
+    else if (route.view === 'structure') await renderStructure(view, route.arg);
     else if (route.view === 'holders') await renderHolders(view, route.arg);
     else if (route.view === 'insti') await renderInsti(view);
     else if (route.view === 'instirank') await renderInstiRank(view);
@@ -6387,6 +6798,18 @@ function bindGlobalControls() {
     if (pill.dataset.macdside) state.macdSide = pill.dataset.macdside;
     if (pill.dataset.macdwhen) state.macdWhen = pill.dataset.macdwhen;
     if (pill.dataset.macdstack) state.macdStack = pill.dataset.macdstack;
+    if (pill.dataset.structk) {
+      state.structK = Number(pill.dataset.structk);
+      try {
+        localStorage.setItem(STRUCT_K_KEY, String(state.structK));
+      } catch (err) {
+        /* 記不住就算了，下次回到預設的 k=3 */
+      }
+    }
+    if (pill.dataset.structdir) state.structDir = pill.dataset.structdir;
+    if (pill.dataset.structind !== undefined) state.structInd = pill.dataset.structind;
+    if (pill.dataset.structphase) state.structPhase = Number(pill.dataset.structphase);
+    if (pill.dataset.structdays) state.structDays = Number(pill.dataset.structdays);
     if (pill.dataset.sectorsort) state.sectorSort = pill.dataset.sectorsort;
     if (pill.dataset.holderlots) {
       state.holderLots = Number(pill.dataset.holderlots);
@@ -6587,6 +7010,8 @@ async function start() {
     if (RUN_DAYS.some((o) => o.value === runDays)) state.runDays = runDays;
     const runOku = Number(localStorage.getItem(RUN_OKU_KEY));
     if (RUN_OKUS.some((o) => o.value === runOku)) state.runOku = runOku;
+    const structK = Number(localStorage.getItem(STRUCT_K_KEY));
+    if (STRUCT_KS.some((o) => o.value === structK)) state.structK = structK;
   } catch (err) {
     /* 讀不到就用預設的「全部」與「官方產業」 */
   }
