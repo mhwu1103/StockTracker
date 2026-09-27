@@ -35,12 +35,12 @@
   --star2: #7b61ff;
   --star1: #c77700;
 
-  /* 並排表的國別色：日是磚紅、美是靛紫、台是藍。磚紅比 --up 暗一階、彩度低一截，
-     不會跟漲跌的紅認錯——但它只出現在左側色條與那一個字上，數字欄一律是
+  /* 並排表的國別色：對照的那一邊（日股、美股）是磚紅，台股是藍。磚紅比 --up 暗一階、
+     彩度低一截，不會跟漲跌的紅認錯——但它只出現在左側色條與那一個字上，數字欄一律是
      --up / --down，兩者不會在同一格裡打架。
-     美股不用國旗的紅藍：紅是漲跌、藍已經是台股，這裡剩下的安全色只有紫。 */
-  --jp: #b8443c;
-  --us: #6f4fd8;
+     日股與美股共用同一個顏色是刻意的：那一格要分辨的是「這一列是對照的那一邊還是
+     台股」，不是哪一國——兩頁不會同時出現，各給一個顏色只是多一個要記的東西。 */
+  --side: #b8443c;
   --tw: #2f6fed;
 }
 
@@ -68,8 +68,7 @@
   --star2: #a48cff;
   --star1: #f0a640;
 
-  --jp: #e08b80;
-  --us: #a48cff;
+  --side: #e08b80;
   --tw: #6f9dff;
 }
 
@@ -1170,7 +1169,8 @@ select, input, button {
 .pair-note b { color: var(--text); font-weight: 600; }
 
 @media (max-width: 767px) {
-  [data-view="jp"] .view { padding: 12px 12px 32px; }
+  [data-view="jp"] .view,
+  [data-view="us"] .view.pair-view { padding: 12px 12px 32px; }
   .pair-controls { margin: 12px 0 14px; padding-block: 12px; }
   .bench { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 }
@@ -1181,8 +1181,7 @@ select, input, button {
  * 一次並排四個期間再加一欄差距——七欄擠進三欄的格線，長字串會掉進 3.4rem 那一欄
  * 被壓成一個字寬的直排（第一版就是這樣）。
  *
- * 兩邊用左側色條加一個字分：磚紅的「日」、靛紫的「美」、藍的「台」。
- * 外國那一邊是哪一個顏色由 --side 決定，表格本身不必知道自己在哪一頁。
+ * 兩邊用左側色條加一個字分：磚紅的「日」或「美」、藍的「台」。
  *
  * 磚紅確實靠近漲的紅，這是知道的取捨：國別只出現在第一欄（色條與那一個字），
  * 漲跌只出現在數字欄，兩者不共格；而磚紅 #b8443c 比 --up #d92d20 暗一階、
@@ -1192,7 +1191,6 @@ select, input, button {
  * 表格分三層：族群列（tr.g，點得動）→ 子族群區塊列（tr.b）→ 個股列（tr.s / tr.t）。
  */
 table.pair {
-  --side: var(--jp);
   border-collapse: collapse;
   width: 100%;
   min-width: 620px;
@@ -1266,8 +1264,7 @@ table.pair tbody tr.s:first-child > td { border-top: none; }
 /* 區塊列已經畫過一條線了，它下面第一列再畫就變雙線 */
 table.pair tr.b + tr.s > td { border-top: none; }
 
-/* 左側色條：外國那一邊 --side、台股藍。用 box-shadow 不用 border，才不會推掉欄寬 */
-[data-view="us"] table.pair { --side: var(--us); }
+/* 左側色條：對照那一邊磚紅、台股藍。用 box-shadow 不用 border，才不會推掉欄寬 */
 table.pair tr.s > td:first-child { box-shadow: inset 3px 0 0 var(--side); }
 table.pair tr.t > td:first-child { box-shadow: inset 3px 0 0 var(--tw); }
 table.pair tr.t > td:first-child .nm { padding-left: 14px; }
@@ -1563,21 +1560,21 @@ table.pair tr.t:hover > td { background: var(--surface); }
    * 限寬要下在「窗格裡的內容」而不是窗格本身：.view 自己是捲動容器，給它 max-width
    * 會連捲軸一起被推到螢幕中間去。
    *
-   * 日股頁在手機上沒有卡片外框，是 .view 自己當內容框，所以那邊的 1060px 直接下在
-   * .view 身上——到了桌面 .view 換成窗格，那條限寬就變成「窗格只有 1060px 寬」，
-   * 右邊空掉一整片。它的作用域比這裡窄，得明白地解掉，限寬交給下面那條統一處理。
-   */
-  /*
-   * 日股頁在手機上沒有卡片外框，是 .view 自己當內容框，1060px 的限寬因此直接下在
+   * 並排表在手機上沒有卡片外框，是 .view 自己當內容框，1060px 的限寬因此直接下在
    * 它身上——到了桌面 .view 換成捲動窗格，那條限寬就變成「窗格只有 1060px 寬」，
    * 捲軸停在半路，右邊空掉一整片。
    *
-   * 解法不是改吃下面 .view > * 那條 1180px 置中：這一頁的說明、pills、表格各自帶著
+   * 解法不是改吃下面 .view > * 那條 1180px 置中：這裡的說明、pills、表格各自帶著
    * margin-left: 0（手機上靠左是對的），auto 邊界套不上去，結果只有表格跑到中間、
    * 文字還貼在左緣，兩條左緣對不起來。改用左右留白把內容收成一條置中的帶子，
    * 每個子元素照樣靠帶子的左緣，而捲軸留在窗格最右邊。
+   *
+   * 美股頁的「看並排」軸是同一張表，所以同一條要一起套——只差它是頁面裡的一個軸，
+   * 得多一個 .pair-view 才不會波及另外兩個軸的卡片。漏掉這一行的後果與日股頁當初
+   * 一模一樣（那邊已經修過一次）。
    */
-  [data-view="jp"] .view {
+  [data-view="jp"] .view,
+  [data-view="us"] .view.pair-view {
     max-width: none;
     padding: var(--pane-pad) max(24px, (100% - 1180px) / 2) 48px;
   }
