@@ -46,7 +46,8 @@ window.StockNav = (function () {
       { v: 'sector', label: '族群' }, { v: 'flow', label: '流向' }, { v: 'market', label: '大盤' }] },
     { key: 'world', label: '環境', views: [
       { v: 'quote', label: '報價' }, { v: 'us', label: '美股', href: 'us.html' },
-      { v: 'jp', label: '日股', href: 'jp.html' }] },
+      { v: 'jp', label: '日股', href: 'jp.html' },
+      { v: 'kr', label: '韓股', href: 'kr.html' }] },
     { key: 'find', label: '查詢', views: [
       { v: 'stock', label: '個股' }, { v: 'compare', label: '對照' }] },
   ];

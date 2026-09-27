@@ -21,7 +21,7 @@
  *
  * ## 為什麼整支包在 IIFE 裡
  *
- * 跟 nav.js 同一個理由：app.js／us.js／jp.js 都是傳統 script，共用同一個全域語彙
+ * 跟 nav.js 同一個理由：app.js／us.js／pair.js 都是傳統 script，共用同一個全域語彙
  * 環境，撞名的 const 是 SyntaxError 不是覆寫。只往外露一個 window.StockTheme。
  */
 window.StockTheme = (function () {

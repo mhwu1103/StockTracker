@@ -29,10 +29,10 @@
 | 技術 | 爆量 · 均線 · MACD | 價量出現什麼訊號 |
 | 籌碼 | 大戶 · 法人 · 買超 · 連買 · 雷達 | 誰在買、買了多久 |
 | 資金 | 族群 · 流向 · 大盤 | 錢往哪一族去 |
-| 環境 | 報價 · 美股 · 日股 | 上游報價、昨夜美股、同盤的日股 |
+| 環境 | 報價 · 美股 · 日股 · 韓股 | 上游報價、昨夜美股、同盤的日股與韓股 |
 | 查詢 | 個股 · 對照 | 查一檔、比兩天 |
 
-分頁清單只寫在 `docs/nav.js` 的 `NAV` 一處，`index.html` 與 `us.html` 都只列群組——
+分頁清單只寫在 `docs/nav.js` 的 `NAV` 一處，`index.html` 與三個獨立頁都只列群組——
 兩頁共用同一份，以前 `us.html` 手抄一份寫死在自己的 HTML 裡，漏同步過。
 每個群組會記住你上次停在哪一頁（localStorage），點回群組時回到原本那一頁。
 全站的視覺規則是 **導覽用底線、篩選用藥丸**——兩排疊在一起時才分得出哪一排是換頁、哪一排是篩選。
@@ -142,8 +142,35 @@
 
 還有兩個限制寫在頁面上：期間最長只到**季**（台股的 kline 從 2026-03-16 才開始，
 湊不出一年），而且日股會被**裁到台股的最後一個交易日**——不裁的話兩邊會量到不同
-的區間，而畫面上兩個數字並排看起來完全正常。每一族的台股是依**最近一個交易日的
-成交值**取前六名，不是全部成員。
+的區間，而畫面上兩個數字並排看起來完全正常。每一塊的台股是依**最近一個交易日的
+成交值**取前十檔，不是全部成員。
+
+再一頁 **`kr.html`：韓股 × 台股族群**，入口在「韓股」。20 個族群、105 檔韓股
+（KOSPI 加 .KS、KOSDAQ 加 .KQ），表格、欄位、橫條那把尺與日股頁一模一樣——
+兩頁是**同一支 `build_pair.py` 出的資料、同一支 `docs/pair.js` 畫的**，差的只有
+文案。時區也一樣：首爾 9:00–15:30 KST ＝台北 8:00–14:30，KST 與 JST 同一個時區，
+所以「同一天、同一盤，不是隔夜領先」與「不算相關係數」兩件事原封不動成立。
+
+**但讀法不一樣，而那是這一頁存在的理由。**
+
+| | 角色 | 「外股漲、台股不跟」通常是 |
+|---|---|---|
+| 美股 | 需求端，客戶的財報決定訂單 | 台股還沒反映 |
+| 日股 | 設備材料的**上游**或正面競爭者 | 缺料，台廠受害 |
+| 韓股 | 同一個產品線上的**對手** | 那張單被搶走了 |
+
+記憶體、晶圓代工、面板、MLCC、造船、鋼鐵，兩邊搶的是同一批客戶的同一張單。
+三星晶圓代工是台積電唯一的先進製程對手，三星電機的 MLCC 對的是國巨與華新科，
+POSCO 與中鋼看同一個熱軋價。報價循環時同漲同跌，搶單時是此消彼長——所以差距
+那一欄的正負在這一頁不能照日股頁的方式讀，頁面上把這件事寫在第一段而不是方法說明裡。
+
+大盤那一排也多一格：**KOSDAQ**。KOSPI 的前兩大權值就是三星電子與 SK 海力士，
+記憶體一動整個指數就動；而對照表裡的設備、材料、測試介面多半在 KOSDAQ，
+拿 KOSPI 當它們的底會把「這一族算不算強」判反。
+
+韓股那份對照表沒有自己重跑相關性的驗證，頁面上也是這樣寫的：日股那一組實測
+已經說明同盤市場的同日相關大半是「亞股一起動」，而韓國離台灣更近（同一個時區、
+同一批客戶、連指數的權值結構都像），沒有理由更乾淨。
 
 ### 三種寬度，三種版面
 
@@ -212,6 +239,7 @@ localStorage，不會上傳，換裝置或清除瀏覽資料就會消失。
 | 原物料與指數 | `https://query1.finance.yahoo.com/v8/finance/chart/{HG=F,GC=F,SI=F,PA=F,ALI=F,BZ=F,^SOX,TWD=X}` |
 | 美股日線（連動頁） | `https://query1.finance.yahoo.com/v8/finance/chart/{美股代號}?range=1y&interval=1d` |
 | 日股日線（族群頁） | `https://query1.finance.yahoo.com/v8/finance/chart/{四碼}.T?range=1y&interval=1d` |
+| 韓股日線（族群頁） | `https://query1.finance.yahoo.com/v8/finance/chart/{六碼}.{KS,KQ}?range=1y&interval=1d` |
 | 報價與集保歷史回補 | `http://web.archive.org/cdx/search/cdx` + `https://web.archive.org/web/{時間戳}id_/…` |
 
 涵蓋普通股、特別股與 ETF／ETN，已排除權證、牛熊證等商品。
@@ -260,11 +288,14 @@ scripts/
   us.py             共用：美股與台股的連動——配對規則、日期對齊、相關係數
   fetch_us.py       抓對照表裡每一檔美股的日線（Yahoo）→ docs/data/us/market.json
   build_us.py       由美股日線與台股 K 線算相關性 → docs/data/us/index.json
-  jp.py             共用：日股與台股的族群對照——為什麼只擺漲跌幅不算相關係數
-  fetch_jp.py       抓對照表裡每一檔日股的日線（Yahoo）→ docs/data/jp/market.json
-  build_jp.py       由日股日線與台股 K 線算族群對照 → docs/data/jp/index.json
-                    build_us.py 要排在 build_history.py 後面（吃 index.json 的
-                    交易日軸與 kline/）
+  pair.py           共用：同盤市場（日股／韓股）與台股的族群對照——為什麼只擺
+                    漲跌幅不算相關係數，以及兩個市場的角色差在哪。市場的差異
+                    收在 MARKETS 一處，加第三個同盤市場就是再加一筆
+  fetch_pair.py     抓對照表裡每一檔外股的日線（Yahoo）→ docs/data/{jp,kr}/market.json
+                    吃一個市場參數：fetch_pair.py jp／fetch_pair.py kr
+  build_pair.py     由外股日線與台股 K 線算族群對照 → docs/data/{jp,kr}/index.json
+                    build_us.py 與 build_pair.py 都要排在 build_history.py 後面
+                    （吃 index.json 的交易日軸與 kline/）
   institutions.py   共用：三大法人買賣超的抓取、欄位驗證與金額換算
   fetch_institutions.py 抓三大法人買賣超 -> docs/data/insti/daily/
                     兩支來源都能指定日期，所以抓當日與回補歷史是同一支（--days N）
@@ -277,16 +308,21 @@ scripts/
   build_holders.py  由每週快照算出 holders/index.json 與 holders/stock/
   notify_telegram.py 把當日新進榜／連續 2、3、5 天的清單推播到 Telegram
   serve.py          本機開發用的靜態伺服器（送出 no-store，不會被快取咬）
-  check_frontend_version.py  檢查前端版號三處一致（--set N 一次改完）
+  check_frontend_version.py  檢查前端版號各頁一致（--set N 一次改完）
+  check_pair_pages.py  檢查並排頁（jp／kr／us）的版面選擇器三條都沒漏。
+                    那一行漏過三次，症狀都是桌面窗格只剩 1060px 而手機正常
 docs/               GitHub Pages 網站根目錄
   index.html app.js style.css sw.js manifest.webmanifest icons/
-  nav.js             兩層導覽與底部 tab bar 的行為，index.html 與 us.html 共用。
-                    導覽清單（NAV）只有這一份，兩頁的 <nav> 都是空殼
+  nav.js             兩層導覽與底部 tab bar 的行為，四頁共用。
+                    導覽清單（NAV）只有這一份，各頁的 <nav> 都是空殼
   us.html us.js      「美股 × 台股連動」——獨立的一頁，不是排行榜那支 SPA 的分頁，
                     只共用 style.css。入口在排行榜頂部工具列的「美股」，
                     頁尾與族群頁的說明裡也各有一個
-  jp.html jp.js      「日股 × 台股族群」——同樣是獨立的一頁，入口在「日股」。
-                    與美股那頁的差別是它**不算相關係數**，只並排漲跌幅，理由見下。
+  jp.html kr.html    「日股 × 台股族群」與「韓股 × 台股族群」，入口在「日股」「韓股」。
+  pair.js            與美股那頁的差別是它們**不算相關係數**，只並排漲跌幅，理由見下。
+                    兩頁的資料形狀一樣（同一支 build_pair.py 出的），所以共用
+                    pair.js 一支程式，差的只有 MARKETS 裡的文案——各寫一份
+                    jp.js 與 kr.js 就是第二份會走樣的來源。
   data/
     index.json      交易日清單 + 三種範圍各自的每日成交值與集中度
                     另有 kline，記著兩個市場的 K 線各自涵蓋到哪一天
@@ -302,6 +338,13 @@ docs/               GitHub Pages 網站根目錄
     jp_link.json    題材族群 -> 連動日股（人工維護）。同樣靠族群名稱與 themes.json
                     相接，另有 benchmarks（日經 225、美元日圓）。s 是供應鏈上的假說，
                     不是漲跌幅的預測值
+    kr_link.json    題材族群 -> 連動韓股（人工維護）。格式與 jp_link.json 一樣，
+                    只有那一邊的鍵從 jp 換成 kr；benchmarks 多一個 KOSDAQ，因為
+                    KOSPI 的前兩大權值就是三星電子與 SK 海力士，而表裡的設備與
+                    材料多半在 KOSDAQ
+    {jp,kr}/market.json  對照表裡每一檔外股的日線，與 us/market.json 同一個形狀
+    {jp,kr}/index.json   族群頁直接讀的表：一族一組子族群區塊，每一塊是
+                    「這幾檔外股 → 這幾檔台股」，兩邊各自的漲跌幅與中位數
     us/market.json  對照表裡每一檔美股的日線。所有標的共用一條日期軸（美股交易日曆），
                     某一檔那天沒價就存 null——各存一份自己的日期陣列光日期就多半個 MB
     us/index.json   美股頁直接讀的表：每檔美股的漲跌幅，加上它對照的台股各自的

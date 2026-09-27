@@ -1,18 +1,31 @@
 /*
- * 日股 × 台股族群（jp.html）。
+ * 同盤市場 × 台股族群：jp.html（日股）與 kr.html（韓股）共用這一支。
  *
- * 與 us.html 一樣是獨立頁面，不是排行榜那支 SPA 的分頁：只讀 data/jp/index.json
- * 一份檔案，不吃交易日與範圍那一整套狀態。共用的只有 style.css 與 nav.js。
+ * 與 us.html 一樣是獨立頁面，不是排行榜那支 SPA 的分頁：只讀
+ * data/{市場}/index.json 一份檔案，不吃交易日與範圍那一整套狀態。
  *
- * 頁面回答的問題：日本這一段在動，台股這一族跟上了沒。
+ * 頁面回答的問題：那邊這一段在動，台股這一族跟上了沒。
+ *
+ * ## 為什麼兩頁一支程式
+ *
+ * 兩頁的資料**形狀完全一樣**（同一支 scripts/build_pair.py 出的），差的只有文案。
+ * 各自一份 jp.js 與 kr.js 就是兩份逐字重複的來源，而這個 repo 已經為了同一件事
+ * 付過代價：us.html 以前把 nav.js 的分頁清單手抄一份寫死在自己的 HTML 裡，
+ * 版號漏同步了十個版本沒人發現。
+ *
+ * 所以差異全部收進下面的 MARKETS：一個市場一筆，加第三個同盤市場（港股？）
+ * 只要加一筆設定加一個 html 外殼。挑哪一筆看 <body data-view>。
+ *
+ * us.js 的「看並排」軸長得像但不在這裡：它的資料是 build_us.py 依相關係數那一套
+ * 算的、形狀不一樣，共用的只有 style.css 的 .pair-* 與 table.pair。
  *
  * ## 一族拆成子族群區塊
  *
- * 一族十幾檔日股堆成一排、台股再堆成一排，看不出誰對誰——半導體設備那一族裡，
+ * 一族十幾檔外股堆成一排、台股再堆成一排，看不出誰對誰——半導體設備那一族裡，
  * 愛德萬對的是鴻勁與穎崴，東京威力科創對的是弘塑與辛耘，兩組人擠在同一段名單裡。
  *
- * 所以表格的單位是 group.blocks 裡的**區塊**（一個子族群）：日股在上、它的台股
- * 緊接在下，差距減的也是同一塊的日股中位數。切分在 build_jp.py 就做完了，
+ * 所以表格的單位是 group.blocks 裡的**區塊**（一個子族群）：外股在上、它的台股
+ * 緊接在下，差距減的也是同一塊的外股中位數。切分在 build_pair.py 就做完了，
  * 這裡只照著畫。
  *
  * ## 為什麼是表格，不是 .row
@@ -21,20 +34,20 @@
  * **一次並排四個期間**再加一欄差距，七欄硬塞進三欄的格線，長字串會掉進
  * 3.4rem 那一欄被壓成一個字寬的直排——第一版就是這樣壞掉的。
  *
- * 並排比較的東西就該用表格。樣式在 style.css 的「日股頁」那一節。
+ * 並排比較的東西就該用表格。樣式在 style.css 的「並排表」那一節。
  *
- * ## 這一頁沒有相關係數，是故意的
+ * ## 這兩頁都沒有相關係數，是故意的
  *
  * 美股那一頁有，因為美股收在台股開盤之前，D → D+1 的對齊本身就是一個因果方向。
- * 日股沒有這個方向：東京 8:00（台北時間）開盤、台股 9:00，兩邊同一天同一盤。
- * 同日的相關係數分不出「日股領先一小時」與「兩邊都在反映昨夜美股」，而真正
- * 可交易的那一小時，日線資料量不到。
+ * 東京與首爾沒有這個方向：兩邊都是台北時間 8:00 開盤、14:30 收（JST 與 KST
+ * 同一個時區），與台股同一天同一盤。同日的相關係數分不出「那邊領先一小時」與
+ * 「兩邊都在反映昨夜美股」，而真正可交易的那一小時，日線資料量不到。
  *
- * 2026-09 實測過：同日原始相關普遍 +26~+70%，兩邊各自扣掉自己大盤後多數掉到
- * +5% 以內。放一個那樣的數字上來，只會被當成訊號用。所以這一頁只擺漲跌幅。
- * 完整的理由寫在 scripts/jp.py 的 docstring。
+ * 2026-09 拿日股實測過：同日原始相關普遍 +26~+70%，兩邊各自扣掉自己大盤後多數
+ * 掉到 +5% 以內。放一個那樣的數字上來，只會被當成訊號用。完整的理由寫在
+ * scripts/pair.py 的 docstring。
  *
- * 數字全部由 scripts/build_jp.py 算好，這裡只負責顯示——前端不做任何統計。
+ * 數字全部由 scripts/build_pair.py 算好，這裡只負責顯示——前端不做任何統計。
  */
 
 const DATA = 'data';
@@ -43,13 +56,91 @@ const APP_VERSION = (() => {
   return new URL(src, location.href).searchParams.get('v') || '?';
 })();
 
+const STARS = { 3: '★★★', 2: '★★☆', 1: '★☆☆' };
+
+/*
+ * 兩個市場的差異，全部在這裡。
+ *
+ * 只有文案：資料形狀、欄位、排序、橫條那把尺，兩邊一模一樣。
+ *
+ * tag 是表格第一欄那一個字。**只放一個字**：「日股」「韓股」兩個字擺在每一列的
+ * 最前面，一頁三百列就是三百次「股」——那個字從來不是在分辨什麼，分辨的是
+ * 「日」「韓」與「台」。
+ *
+ * role 是兩頁最不能互抄的一段。日股多半是設備材料的**上游**，韓股多半是同一個
+ * 產品線上的**對手**；同樣一個「外股漲、台股不跟」，在日股頁多半讀成台股還沒跟上，
+ * 在韓股頁可能是那張單被搶走了。
+ */
+const MARKETS = {
+  jp: {
+    label: '日股',
+    tag: '日',
+    sub: (data) => `供應鏈上對得起來的日股與台股，並排看漲跌幅。
+      日股在台北時間 8:00 開盤，比台股早一小時——<b>同一天、同一盤，不是隔夜領先</b>。
+      兩邊資料都到 ${esc(data.asof)}。`,
+    benchHint: `族群漲得比自己的大盤多才叫強。<b>美元日圓</b>那一格要反過來讀：
+      它上漲＝日圓變弱，日廠報價競爭力上升，被動元件與工具機容易出現
+      「日股漲、台股不跟」——紅色在那一格不代表好消息。`,
+    session: `<b>日股不是隔夜領先，是同一盤。</b>東京 9:00–15:30（日本時間）
+      ＝台北 8:00–14:30，比台股早開一小時、晚收一小時。所以這裡是<b>同一天</b>的
+      漲跌幅並排，不是美股那頁的「昨夜 → 今天」。日股比台股早開的那一小時，
+      日線資料量不到。`,
+    noCorr: `<b>為什麼沒有相關係數。</b>同日的相關數字分不出「日股領先一小時」
+      與「兩邊都在反映昨夜美股」。2026-09 實測 122 個交易日：同日原始相關普遍
+      +26~+70%，但兩邊各自扣掉自己大盤之後多數掉到 +5% 以內——那些數字大半是
+      「亞股一起動」。放上來只會被當成訊號用，所以不放。`,
+    role: `<b>角色跟美股不一樣。</b>美股多半是需求端（客戶的財報決定訂單），
+      日股多半是設備材料的<b>上游</b>或正面<b>競爭者</b>。缺料時是台廠受害而不是同漲，
+      搶單時是此消彼長。星等 ${STARS[3]} 是「同一條供應鏈的上下游」、
+      ${STARS[2]} 是「同業或同一景氣循環」、${STARS[1]} 是「題材情緒」——
+      那是供應鏈上的假說，不是漲跌幅的預測。`,
+  },
+  kr: {
+    label: '韓股',
+    tag: '韓',
+    sub: (data) => `供應鏈上對得起來的韓股與台股，並排看漲跌幅。
+      首爾在台北時間 8:00 開盤，比台股早一小時——<b>同一天、同一盤，不是隔夜領先</b>。
+      而且韓股多半是<b>對手不是上游</b>：「韓漲台不跟」有時候不是台股落後，
+      是那張單被搶走了。兩邊資料都到 ${esc(data.asof)}。`,
+    benchHint: `族群漲得比自己的大盤多才叫強——但 <b>KOSPI</b> 的前兩大權值就是
+      三星電子與 SK 海力士，記憶體一動它就動，中小型的設備與材料要改跟
+      <b>KOSDAQ</b> 比。<b>美元韓元</b>那一格要反過來讀：它上漲＝韓元變弱，
+      韓廠報價競爭力上升，記憶體、面板、鋼鐵、造船容易出現「韓股漲、台股不跟」——
+      紅色在那一格不代表好消息。`,
+    session: `<b>韓股不是隔夜領先，是同一盤。</b>首爾 9:00–15:30（韓國時間）
+      ＝台北 8:00–14:30，比台股早開一小時、晚收一小時。KST 與 JST 是同一個時區，
+      所以這一頁與日股頁一樣是<b>同一天</b>的漲跌幅並排，不是美股那頁的
+      「昨夜 → 今天」。韓股比台股早開的那一小時，日線資料量不到。`,
+    noCorr: `<b>為什麼沒有相關係數。</b>同日的相關數字分不出「韓股領先一小時」
+      與「兩邊都在反映昨夜美股」。這一頁沒有自己重跑那組驗證——日股頁跑過了：
+      2026-09 的 122 個交易日裡，同日原始相關普遍 +26~+70%，兩邊各自扣掉自己大盤
+      之後多數掉到 +5% 以內，剩下的大半是「亞股一起動」。韓國離台灣更近（同一個
+      時區、同一批客戶、連指數的權值結構都像），沒有理由更乾淨。`,
+    role: `<b>角色跟美股、日股都不一樣。</b>美股多半是需求端（客戶的財報決定訂單），
+      日股多半是設備材料的<b>上游</b>；韓股多半是同一個產品線上的<b>對手</b>——
+      記憶體、晶圓代工、面板、MLCC、造船、鋼鐵，兩邊搶的是同一批客戶的同一張單。
+      報價循環時同漲同跌，搶單時是此消彼長，方向要看那一族在哪一種狀態。
+      星等 ${STARS[3]} 是「同一個產品、同一批客戶的直接對手或直接上下游」、
+      ${STARS[2]} 是「同業或同一景氣循環」、${STARS[1]} 是「題材情緒」——
+      那是供應鏈上的假說，不是漲跌幅的預測。`,
+  },
+};
+
+/*
+ * 挑哪一個市場看 <body data-view>，那個屬性 nav.js 也在用（它靠它知道
+ * 「這是獨立頁面，而且停在這一項」）。一個屬性兩個用途，不要再加第二個。
+ */
+const MARKET = document.body.dataset.view;
+const M = MARKETS[MARKET];
+
 const state = {
   data: null,
   span: 1,             // 差距與排序看哪一段：0 昨日、1 週、2 月、3 季
   closed: new Set(),   // 收起來的族群。預設全部展開——這一頁是拿來掃的
 };
 
-const SPAN_KEY = 'stocktracker.jpspan';
+// 兩頁各記各的：在日股頁選了「季」，不該讓韓股頁也跟著換一欄
+const SPAN_KEY = `stocktracker.${MARKET}span`;
 
 /*
  * 窄螢幕只擺「當期 · 差距」，四個期間並排是桌面才放得下的東西。
@@ -71,13 +162,12 @@ const num = (v, digits = 1) => (v === null || v === undefined
   : v.toLocaleString('zh-TW', { minimumFractionDigits: digits, maximumFractionDigits: digits }));
 const trend = (v) => (v > 0 ? 'up' : v < 0 ? 'down' : 'flat');
 const signedPct = (v, digits = 2) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${num(v, digits)}%`);
-const STARS = { 3: '★★★', 2: '★★☆', 1: '★☆☆' };
 
 /*
- * 收盤價一定要帶單位：日股是日圓、台股是台幣，13,075 円與 944 元擺在同一欄
- * 卻不能互相比較。單位與小數位數都由 build_jp.py 決定，前端不猜——指數與匯率
+ * 收盤價一定要帶單位：外股是日圓或韓元、台股是台幣，13,075 円與 944 元擺在同一欄
+ * 卻不能互相比較。單位與小數位數都由 build_pair.py 決定，前端不猜——指數與匯率
  * 的單位是空字串（那是點數不是錢），而日圓報價 156.13 四捨五入成整數就看不出
- * 當天的變化。
+ * 當天的變化，KOSDAQ 在 800 點上下也是同一件事。
  */
 const price = (r) => (r.px === null || r.px === undefined ? '—'
   : `${num(r.px, r.dp ?? 0)}${r.cur ? `<span class="cur">${esc(r.cur)}</span>` : ''}`);
@@ -90,11 +180,11 @@ function pills(name, options, current) {
     .join('')}</div>`;
 }
 
-/** 差距：台股中位 − 日股中位。正值代表台股走得比它的日本對照強。 */
+/** 差距：台股中位 − 外股中位。正值代表台股走得比它的對照強。 */
 function gapOf(g) {
-  const j = g.jpMed[state.span];
+  const f = g.fxMed[state.span];
   const t = g.twMed[state.span];
-  return (j === null || j === undefined || t === null || t === undefined) ? null : t - j;
+  return (f === null || f === undefined || t === null || t === undefined) ? null : t - f;
 }
 
 /*
@@ -118,12 +208,12 @@ function computeGapMax() {
   const mags = [];
   for (const g of state.data.groups) {
     for (const b of g.blocks) {
-      const jm = b.jpMed[state.span];
-      if (jm === null || jm === undefined) continue;
+      const fm = b.fxMed[state.span];
+      if (fm === null || fm === undefined) continue;
       for (const r of b.tw) {
         const v = (r.chg || [])[state.span];
         if (v === null || v === undefined) continue;
-        mags.push(Math.abs(v - jm));
+        mags.push(Math.abs(v - fm));
       }
     }
   }
@@ -148,14 +238,10 @@ function sortedGroups() {
 /*
  * 開頭那一段：固定的說明，不是算出來的導讀。
  *
- * 這一頁最容易被誤讀的地方是「日股領先台股」，那要在看到任何數字之前就講掉——
+ * 這兩頁最容易被誤讀的地方是「那邊領先台股」，那要在看到任何數字之前就講掉——
  * 講在下面的方法說明裡就太晚了，人會先看表。
  */
-function intro(data) {
-  return `<p class="pair-sub">供應鏈上對得起來的日股與台股，並排看漲跌幅。
-    日股在台北時間 8:00 開盤，比台股早一小時——<b>同一天、同一盤，不是隔夜領先</b>。
-    兩邊資料都到 ${esc(data.asof)}。</p>`;
-}
+const intro = (data) => `<p class="pair-sub">${M.sub(data)}</p>`;
 
 /*
  * 控制列：pills 上面掛一個小標籤。
@@ -193,9 +279,7 @@ function benchCard(data) {
     </div>`;
   }).join('');
   return `<div class="bench">${cells}</div>
-    <p class="pair-hint">族群漲得比自己的大盤多才叫強。<b>美元日圓</b>那一格要反過來讀：
-      它上漲＝日圓變弱，日廠報價競爭力上升，被動元件與工具機容易出現
-      「日股漲、台股不跟」——紅色在那一格不代表好消息。</p>`;
+    <p class="pair-hint">${M.benchHint}</p>`;
 }
 
 const chgCells = (row) => spanCols().map((i) => {
@@ -216,25 +300,18 @@ function gapCell(v) {
   return `<td class="gap ${trend(v)}">${signedPct(v, 1)}<span class="bar" style="width:${w}px"></span></td>`;
 }
 
-/*
- * 國別標籤只放一個字。
- *
- * 「日股」「台股」兩個字擺在每一列的最前面，一頁三百列就是三百次「股」——那個字
- * 從來不是在分辨什麼，分辨的是「日」與「台」。縮成一個字之後名稱往左收 14px，
- * 窄螢幕上剛好把被擠掉的名字放回來。顏色照舊由 .tag 的 CSS 給。
- */
-const jpRow = (r) => `<tr class="s">
-    <td><span class="tag">日</span><span class="nm">${esc(r.n)}</span>
+const fxRow = (r) => `<tr class="s">
+    <td><span class="tag">${esc(M.tag)}</span><span class="nm">${esc(r.n)}</span>
       <span class="cd">${esc(r.t)} · ${STARS[r.s] || ''}</span></td>
     <td class="px">${price(r)}</td>
     ${chgCells(r)}
     <td class="gap flat">·</td>
   </tr>`;
 
-const twRow = (r, jpMed) => {
+const twRow = (r, fxMed) => {
   const v = (r.chg || [])[state.span];
-  const gap = (v === null || v === undefined || jpMed === null || jpMed === undefined)
-    ? null : v - jpMed;
+  const gap = (v === null || v === undefined || fxMed === null || fxMed === undefined)
+    ? null : v - fxMed;
   return `<tr class="s t">
     <td><a href="index.html#/stock/${esc(r.t)}"><span class="tag">台</span><span class="nm">${esc(r.n)}</span>
       <span class="cd">${esc(r.t)}${r.val ? ` · ${num(r.val / 1e8, 0)} 億` : ''}</span></a></td>
@@ -245,7 +322,7 @@ const twRow = (r, jpMed) => {
 };
 
 /*
- * 一個區塊：子族群的名字一列，接著這一塊的日股，再接著這一塊的台股。
+ * 一個區塊：子族群的名字一列，接著這一塊的外股，再接著這一塊的台股。
  *
  * 區塊列的差距是兩邊中位數的差，跟族群列一樣不給橫條——橫條那把尺量的是個股，
  * 中位數擺上去會被當成同一個量級來比。
@@ -254,19 +331,19 @@ const twRow = (r, jpMed) => {
  * 否則畫面上會多一條跟族群列講同一件事的空行。
  */
 function blockRows(b, cols) {
-  const jm = b.jpMed[state.span];
+  const fm = b.fxMed[state.span];
   const tm = b.twMed[state.span];
-  const gap = (jm === null || jm === undefined || tm === null || tm === undefined)
-    ? null : tm - jm;
+  const gap = (fm === null || fm === undefined || tm === null || tm === undefined)
+    ? null : tm - fm;
   const head = b.name
     ? `<tr class="b">
         <td colspan="${cols}">${esc(b.name)}
-          <span class="sub">日 ${signedPct(jm)} · 台 ${signedPct(tm)}</span></td>
+          <span class="sub">${esc(M.tag)} ${signedPct(fm)} · 台 ${signedPct(tm)}</span></td>
         <td class="gap ${trend(gap)} on">${signedPct(gap, 1)}</td>
       </tr>`
     : '';
-  return head + b.jp.map(jpRow).join('')
-    + b.tw.map((r) => twRow(r, jm)).join('');
+  return head + b.fx.map(fxRow).join('')
+    + b.tw.map((r) => twRow(r, fm)).join('');
 }
 
 function groupRows(g) {
@@ -275,9 +352,9 @@ function groupRows(g) {
   const cols = 2 + spanCols().length;
   const head = `<tr class="g" data-group="${esc(g.name)}">
       <td colspan="${cols}"><span class="caret">${open ? '▾' : '▸'}</span>${esc(g.name)}
-        <span class="sub">日股 ${signedPct(g.jpMed[state.span])}
+        <span class="sub">${esc(M.label)} ${signedPct(g.fxMed[state.span])}
           · 台股 ${signedPct(g.twMed[state.span])}
-          · ${g.jpN} 檔日股、${g.twN} 檔台股</span></td>
+          · ${g.fxN} 檔${esc(M.label)}、${g.twN} 檔台股</span></td>
       <td class="gap ${trend(gap)} on"><b>${signedPct(gap, 1)}</b></td>
     </tr>`;
   if (!open) return head;
@@ -307,16 +384,16 @@ function howToRead(groups) {
   return `<div class="pair-note">
     <h2>怎麼讀</h2>
     <ul>
-      <li><b>收盤</b>是股價不是百分比——日股是日圓、台股是台幣，兩邊不能互相比較。
+      <li><b>收盤</b>是股價不是百分比——兩邊的幣別不一樣，不能互相比較。
         右邊四欄才是漲跌幅 %。</li>
       <li>期間用<b>交易日</b>回推：昨日 1 日、週 5 日、月 21 日、季 63 日。</li>
-      <li><b>紅漲綠跌</b>，照台股與日股的慣例。名稱左邊的色條與那一個字是國別不是漲跌：
-        磚紅是<b>日</b>、藍是<b>台</b>。</li>
-      <li>每一族按<b>子族群</b>分塊：一塊是「這幾檔日股 → 對得上的這幾檔台股」，
-        日股在上、它的台股緊接在下。「<b>對到整族</b>」那一塊裝的是對照表只標在族群層、
-        沒有指定子族的日股。</li>
-      <li><b>差距</b>是這一檔台股減去<b>同一塊裡日股的中位數</b>：正值代表它走得比
-        那一段日股強，負值代表落後。減的是自己那一塊，不是整族。</li>
+      <li><b>紅漲綠跌</b>，照台股與${esc(M.label)}的慣例。名稱左邊的色條與那一個字是國別不是漲跌：
+        磚紅是<b>${esc(M.tag)}</b>、藍是<b>台</b>。</li>
+      <li>每一族按<b>子族群</b>分塊：一塊是「這幾檔${esc(M.label)} → 對得上的這幾檔台股」，
+        ${esc(M.label)}在上、它的台股緊接在下。「<b>對到整族</b>」那一塊裝的是對照表只標在族群層、
+        沒有指定子族的${esc(M.label)}。</li>
+      <li><b>差距</b>是這一檔台股減去<b>同一塊裡${esc(M.label)}的中位數</b>：正值代表它走得比
+        那一段${esc(M.label)}強，負值代表落後。減的是自己那一塊，不是整族。</li>
       <li><b>橫條</b>的長度是它在整張表裡的相對大小。尺以第 90 百分位為滿格，
         所以最極端的那一成會一起頂到底——要分它們得看數字。</li>
       <li>族群列與區塊列上的是兩邊中位數的差，<b>不給橫條</b>：那跟個股那一欄不是同一把尺。
@@ -329,23 +406,13 @@ function howToRead(groups) {
 function methodNote(data) {
   return `<div class="pair-note">
     <h2>這一頁怎麼算的</h2>
-    <p><b>日股不是隔夜領先，是同一盤。</b>東京 9:00–15:30（日本時間）
-      ＝台北 8:00–14:30，比台股早開一小時、晚收一小時。所以這裡是<b>同一天</b>的
-      漲跌幅並排，不是美股那頁的「昨夜 → 今天」。日股比台股早開的那一小時，
-      日線資料量不到。</p>
-    <p><b>為什麼沒有相關係數。</b>同日的相關數字分不出「日股領先一小時」
-      與「兩邊都在反映昨夜美股」。2026-09 實測 122 個交易日：同日原始相關普遍
-      +26~+70%，但兩邊各自扣掉自己大盤之後多數掉到 +5% 以內——那些數字大半是
-      「亞股一起動」。放上來只會被當成訊號用，所以不放。</p>
-    <p><b>角色跟美股不一樣。</b>美股多半是需求端（客戶的財報決定訂單），
-      日股多半是設備材料的<b>上游</b>或正面<b>競爭者</b>。缺料時是台廠受害而不是同漲，
-      搶單時是此消彼長。星等 ${STARS[3]} 是「同一條供應鏈的上下游」、
-      ${STARS[2]} 是「同業或同一景氣循環」、${STARS[1]} 是「題材情緒」——
-      那是供應鏈上的假說，不是漲跌幅的預測。</p>
+    <p>${M.session}</p>
+    <p>${M.noCorr}</p>
+    <p>${M.role}</p>
     <p><b>期間最長只到季。</b>台股的日 K 線從 ${esc(data.from)} 才開始，
       湊不出一年。這是資料的限制，不是參數可以調的。漲跌幅沒有還原除權息，
       台股多在 7–8 月配息，跨過那一段的區間會被低估。</p>
-    <p>日股會被<b>裁到台股的最後一個交易日</b>（${esc(data.twAsof)}）：
+    <p>${esc(M.label)}會被<b>裁到台股的最後一個交易日</b>（${esc(data.twAsof)}）：
       兩邊要量同一段時間，差距那一欄才有意義。每一塊的台股最多列 <b>10 檔</b>，依<b>最近一個
       交易日的成交值</b>排；多數子族群的成員不到 10 檔，等於全部列出，超過的才會被砍。
       要看整族的資金流向，去排行榜的
@@ -358,7 +425,7 @@ function render() {
   computeGapMax();
   const groups = sortedGroups();
 
-  $('#meta').textContent = `日股與台股都到 ${data.asof}`
+  $('#meta').textContent = `${M.label}與台股都到 ${data.asof}`
     + ` · ${groups.length} 個族群 · 差距看${spanLabel()}`;
 
   $('#view').innerHTML = `
@@ -394,15 +461,25 @@ window.matchMedia(NARROW_MQ).addEventListener('change', () => {
 });
 
 async function start() {
+  // data-view 打錯字的話，下面的 fetch 會去要 data/undefined/index.json 而錯誤
+  // 訊息裡只有一個 404 —— 真正的原因在 HTML 裡，講清楚比較省事。
+  if (!M) {
+    $('#meta').textContent = '設定錯誤';
+    $('#view').innerHTML = `<p class="hint">這一頁的 <code>&lt;body data-view&gt;</code>
+      是 <code>${esc(String(MARKET))}</code>，不是 pair.js 認得的市場
+      （${Object.keys(MARKETS).join('、')}）。</p>`;
+    return;
+  }
   try {
-    const res = await fetch(`${DATA}/jp/index.json`, { cache: 'reload' });
+    const res = await fetch(`${DATA}/${MARKET}/index.json`, { cache: 'reload' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     state.data = await res.json();
   } catch (err) {
     $('#meta').textContent = '載入失敗';
-    $('#view').innerHTML = `<p class="hint">讀不到 <code>data/jp/index.json</code>（${esc(err.message)}）。
+    $('#view').innerHTML = `<p class="hint">讀不到 <code>data/${esc(MARKET)}/index.json</code>（${esc(err.message)}）。
       正常情況下每日排程會產生它；本機環境請先執行
-      <code>python scripts/fetch_jp.py</code> 與 <code>python scripts/build_jp.py</code>。
+      <code>python scripts/fetch_pair.py ${esc(MARKET)}</code> 與
+      <code>python scripts/build_pair.py ${esc(MARKET)}</code>。
       前端版本 ${esc(APP_VERSION)}。</p>`;
     return;
   }

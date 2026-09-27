@@ -1045,7 +1045,7 @@ select, input, button {
 .scatter .dot.s2 { background: var(--star2); }
 .scatter .dot.s1 { background: var(--star1); }
 
-/* ---------- 並排表（jp.html 整頁、us.html 的「看並排」軸）：版面 ----------
+/* ---------- 並排表（jp.html／kr.html 整頁、us.html 的「看並排」軸）：版面 ----------
  *
  * 全站的分頁是 720px 寬的卡片堆疊，那是為「一次看一個數字」設計的。並排表是
  * 一張七欄的對照表，卡片的框加上 720px 只會把表壓窄、再逼它橫捲——卡片幫不上忙，
@@ -1057,6 +1057,7 @@ select, input, button {
  * 美股頁的另外兩個軸仍然是 720px 的卡片。
  */
 [data-view="jp"] .view,
+[data-view="kr"] .view,
 [data-view="us"] .view.pair-view {
   max-width: 1060px;
   padding: 16px 16px 48px;
@@ -1170,6 +1171,7 @@ select, input, button {
 
 @media (max-width: 767px) {
   [data-view="jp"] .view,
+  [data-view="kr"] .view,
   [data-view="us"] .view.pair-view { padding: 12px 12px 32px; }
   .pair-controls { margin: 12px 0 14px; padding-block: 12px; }
   .bench { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
@@ -1181,7 +1183,7 @@ select, input, button {
  * 一次並排四個期間再加一欄差距——七欄擠進三欄的格線，長字串會掉進 3.4rem 那一欄
  * 被壓成一個字寬的直排（第一版就是這樣）。
  *
- * 兩邊用左側色條加一個字分：磚紅的「日」或「美」、藍的「台」。
+ * 兩邊用左側色條加一個字分：磚紅的「日」「韓」或「美」、藍的「台」。
  *
  * 磚紅確實靠近漲的紅，這是知道的取捨：國別只出現在第一欄（色條與那一個字），
  * 漲跌只出現在數字欄，兩者不共格；而磚紅 #b8443c 比 --up #d92d20 暗一階、
@@ -1269,7 +1271,7 @@ table.pair tr.s > td:first-child { box-shadow: inset 3px 0 0 var(--side); }
 table.pair tr.t > td:first-child { box-shadow: inset 3px 0 0 var(--tw); }
 table.pair tr.t > td:first-child .nm { padding-left: 14px; }
 
-/* 「日」「美」「台」各一個字。寬度寫死 16px 不用 em：下面 .cd 要對齊到同一條線，
+/* 「日」「韓」「美」「台」各一個字。寬度寫死 16px 不用 em：下面 .cd 要對齊到同一條線，
    而 .tag 與 .cd 的字級不一樣（10px / 11px），用 em 兩邊會各縮各的、差 2px。 */
 table.pair .tag {
   display: inline-block;
@@ -1569,11 +1571,16 @@ table.pair tr.t:hover > td { background: var(--surface); }
    * 文字還貼在左緣，兩條左緣對不起來。改用左右留白把內容收成一條置中的帶子，
    * 每個子元素照樣靠帶子的左緣，而捲軸留在窗格最右邊。
    *
-   * 美股頁的「看並排」軸是同一張表，所以同一條要一起套——只差它是頁面裡的一個軸，
-   * 得多一個 .pair-view 才不會波及另外兩個軸的卡片。漏掉這一行的後果與日股頁當初
-   * 一模一樣（那邊已經修過一次）。
+   * 韓股頁與美股頁的「看並排」軸是同一張表，所以同一條要一起套——美股只差它是頁面裡
+   * 的一個軸，得多一個 .pair-view 才不會波及另外兩個軸的卡片。
+   *
+   * **這一行已經漏掉三次了**：日股頁自己一次、美股的並排軸一次、韓股頁一次，三次
+   * 的症狀一模一樣（窗格只剩 1060px、捲軸停在半路、右邊空一整片），而且三次都是
+   * 手機看起來完全正常。選擇器有兩份（上面那條給手機、這條給桌面），只改一份不會
+   * 有任何東西壞掉——所以 check.yml 加了一步比對兩份的頁面清單。
    */
   [data-view="jp"] .view,
+  [data-view="kr"] .view,
   [data-view="us"] .view.pair-view {
     max-width: none;
     padding: var(--pane-pad) max(24px, (100% - 1180px) / 2) 48px;

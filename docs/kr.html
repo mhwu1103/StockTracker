@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>美股 × 台股連動</title>
-<meta name="description" content="美股漲跌幅，以及它與台股個股的隔日連動相關性">
+<title>韓股 × 台股族群</title>
+<meta name="description" content="同一個產品線上對得起來的韓股與台股，並排看漲跌幅">
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#0f1216">
 <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
@@ -14,18 +14,18 @@
      否則深色使用者每次開頁都會先被白底閃一下。理由完整版在 theme.js 的開頭。 -->
 <script src="theme.js?v=53"></script>
 </head>
-<!-- data-view 告訴 nav.js：這是獨立頁面，而且停在「美股」那一項 -->
-<body data-view="us">
+<!-- data-view 有兩個用途：告訴 nav.js「這是獨立頁面，而且停在韓股那一項」，
+     也告訴 pair.js 要讀 data/kr/ 與哪一份文案。不要再加第二個屬性。 -->
+<body data-view="kr">
 
 <header class="app-bar">
   <div class="app-bar__top">
-    <h1>美股 × 台股連動</h1>
+    <h1>韓股 × 台股族群</h1>
   </div>
   <p class="app-bar__meta" id="meta">載入中…</p>
 </header>
 
-<!-- 與排行榜同一套兩層導覽，由 nav.js 從同一份 NAV 畫出來。以前這裡是手抄的
-     靜態副本，得靠「記得兩邊一起改」維持——那個約定已經漏過一次。 -->
+<!-- 與排行榜同一套兩層導覽，由 nav.js 從同一份 NAV 畫出來 -->
 <nav class="tabs"></nav>
 <nav class="subtabs"></nav>
 
@@ -34,10 +34,12 @@
 </main>
 
 <footer class="foot">
-  美股報價來源：Yahoo Finance。相關性是統計上的同向程度，不是因果。僅供參考，非投資建議。
+  韓股報價來源：Yahoo Finance（KOSPI 加 .KS、KOSDAQ 加 .KQ）。首爾與台北同一天開盤，
+  這一頁擺的是漲跌幅不是領先訊號；而且韓股多半是對手不是上游，「韓漲台不跟」不一定是台股落後。
+  僅供參考，非投資建議。
 </footer>
 
 <script src="nav.js?v=53" defer></script>
-<script src="us.js?v=53" defer></script>
+<script src="pair.js?v=53" defer></script>
 </body>
 </html>

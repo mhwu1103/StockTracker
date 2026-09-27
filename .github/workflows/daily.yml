@@ -90,13 +90,21 @@ jobs:
         timeout-minutes: 8
         run: python scripts/fetch_us.py
 
-      # 日股 99 檔，與上面那 177 檔**打同一個 Yahoo 端點**，排在它後面跑。
-      # 被限流的話兩支會一起中槍，而 fetch_jp.py 的 --give-up 會自己停下來。
-      # 台股那一邊不抓：kline/ 已經有全市場的四價，理由寫在 scripts/jp.py。
+      # 日股 99 檔與韓股 109 檔，與上面那 177 檔**打同一個 Yahoo 端點**，排在它後面跑。
+      # 被限流的話三支會一起中槍，而 fetch_pair.py 的 --give-up 會自己停下來。
+      # 台股那一邊不抓：kline/ 已經有全市場的四價，理由寫在 scripts/pair.py。
+      #
+      # 韓股排最後，所以它是累積請求數最多的時候才開始跑，也最容易中槍。三個市場
+      # 各自一份 market.json、各自一個 --give-up，前面那支失敗不會波及後面那支的舊資料。
       - name: 抓日股日線
         continue-on-error: true
         timeout-minutes: 6
-        run: python scripts/fetch_jp.py
+        run: python scripts/fetch_pair.py jp
+
+      - name: 抓韓股日線
+        continue-on-error: true
+        timeout-minutes: 7
+        run: python scripts/fetch_pair.py kr
 
       - name: 重建索引與歷史序列
         run: python scripts/build_history.py
@@ -132,12 +140,18 @@ jobs:
         run: python scripts/build_us.py
 
       # 與上面同一個理由要放在 build_history.py 後面：台股那一邊吃 index.json 的
-      # 交易日軸與 kline/。而且 build_jp.py 會把日股**裁到台股的最後一個交易日**，
+      # 交易日軸與 kline/。而且 build_pair.py 會把外股**裁到台股的最後一個交易日**，
       # 排錯位置的話那個「最後一天」是舊的，兩邊的漲跌幅就量到不同的區間 ——
       # 畫面上兩個數字並排看起來完全正常。
+      #
+      # 兩個市場分兩步而不是一支跑兩次：其中一邊的對照表寫壞時，另一邊還是會更新。
       - name: 重算日股族群對照
         continue-on-error: true
-        run: python scripts/build_jp.py
+        run: python scripts/build_pair.py jp
+
+      - name: 重算韓股族群對照
+        continue-on-error: true
+        run: python scripts/build_pair.py kr
 
       - name: 提交資料變更
         run: |

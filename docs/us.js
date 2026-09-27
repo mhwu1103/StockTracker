@@ -276,7 +276,7 @@ function groupCard(groups) {
 // --------------------------------------------------------------------------
 // 並排軸
 //
-// 與日股頁（jp.html）是同一張表——連 CSS 都是同一份（.pair-* 與 table.pair）。
+// 與日股／韓股頁（jp.html、kr.html）是同一張表——連 CSS 都是同一份（.pair-* 與 table.pair）。
 // 分塊的單位是「族群 › 子族群」，那正好是 labels 本來的形狀，所以不需要新資料：
 // 一族裡的美股其實分屬不同環節（AI 伺服器那一族，SMCI 對的是伺服器組裝、
 // VRT 對的是機房電力與散熱），堆成一排美股、一排台股就讀不出誰對誰。
@@ -296,7 +296,7 @@ function groupCard(groups) {
  *
  * 欄位的增減在產生 HTML 的時候就決定，不是用 CSS 把欄 display: none——族群那一列
  * 是 colspan，CSS 藏掉欄之後 colspan 仍然按原本的欄數要空間，表格不但沒變窄，
- * 反而更寬（jp.js 踩過這一個，那邊多撐出 73px）。
+ * 反而更寬（pair.js 踩過這一個，那邊多撐出 73px）。
  */
 const NARROW_MQ = '(max-width: 767px)';
 const narrow = () => window.matchMedia(NARROW_MQ).matches;
@@ -1085,7 +1085,7 @@ async function start() {
     /*
      * 沒存過要走 state 的預設值（週），所以空值必須先擋掉：Number(null) 與 Number('')
      * 都是 0，會一路通過下面三個檢查把期間設成「昨夜」——第一次進這個軸的人看到的
-     * 就不是我們選的那一欄，而畫面完全正常，不會有人回報。（jp.js 有同一段註解。）
+     * 就不是我們選的那一欄，而畫面完全正常，不會有人回報。（pair.js 有同一段註解。）
      */
     const saved = localStorage.getItem(PAIR_KEY);
     const pairSpan = saved ? Number(saved) : NaN;

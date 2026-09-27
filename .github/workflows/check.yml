@@ -8,6 +8,7 @@ on:
       - "docs/*.js"
       - "docs/*.css"
       - "scripts/check_frontend_version.py"
+      - "scripts/check_pair_pages.py"
       - ".github/workflows/check.yml"
   pull_request:
     paths:
@@ -39,6 +40,13 @@ jobs:
           grep -q "min-width: 1024px" docs/style.css || { echo "style.css 找不到 1024px 斷點"; exit 1; }
           grep -q "WIDE_MQ = '(min-width: 1024px)'" docs/app.js || { echo "app.js 的 WIDE_MQ 與 style.css 對不上"; exit 1; }
           echo "斷點一致：1024px"
+
+      # 並排表的版面規則有三份選擇器（基準／≤767px／≥1024px），各帶一份頁面清單。
+      # 只改其中一份不會有任何東西壞掉 —— 至少在你看的那個寬度不會：漏掉 ≥1024px
+      # 那一份的症狀是桌面窗格只剩 1060px、捲軸停在半路，而手機完全正常。
+      # 這一行已經漏過三次（日股頁、美股的並排軸、韓股頁），三次都是開了桌面才發現。
+      - name: 並排頁的版面選擇器沒漏
+        run: python scripts/check_pair_pages.py
 
       # 前端沒有打包步驟，語法錯誤會直接是線上整頁空白。node --check 不需要任何相依套件。
       - name: JS 語法
