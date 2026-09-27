@@ -1,6 +1,16 @@
 /* 手機優先。≥1024px 另有一層桌面版（固定外殼＋左側導覽），在檔案最後面。 */
 
+/*
+ * 深色不是 @media (prefers-color-scheme: dark)，而是 :root[data-theme="dark"]，
+ * 由 theme.js 在 <head> 裡掛上去——那一支的開頭有完整的理由。一句話版本：手動開關
+ * 需要「系統說暗」與「使用者說暗」指向同一份變數，而 CSS 沒辦法把 @media 併進選擇器
+ * 清單，照 media 寫就得把整份調色盤抄成兩份、再靠人記得一起改。
+ *
+ * 所以深色的值在這份檔案裡只有一處。改配色時不必去找第二個地方。
+ */
 :root {
+  color-scheme: light;
+
   --bg: #f6f7f9;
   --surface: #ffffff;
   --line: #e3e6ea;
@@ -24,30 +34,40 @@
   --star3: #2f6fed;
   --star2: #7b61ff;
   --star1: #c77700;
+
+  /* 日股頁的國別色：日是磚紅、台是藍。磚紅比 --up 暗一階、彩度低一截，
+     不會跟漲跌的紅認錯——但它只出現在左側色條與「日」那一個字上，
+     數字欄一律是 --up / --down，兩者不會在同一格裡打架。 */
+  --jp: #b8443c;
+  --tw: #2f6fed;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1216;
-    --surface: #171c22;
-    --line: #262d36;
-    --text: #e8ecf1;
-    --muted: #8b95a2;
-    --accent: #6f9dff;
-    --up: #ff6b5e;
-    --down: #35c97a;
-    --flat: #8b95a2;
+:root[data-theme="dark"] {
+  /* 下拉選單、捲軸、輸入框那些瀏覽器自己畫的東西，只認 color-scheme */
+  color-scheme: dark;
 
-    --q-panel-a: #121a23;
-    --q-panel-b: #090d12;
-    --q-edge: #24303c;
-    --q-mesh: #22303e;
-    --q-halo: #0d131a;
+  --bg: #0f1216;
+  --surface: #171c22;
+  --line: #262d36;
+  --text: #e8ecf1;
+  --muted: #8b95a2;
+  --accent: #6f9dff;
+  --up: #ff6b5e;
+  --down: #35c97a;
+  --flat: #8b95a2;
 
-    --star3: #6f9dff;
-    --star2: #a48cff;
-    --star1: #f0a640;
-  }
+  --q-panel-a: #121a23;
+  --q-panel-b: #090d12;
+  --q-edge: #24303c;
+  --q-mesh: #22303e;
+  --q-halo: #0d131a;
+
+  --star3: #6f9dff;
+  --star2: #a48cff;
+  --star1: #f0a640;
+
+  --jp: #e08b80;
+  --tw: #6f9dff;
 }
 
 * { box-sizing: border-box; }
@@ -146,10 +166,60 @@ select, input, button {
   cursor: default;
 }
 
+/* ---------- 亮／暗切換 ----------
+ *
+ * 做成撥桿而不是一顆圖示鈕：圖示鈕永遠有「這是現在的模式，還是按下去會變成的模式」
+ * 的歧義，而撥桿的位置本身就是狀態，不用猜。
+ *
+ * 排行頁的頂列在 390px 上已經是滿的（標題＋美股＋範圍＋日期三件），所以整個撥桿壓到
+ * 42×24——比 44px 的觸控建議小，但它右邊就是螢幕邊緣，實際靶區比看到的大。
+ */
+.theme-switch {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  width: 42px;
+  height: 24px;
+  min-height: 0;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.theme-switch__knob {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted);
+  transition: transform .18s ease;
+}
+
+.theme-switch svg { display: block; width: 12px; height: 12px; }
+
+:root[data-theme="dark"] .theme-switch__knob {
+  transform: translateX(18px);
+  color: var(--accent);
+}
+
+/* 撥桿滑過去的那一下是狀態回饋，不是裝飾，但關掉也讀得出來——位置還在 */
+@media (prefers-reduced-motion: reduce) {
+  .theme-switch__knob { transition: none; }
+}
+
 @media (max-width: 400px) {
   .app-bar h1 { font-size: 15px; letter-spacing: 0; }
   .app-bar__top { gap: 6px; }
   #date-select { max-width: 32vw; font-size: 14px; }
+  /* 最窄的那一檔，撥桿再讓出 6px 給標題 */
+  .theme-switch { width: 36px; height: 22px; }
+  .theme-switch__knob { width: 16px; height: 16px; }
+  :root[data-theme="dark"] .theme-switch__knob { transform: translateX(14px); }
   .date-nav__btn { min-width: 24px; padding: 8px 2px; }
 }
 
@@ -789,11 +859,12 @@ select, input, button {
 .q-tick { font-size: var(--q-fs-s, 8.5px); fill: var(--muted); letter-spacing: .4px; font-variant-numeric: tabular-nums; }
 .q-axis-title { letter-spacing: 1.2px; opacity: .8; }
 
-@media (prefers-color-scheme: dark) {
-  .q-body { filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 55%, transparent)); }
-  .q-pip { fill-opacity: 1; }
-  .q-hud { opacity: .7; }
+/* 這三條是亮度補償而不是配色，所以沒辦法收進上面那份調色盤，只能整組掛在選擇器上 */
+:root[data-theme="dark"] .q-body {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 55%, transparent));
 }
+:root[data-theme="dark"] .q-pip { fill-opacity: 1; }
+:root[data-theme="dark"] .q-hud { opacity: .7; }
 
 /* ---------- 均線頁：穿越矩陣與四線標記 ---------- */
 .matrix-box { padding: 10px 12px 12px; }
@@ -971,6 +1042,296 @@ select, input, button {
 .scatter .dot.s3 { background: var(--star3); }
 .scatter .dot.s2 { background: var(--star2); }
 .scatter .dot.s1 { background: var(--star1); }
+
+/* ---------- 日股頁（jp.html）：版面 ----------
+ *
+ * 全站的分頁是 720px 寬的卡片堆疊，那是為「一次看一個數字」設計的。這一頁是
+ * 一張七欄的對照表，卡片的框加上 720px 只會把表壓窄、再逼它橫捲——卡片幫不上忙，
+ * 只是多一層框。
+ *
+ * 所以這一頁自己走一套：通欄、內容直接鋪在背景上，只有表格與說明有框。
+ * 作用域鎖在 [data-view="jp"]，其他頁的 .card / .controls / .stat-grid 不受影響。
+ */
+[data-view="jp"] .view {
+  max-width: 1060px;
+  padding: 16px 16px 48px;
+}
+
+[data-view="jp"] .jp-sub {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--muted);
+}
+[data-view="jp"] .jp-sub b { color: var(--text); font-weight: 600; }
+
+/* 控制列：pills 上面掛一個小標籤，上下用線隔開。這一組只管最右邊那一欄，
+   沒有標籤的話它看起來像在切換整張表——但中間四欄不管選哪個都在。 */
+[data-view="jp"] .jp-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 24px;
+  align-items: flex-end;
+  margin: 16px 0 18px;
+  padding-block: 14px;
+  border-block: 1px solid var(--line);
+}
+[data-view="jp"] .ctl { display: flex; flex-direction: column; gap: 8px; }
+[data-view="jp"] .ctl > span {
+  font-size: 10px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* 大盤：三層格。
+ *
+ * 格線用陰影畫，不用「底色鋪成線的顏色、格子間留縫隙露出來」那一招——
+ * 大盤是三格，一排放得下二或三格，所以幾乎每個寬度都會剩一塊空位，而那一招
+ * 會讓空位直接露出線的顏色，變成右下角一塊灰。上面 .takeaway 為了同一件事
+ * 已經換過一次寫法了，這裡不要再踩。
+ *
+ * 陰影往外 1px 正好填滿縫隙，外緣被 overflow: hidden 裁掉；空位沒有格子，
+ * 就跟容器同色。
+ */
+[data-view="jp"] .bench {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 1px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+[data-view="jp"] .bench > div {
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line);
+  padding: 11px 14px;
+}
+[data-view="jp"] .bname { margin-bottom: 3px; font-size: 12px; color: var(--muted); }
+[data-view="jp"] .bval {
+  font-size: 17px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+[data-view="jp"] .bval .cur { font-size: .7em; margin-left: 2px; opacity: .7; }
+[data-view="jp"] .bspans {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-view="jp"] .jp-hint {
+  margin: 0 0 18px;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--muted);
+}
+[data-view="jp"] .jp-hint b { color: var(--text); font-weight: 600; }
+
+[data-view="jp"] .scroller {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+[data-view="jp"] .jp-note {
+  margin-top: 18px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--muted);
+}
+[data-view="jp"] .jp-note h2 {
+  margin: 0 0 9px;
+  font-size: 11px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+[data-view="jp"] .jp-note ul { margin: 0; padding-left: 1.15em; }
+[data-view="jp"] .jp-note li { margin-bottom: 6px; }
+[data-view="jp"] .jp-note li:last-child { margin-bottom: 0; }
+[data-view="jp"] .jp-note p { margin: 0 0 9px; }
+[data-view="jp"] .jp-note p:last-child { margin-bottom: 0; }
+[data-view="jp"] .jp-note b { color: var(--text); font-weight: 600; }
+
+@media (max-width: 767px) {
+  [data-view="jp"] .view { padding: 12px 12px 32px; }
+  [data-view="jp"] .jp-controls { margin: 12px 0 14px; padding-block: 12px; }
+  [data-view="jp"] .bench { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+}
+
+/* ---------- 日股頁（jp.html）：族群對照表 ----------
+ *
+ * 這一頁不用 .row，用表格。.row 是排行榜的「名次｜名稱｜一個數字」，而這裡要
+ * 一次並排四個期間再加一欄差距——七欄擠進三欄的格線，長字串會掉進 3.4rem 那一欄
+ * 被壓成一個字寬的直排（第一版就是這樣）。
+ *
+ * 日股與台股用左側色條加一個字分：磚紅的「日」、藍的「台」。
+ *
+ * 磚紅確實靠近漲的紅，這是知道的取捨：國別只出現在第一欄（色條與那一個字），
+ * 漲跌只出現在數字欄，兩者不共格；而磚紅 #b8443c 比 --up #d92d20 暗一階、
+ * 彩度低一截，並排看得出來。換句話說，靠位置分，不是靠顏色分——顏色只是讓你
+ * 掃的時候知道現在在哪一國，讀不準就看那個字。
+ *
+ * 表格分三層：族群列（tr.g，點得動）→ 子族群區塊列（tr.b）→ 個股列（tr.s / tr.t）。
+ */
+table.jp {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 620px;
+  font-variant-numeric: tabular-nums;
+}
+
+table.jp th,
+table.jp td {
+  padding: 7px 10px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+table.jp th:first-child,
+table.jp td:first-child {
+  text-align: left;
+  white-space: normal;
+}
+
+table.jp thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--muted);
+}
+
+/* 目前拿來算差距、也拿來排序的那一欄，要看得出是哪一欄 */
+table.jp th.on,
+table.jp td.on { background: var(--bg); }
+table.jp thead th.on { color: var(--text); }
+
+/* 族群那一列：整頁的分段，也是點得動的展開鈕 */
+table.jp tr.g > td {
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  cursor: pointer;
+}
+table.jp tr.g > td:first-child { font-size: 14px; }
+table.jp tr.g .sub {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+table.jp tr.g .caret { color: var(--muted); margin-right: 6px; font-size: 11px; }
+table.jp tr.g:hover > td { background: var(--surface); }
+
+/* 子族群那一列：族群的下一層。不給底色——底色是族群列用來分段的手段，
+   這一層再鋪一次，整張表會變成一堆分不出主從的橫帶。只用一條線與縮排。 */
+table.jp tr.b > td {
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+  padding-bottom: 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+table.jp tr.b > td:first-child { padding-left: 14px; }
+table.jp tr.b .sub { margin-left: 8px; font-weight: 400; color: var(--muted); }
+
+table.jp tbody tr.s > td { border-top: 1px solid var(--line); }
+table.jp tbody tr.s:first-child > td { border-top: none; }
+/* 區塊列已經畫過一條線了，它下面第一列再畫就變雙線 */
+table.jp tr.b + tr.s > td { border-top: none; }
+
+/* 左側色條：日股磚紅、台股藍。用 box-shadow 不用 border，才不會推掉欄寬 */
+table.jp tr.s > td:first-child { box-shadow: inset 3px 0 0 var(--jp); }
+table.jp tr.t > td:first-child { box-shadow: inset 3px 0 0 var(--tw); }
+table.jp tr.t > td:first-child .nm { padding-left: 14px; }
+
+/* 「日」「台」各一個字。寬度寫死 16px 不用 em：下面 .cd 要對齊到同一條線，
+   而 .tag 與 .cd 的字級不一樣（10px / 11px），用 em 兩邊會各縮各的、差 2px。 */
+table.jp .tag {
+  display: inline-block;
+  width: 16px;
+  margin-right: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--jp);
+}
+table.jp tr.t .tag { color: var(--tw); }
+
+table.jp .nm { display: inline-block; font-weight: 600; }
+table.jp .cd {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  padding-left: 24px;
+}
+table.jp tr.t .cd { padding-left: 38px; }
+
+table.jp td.px { color: var(--muted); font-size: 12px; }
+/* 幣別跟在數字後面，但要讓得出位置：13,075 円與 944 元擺在同一欄卻不能互比，
+   單位是給人分辨的標記，不是數字的一部分。 */
+table.jp td.px .cur { font-size: .85em; margin-left: 2px; opacity: .7; }
+
+/* 差距欄的橫條：滿格 72px，寬度由 jp.js 依全表最大絕對差距算出來。
+   min-width 是留給橫條的位置——沒有它，短數字的那幾列會把欄寬縮到橫條被裁掉。 */
+table.jp td.gap { min-width: 92px; }
+table.jp .bar {
+  display: block;
+  height: 3px;
+  margin-top: 3px;
+  margin-left: auto;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: .45;
+}
+table.jp a { color: inherit; text-decoration: none; }
+table.jp tr.t:hover > td { background: var(--surface); }
+
+/*
+ * 手機上把沒選到的三個期間欄收起來。
+ *
+ * 表格 620px、手機可視只有 366px：不收的話差距那一欄連同橫條落在捲動區的另一端，
+ * 要橫捲 250px 才看得到。那一欄是這一頁的重點，不能藏在捲不到的地方。
+ *
+ * 四個期間並排是桌面才擺得下的東西。手機上留「收盤 · 當期 · 差距」三個數字，
+ * 要看別的期間就點上面的 pills——那一組本來就是為了這件事存在的。
+ */
+@media (max-width: 767px) {
+  table.jp th,
+  table.jp td { padding: 6px 7px; }
+  table.jp { font-size: 13px; min-width: 0; }
+  table.jp td.gap { min-width: 72px; }
+
+  /* 代號那一行不准換行：「6504.T ·」與「★★★」斷成兩行會讓每一列多長一截，
+     整張表憑空高出三成。名稱本身還是可以換行（td:first-child 是 normal）。 */
+  table.jp .cd { white-space: nowrap; }
+
+  /* 「日股 / 台股」那個標籤在手機上收掉：左邊的色條已經在講同一件事（琥珀日股、
+     藍台股），而它佔掉的 2.2em 會把名稱欄擠到換行，一列變三行。 */
+  table.jp .tag { display: none; }
+  table.jp .cd,
+  table.jp tr.t .cd { padding-left: 0; margin-left: 0; }
+  table.jp tr.t > td:first-child .nm { padding-left: 8px; }
+  table.jp tr.t .cd { padding-left: 8px; }
+}
 
 /* ---------- 報價 ---------- */
 /* 報價列：左邊品項名、中間迷你走勢、右邊數字。沒有名次欄，所以不沿用 .row 的三欄。 */
@@ -1192,7 +1553,26 @@ select, input, button {
   /*
    * 限寬要下在「窗格裡的內容」而不是窗格本身：.view 自己是捲動容器，給它 max-width
    * 會連捲軸一起被推到螢幕中間去。
+   *
+   * 日股頁在手機上沒有卡片外框，是 .view 自己當內容框，所以那邊的 1060px 直接下在
+   * .view 身上——到了桌面 .view 換成窗格，那條限寬就變成「窗格只有 1060px 寬」，
+   * 右邊空掉一整片。它的作用域比這裡窄，得明白地解掉，限寬交給下面那條統一處理。
    */
+  /*
+   * 日股頁在手機上沒有卡片外框，是 .view 自己當內容框，1060px 的限寬因此直接下在
+   * 它身上——到了桌面 .view 換成捲動窗格，那條限寬就變成「窗格只有 1060px 寬」，
+   * 捲軸停在半路，右邊空掉一整片。
+   *
+   * 解法不是改吃下面 .view > * 那條 1180px 置中：這一頁的說明、pills、表格各自帶著
+   * margin-left: 0（手機上靠左是對的），auto 邊界套不上去，結果只有表格跑到中間、
+   * 文字還貼在左緣，兩條左緣對不起來。改用左右留白把內容收成一條置中的帶子，
+   * 每個子元素照樣靠帶子的左緣，而捲軸留在窗格最右邊。
+   */
+  [data-view="jp"] .view {
+    max-width: none;
+    padding: var(--pane-pad) max(24px, (100% - 1180px) / 2) 48px;
+  }
+
   .view > * {
     max-width: 1180px;
     margin-left: auto;

@@ -26,9 +26,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      # 三處版號一錯開，使用者就會拿到「新資料配舊前端」，而且畫面看起來一切正常。
+      # 版號一錯開，使用者就會拿到「新資料配舊前端」，而且畫面看起來一切正常。
       # 這種漏掉的成本很高、檢查的成本是一秒鐘。
-      - name: 前端版號三處一致
+      - name: 前端版號各頁一致
         run: python scripts/check_frontend_version.py
 
       # 桌面斷點寫在兩個地方：style.css 的版面，與 app.js 的 WIDE_MQ（清單欄位要用
