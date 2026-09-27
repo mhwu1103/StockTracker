@@ -8,7 +8,8 @@
     docs/data/daily/all/<最近一天>.json           挑台股用的成交值
 
 輸出每一族一組**子族群區塊**：一個區塊是「這幾檔外股 → 這幾檔台股」，
-外股與台股在同一個環節上，差距就在區塊裡算。為什麼配對的單位是子族群而不是
+外股與台股在同一個環節上，差距就在區塊裡算。兩邊都會裁到**最後一場兩邊都有
+開盤的交易日**——哪一邊比較新都有可能（假期不一樣），理由寫在 main() 裡。為什麼配對的單位是子族群而不是
 族群、為什麼只擺漲跌幅不算相關係數，都寫在 pair.py 的 docstring 裡，改之前先讀。
 
 日股與韓股出的是**同一個形狀**的 index.json，前端 docs/pair.js 一份程式畫兩頁。
@@ -62,34 +63,47 @@ def main() -> int:
         print("台股 K 線的涵蓋範圍太短，算不出漲跌幅")
         return 1
 
+    # 兩邊都要裁到「最後一場兩邊都有開盤的交易日」。
+    #
+    # 整頁做的事是「兩邊的漲跌幅並排比」，那前提是兩邊量的是同一段時間。而兩邊
+    # 的最後一天**哪一邊比較新都有可能**：
+    #
+    #   外股比較新   fetch_pair.py 每天抓得到最新的外股，台股卻可能還停在幾天前
+    #                （行情或 build_history 那幾步失敗時會沿用舊資料）
+    #   台股比較新   兩國的假期不一樣。2026 的中秋首爾休了 09-24、09-25 兩天，
+    #                台股只休一天 —— 韓股停在 09-23，台股已經到 09-24
+    #
+    # 本來只裁前者（`cut = tw_dates[-1]`，只截外股），後者整個沒防到：韓股的「週」
+    # 是到 09-23 的五天、台股的「週」是到 09-24 的五天，差距那一欄整欄是錯的，
+    # 而畫面上兩個數字並排看起來完全正常 —— 正是這一段本來要擋的那件事。
+    #
+    # 取交集的最後一天，兩邊一起裁，兩邊的最後一場就一定是同一天。用 min() 不夠：
+    # 台股在外股最後那一場當天也可能休市（例如外股只休 09-24、台股休 09-24 與
+    # 09-25），min() 會停在一個台股沒有開盤的日子，照樣差一天。
+    #
+    # 外股自己的交易日軸用該國大盤，不能用 market.json 的 d —— 那是所有標的的
+    # 聯集，而 JPY=X／KRW=X 是匯率、週末也有報價，用聯集的話會裁到星期日去。
+    index_series = fx_close.get(market.index) or []
+    tw_set = set(tw_dates)
+    common = [d for d, c in zip(fx_axis, index_series) if c is not None and d in tw_set]
+    if len(common) < 2:
+        print(f"{market.label}與台股共同的交易日不到兩天，算不出漲跌幅")
+        return 1
+    cut = common[-1]
+    keep = sum(1 for d in fx_axis if d <= cut)
+    fx_axis = fx_axis[:keep]
+    fx_close = {sym: series[:keep] for sym, series in fx_close.items()}
+    tw_dates = [d for d in tw_dates if d <= cut]
+    fx_last = cut
+
     link = pair.load_link(market)
     themes = pair.load_themes()
     codes_of = pair.theme_codes(themes)
     sub_codes_of = pair.theme_sub_codes(themes)
     stock_names = (json.loads((twse.DATA_DIR / "industry.json").read_text(encoding="utf-8"))
                    .get("names") or {})
+    # 成交值要跟著裁完的最後一天走，不是「今天」：這一頁擺的是 cut 那一天的畫面
     values = pair.latest_values(twse.DAILY_DIR / "all" / f"{tw_dates[-1]}.json")
-
-    # 外股要裁到台股的最後一個交易日。
-    #
-    # 整頁做的事是「兩邊的漲跌幅並排比」，那前提是兩邊量的是同一段時間。
-    # 而 fetch_pair.py 每天抓得到最新的外股，台股卻可能還停在幾天前（行情或
-    # build_history 那幾步失敗時會沿用舊資料）——不裁的話，外股的「週」是
-    # 到 09-25 的五天、台股的「週」是到 09-18 的五天，差距那一欄整欄是錯的，
-    # 而畫面上兩個數字並排看起來完全正常。
-    cut = tw_dates[-1]
-    keep = sum(1 for d in fx_axis if d <= cut)
-    if keep < 2:
-        print(f"{market.label}在台股最後一個交易日（{cut}）之前沒有足夠資料")
-        return 1
-    fx_axis = fx_axis[:keep]
-    fx_close = {sym: series[:keep] for sym, series in fx_close.items()}
-
-    # 外股自己的交易日軸用該國大盤。不能用 market.json 的 d，那是所有標的的聯集，
-    # 而 JPY=X／KRW=X 是匯率、週末也有報價 —— 用聯集的話頁面上會寫「日股到星期日」。
-    index_series = fx_close.get(market.index) or []
-    fx_last = next((d for d, c in zip(reversed(fx_axis), reversed(index_series))
-                    if c is not None), fx_axis[-1])
 
     def fx_row(sym: str, name: str) -> dict | None:
         series = fx_close.get(sym)
