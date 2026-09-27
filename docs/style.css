@@ -1045,7 +1045,7 @@ select, input, button {
 .scatter .dot.s2 { background: var(--star2); }
 .scatter .dot.s1 { background: var(--star1); }
 
-/* ---------- 並排表（jp.html／kr.html 整頁、us.html 的「看並排」軸）：版面 ----------
+/* ---------- 並排表（jp.html／kr.html／cross.html 整頁、us.html 的「看並排」軸）：版面 ----------
  *
  * 全站的分頁是 720px 寬的卡片堆疊，那是為「一次看一個數字」設計的。並排表是
  * 一張七欄的對照表，卡片的框加上 720px 只會把表壓窄、再逼它橫捲——卡片幫不上忙，
@@ -1058,6 +1058,7 @@ select, input, button {
  */
 [data-view="jp"] .view,
 [data-view="kr"] .view,
+[data-view="cross"] .view,
 [data-view="us"] .view.pair-view {
   max-width: 1060px;
   padding: 16px 16px 48px;
@@ -1172,6 +1173,7 @@ select, input, button {
 @media (max-width: 767px) {
   [data-view="jp"] .view,
   [data-view="kr"] .view,
+  [data-view="cross"] .view,
   [data-view="us"] .view.pair-view { padding: 12px 12px 32px; }
   .pair-controls { margin: 12px 0 14px; padding-block: 12px; }
   .bench { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
@@ -1339,6 +1341,96 @@ table.pair tr.t:hover > td { background: var(--surface); }
   table.pair tr.t .cd { padding-left: 0; margin-left: 0; }
   table.pair tr.t > td:first-child .nm { padding-left: 8px; }
   table.pair tr.t .cd { padding-left: 8px; }
+}
+
+/* ---------- 四市題材（cross.html）----------
+ *
+ * 沿用 table.pair 的骨架（欄距、族群列、sticky 表頭、最右欄的橫條都一樣），只覆寫
+ * 「這一列是哪一國」那幾條——那一套在並排表上成立，是因為那裡一列就是一檔個股、
+ * 屬於某一個市場。這裡一列是一個題材，四個市場各佔一欄，列本身沒有國籍。
+ */
+table.pair.cross tr.s > td:first-child {
+  /* 並排表用左側色條分國別，這裡沒有國別可分。留一格縮排就好 */
+  box-shadow: none;
+  padding-left: 26px;
+}
+table.pair.cross tr.s .cd { padding-left: 0; }
+table.pair.cross tr.g > td:first-child { font-size: 14px; }
+
+/* 四個市場那四欄：等寬，數字才對得齊，掃的時候不會被欄寬變化誤導 */
+table.pair.cross thead th:not(:first-child):not(.on),
+table.pair.cross tbody td:not(:first-child):not(.gap) { width: 4.6rem; }
+
+/* 一格只有一檔時，那不是中位數就是那一檔。淡一階當提醒，但不藏起來 */
+table.pair.cross td.thin { opacity: .55; }
+
+/* 「N 市全漲」：這一頁真正在找的東西，所以給它一個記號而不是只靠四欄的顏色。
+   用邊框不用底色——底色在紅綠交錯的一列裡會變成第三種色塊。 */
+table.pair.cross .all {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--up);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--up);
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+
+@media (max-width: 767px) {
+  /* 六欄在手機上本來就塞得下（題材名 + 四個兩字欄 + 最弱），不必像並排表那樣收欄。
+     但名稱要讓得出位置，四欄各自縮到剛好放得下 -00.0% */
+  table.pair.cross thead th:not(:first-child):not(.on),
+  table.pair.cross tbody td:not(:first-child):not(.gap) { width: 3.5rem; }
+  table.pair.cross tr.s > td:first-child { padding-left: 16px; }
+  table.pair.cross .all { margin-left: 6px; }
+}
+
+/* 展開之後的個股列。
+ *
+ * 四欄裡只有它自己那一欄有數字，空著的三欄同時也是縮排——一眼看得出這幾列屬於
+ * 哪一國，不必再畫一條色條。
+ */
+table.pair.cross tr.p > td { border-top: none; font-size: 12px; }
+table.pair.cross tr.p > td:first-child { padding-left: 34px; }
+table.pair.cross tr.p .nm { font-weight: 400; }
+table.pair.cross tr.p .cd { padding-left: 24px; font-size: 10.5px; }
+table.pair.cross tr.p:hover > td { background: var(--surface); }
+table.pair.cross tr.p a { color: inherit; text-decoration: none; }
+
+/* 個股區塊的抬頭：講清楚這一段是哪一個市場的哪一族、幾檔、中位數在哪裡。
+   沒有它的話，一族底下接著 65 列台股會不知道自己在看什麼。 */
+table.pair.cross tr.pc > td {
+  padding-top: 8px;
+  padding-bottom: 3px;
+  padding-left: 26px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: .06em;
+  color: var(--muted);
+  white-space: normal;
+}
+table.pair.cross tr.pc b { color: var(--text); font-weight: 600; }
+
+/* 點得動的那幾格。底線用 dotted：這一欄已經有紅綠了，再加一個色塊會變成第三種訊號，
+   而虛線只說「這裡可以點」。展開中的那一格反白，才知道下面那幾列是從哪一格來的。 */
+table.pair.cross td.hit { cursor: pointer; }
+table.pair.cross td.hit::after {
+  content: '';
+  display: block;
+  margin-top: 2px;
+  border-bottom: 1px dotted currentColor;
+  opacity: .35;
+}
+table.pair.cross td.hit.open { background: var(--bg); }
+table.pair.cross td.hit.open::after { opacity: .9; border-bottom-style: solid; }
+
+@media (max-width: 767px) {
+  table.pair.cross tr.p > td:first-child { padding-left: 20px; }
+  table.pair.cross tr.p .cd { padding-left: 0; }
+  table.pair.cross tr.pc > td { padding-left: 16px; }
 }
 
 /* ---------- 報價 ---------- */
@@ -1581,6 +1673,7 @@ table.pair tr.t:hover > td { background: var(--surface); }
    */
   [data-view="jp"] .view,
   [data-view="kr"] .view,
+  [data-view="cross"] .view,
   [data-view="us"] .view.pair-view {
     max-width: none;
     padding: var(--pane-pad) max(24px, (100% - 1180px) / 2) 48px;

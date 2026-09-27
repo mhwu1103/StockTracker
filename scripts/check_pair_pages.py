@@ -53,12 +53,17 @@ def css_page_sets() -> list[tuple[set, str]]:
     return out
 
 
+# 真的把 pair.js 掛上去的 <script>，不是「文章裡提到 pair.js」。用子字串比對的話，
+# 註解寫「這一頁不吃 pair.js」的頁面會被算進來 —— cross.html 就是這樣被誤判的。
+PAIR_SCRIPT_RE = re.compile(r'<script[^>]+src="pair\.js')
+
+
 def pair_pages() -> dict[str, str]:
     """載入 pair.js 的獨立頁面：{data-view: 檔名}。"""
     out = {}
     for path in sorted(DOCS.glob("*.html")):
         text = path.read_text(encoding="utf-8")
-        if "pair.js" not in text:
+        if not PAIR_SCRIPT_RE.search(text):
             continue
         m = re.search(r'<body[^>]*\bdata-view="([^"]+)"', text)
         if not m:

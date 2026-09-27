@@ -153,6 +153,14 @@ jobs:
         continue-on-error: true
         run: python scripts/build_pair.py kr
 
+      # 四市題材。吃的是 us／jp／kr 三份 market.json 加台股的 kline/，所以要排在
+      # 上面那三支 fetch 與 build_history.py 全部跑完之後。前面任何一個市場沒抓到，
+      # 這一步仍然算得出來（那一欄會用比較舊的最後一場，頁面上標得出來），
+      # 所以不必跟著失敗。
+      - name: 重算四市題材
+        continue-on-error: true
+        run: python scripts/build_cross.py
+
       - name: 提交資料變更
         run: |
           git config user.name "github-actions[bot]"
