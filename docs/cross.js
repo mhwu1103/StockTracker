@@ -229,9 +229,12 @@ function stockRows(cells, mk, rowId, label) {
     return y - x;
   });
   const med = valueOf({ cells }, mk);
-  const head = `<tr class="pc"><td colspan="${markets().length + 2}">
-      ${esc(mk.label)}的<b>${esc(label)}</b> ${rows.length} 檔，中位 ${signedPct(med)}
-      · 依${esc(spanLabel())}排序</td></tr>`;
+  // 台股那幾列的色條與那一個字要換成藍的。class 用 tw 不是並排表的 t —— 那邊的
+  // tr.t 還帶著 .nm 與 .cd 的縮排，沿用會把這裡的對齊一起繼承走。
+  const cls = mk.k === 'tw' ? ' tw' : '';
+  const head = `<tr class="pc${cls}"><td colspan="${markets().length + 2}">
+      <b>${esc(mk.label)}</b>的${esc(label)} ${rows.length} 檔
+      · 中位 ${signedPct(med)} · 依${esc(spanLabel())}排序</td></tr>`;
   const body = rows.map((r) => {
     const v = stockValue(r, mk);
     const px = r.px === null || r.px === undefined ? '' : ` · ${num(r.px, mk.dp)} ${esc(mk.cur)}`;
@@ -242,7 +245,7 @@ function stockRows(cells, mk, rowId, label) {
       ? `<a href="index.html#/stock/${esc(r.t)}">${ident}</a>` : ident;
     const cols = markets().map((m) => (m.k === mk.k
       ? `<td class="${trend(v)}">${signedPct(v)}</td>` : '<td></td>')).join('');
-    return `<tr class="p">${`<td>${name}</td>`}${cols}<td></td></tr>`;
+    return `<tr class="p${cls}"><td>${name}</td>${cols}<td></td></tr>`;
   }).join('');
   return head + body;
 }

@@ -1349,19 +1349,32 @@ table.pair tr.t:hover > td { background: var(--surface); }
  * 「這一列是哪一國」那幾條——那一套在並排表上成立，是因為那裡一列就是一檔個股、
  * 屬於某一個市場。這裡一列是一個題材，四個市場各佔一欄，列本身沒有國籍。
  */
+/* 字級階層要自己寫死，不能吃繼承來的 15px。
+ *
+ * 並排表只給了「族群名 14px」一條規則，其餘的靠 body 的 15px 繼承——那在並排表上
+ * 沒事（它的第二層是 tr.b，有自己的 12px），在這裡卻壞掉：子題材名沒有規則，
+ * 就變成 15px，**比族群名（14px）還大**，階層是反的。
+ *
+ * 四欄數字一律 14px：跨列比數字是這一頁在做的事，數字忽大忽小就比不動。名字則
+ * 一層小一階：族群 15 / 子題材 13.5 / 個股 13。
+ */
+table.pair.cross { font-size: 14px; }
+table.pair.cross tr.g > td:first-child { font-size: 15px; }
+
 table.pair.cross tr.s > td:first-child {
   /* 並排表用左側色條分國別，這裡沒有國別可分。留一格縮排就好 */
   box-shadow: none;
   padding-left: 14px;
+  font-size: 13.5px;
 }
 /* 子題材那一列也點得動（名字＝四市一起攤開），所以它要跟族群列一樣有 ▸ 與手指游標。
    少了這兩樣，它看起來就是最底層，沒有人會去點。 */
 table.pair.cross tr.s > td { cursor: pointer; }
 table.pair.cross tr.s .caret { color: var(--muted); margin-right: 6px; font-size: 11px; }
-table.pair.cross tr.s:hover > td { background: var(--surface); }
+/* hover 要用 --bg 不是 --surface：整張表鋪在 .scroller 的 --surface 上，
+   列本身是透明的，hover 成 --surface 等於什麼都沒發生。 */
+table.pair.cross tr.s:hover > td { background: var(--bg); }
 table.pair.cross tr.s .cd { padding-left: 17px; }
-table.pair.cross tr.g > td:first-child { font-size: 14px; }
-
 /* 四個市場那四欄：等寬，數字才對得齊，掃的時候不會被欄寬變化誤導 */
 table.pair.cross thead th:not(:first-child):not(.on),
 table.pair.cross tbody td:not(:first-child):not(.gap) { width: 4.6rem; }
@@ -1384,6 +1397,12 @@ table.pair.cross .all {
 }
 
 @media (max-width: 767px) {
+  /* 手機上整體降一階。這一條要自己寫：table.pair 的 13px 選擇器比 .cross 弱，
+     不補的話手機上會停在桌面的 14px。 */
+  table.pair.cross { font-size: 13px; }
+  table.pair.cross tr.g > td:first-child { font-size: 14px; }
+  table.pair.cross tr.s > td:first-child { font-size: 13px; }
+
   /* 六欄在手機上本來就塞得下（題材名 + 四個兩字欄 + 最弱），不必像並排表那樣收欄。
      但名稱要讓得出位置，四欄各自縮到剛好放得下 -00.0% */
   table.pair.cross thead th:not(:first-child):not(.on),
@@ -1394,29 +1413,66 @@ table.pair.cross .all {
 
 /* 展開之後的個股列。
  *
- * 四欄裡只有它自己那一欄有數字，空著的三欄同時也是縮排——一眼看得出這幾列屬於
- * 哪一國，不必再畫一條色條。
+ * 左側色條照全站的規矩：對照的那三國是磚紅（--side）、台股是藍（--tw）。一個展開的
+ * 區塊就靠那條色條連成一體——**不另外鋪底色**：底色在這張表上已經是「族群列」的語彙
+ * （tr.g 用 --bg 分段），再鋪一層會讓人以為那是另一個層級。
+ *
+ * 字級 13px，比子題材那一列小一階但不能再小。第一版給了 12px、代號那一行 10.5px，
+ * 在 1060px 寬的表上細得像註腳——而這幾列正是這一頁要讀的東西，不是註腳。
+ *
+ * 色條的 class 用 .tw 不是並排表的 .t：那邊的 tr.t 還帶了 .nm 的縮排與 .cd 的
+ * padding，沿用會把這裡的對齊一起繼承走，而兩張表的第一欄結構不一樣。
  */
-table.pair.cross tr.p > td { border-top: none; font-size: 12px; }
-table.pair.cross tr.p > td:first-child { padding-left: 34px; }
-table.pair.cross tr.p .nm { font-weight: 400; }
-table.pair.cross tr.p .cd { padding-left: 24px; font-size: 10.5px; }
-table.pair.cross tr.p:hover > td { background: var(--surface); }
-table.pair.cross tr.p a { color: inherit; text-decoration: none; }
+table.pair.cross tr.p > td {
+  border-top: none;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  font-size: 13px;
+}
+table.pair.cross tr.p > td:first-child {
+  padding-left: 30px;
+  box-shadow: inset 3px 0 0 var(--side);
+}
+table.pair.cross tr.p.tw > td:first-child { box-shadow: inset 3px 0 0 var(--tw); }
 
-/* 個股區塊的抬頭：講清楚這一段是哪一個市場的哪一族、幾檔、中位數在哪裡。
-   沒有它的話，一族底下接著 65 列台股會不知道自己在看什麼。 */
-table.pair.cross tr.pc > td {
-  padding-top: 8px;
-  padding-bottom: 3px;
-  padding-left: 26px;
-  border-top: 1px solid var(--line);
-  text-align: left;
+/* 代號與收盤價跟名字**同一行**。第一版沿用並排表的作法讓它 display: block 掉到第二行，
+   那在並排表上是對的（一列就是一檔、名字長、只有幾列），這裡不對：一次展開十幾列，
+   每列兩行就是三十行，而第二行 10.5px 根本沒人會讀。併成一行之後區塊高度少一半。 */
+table.pair.cross tr.p .tag {
+  display: inline-block;
+  width: 15px;
+  margin-right: 6px;
   font-size: 10px;
-  letter-spacing: .06em;
+  font-weight: 700;
+  color: var(--side);
+}
+table.pair.cross tr.p.tw .tag { color: var(--tw); }
+table.pair.cross tr.p .nm { font-weight: 500; }
+table.pair.cross tr.p .cd {
+  display: inline;
+  margin-left: 8px;
+  padding-left: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+table.pair.cross tr.p:hover > td { background: var(--bg); }
+table.pair.cross tr.p a { color: inherit; text-decoration: none; }
+table.pair.cross tr.p a:hover .nm { text-decoration: underline; }
+
+/* 個股區塊的抬頭：這一段是哪一個市場的哪一族、幾檔、中位數在哪裡。
+   沒有它的話，一族底下接著十幾列會不知道自己在看什麼。
+   原本 10px 加字距，看起來像系統標籤而不是句子——這裡要人讀，所以回到 11.5px、
+   不加字距，並且跟著個股列吃同一條色條，整塊才連得起來。 */
+table.pair.cross tr.pc > td {
+  padding: 9px 10px 4px 30px;
+  border-top: 1px solid var(--line);
+  box-shadow: inset 3px 0 0 var(--side);
+  text-align: left;
+  font-size: 11.5px;
   color: var(--muted);
   white-space: normal;
 }
+table.pair.cross tr.pc.tw > td { box-shadow: inset 3px 0 0 var(--tw); }
 table.pair.cross tr.pc b { color: var(--text); font-weight: 600; }
 
 /* 點得動的那幾格。底線用 dotted：這一欄已經有紅綠了，再加一個色塊會變成第三種訊號，
@@ -1433,9 +1489,12 @@ table.pair.cross td.hit.open { background: var(--bg); }
 table.pair.cross td.hit.open::after { opacity: .9; border-bottom-style: solid; }
 
 @media (max-width: 767px) {
-  table.pair.cross tr.p > td:first-child { padding-left: 20px; }
-  table.pair.cross tr.p .cd { padding-left: 0; }
-  table.pair.cross tr.pc > td { padding-left: 16px; }
+  /* 手機上整張表是 13px，個股列再小一階就好——小於 12px 在手機上是讀不動的 */
+  table.pair.cross tr.p > td { font-size: 12.5px; }
+  table.pair.cross tr.p > td:first-child { padding-left: 18px; }
+  table.pair.cross tr.p .cd { margin-left: 6px; font-size: 11px; }
+  table.pair.cross tr.p .tag { display: inline-block; }
+  table.pair.cross tr.pc > td { padding-left: 18px; font-size: 11px; }
   table.pair.cross tr.s > td:first-child { padding-left: 8px; }
 }
 
