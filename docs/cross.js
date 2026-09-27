@@ -271,10 +271,25 @@ const counts = (g) => markets()
   .map((mk) => (g.cells[mk.k] ? `${esc(mk.tag)}${g.cells[mk.k].codes.length}` : ''))
   .filter(Boolean).join(' · ');
 
+/*
+ * 子題材那一列。
+ *
+ * 名字點下去＝**把四個市場的成分股一次攤開**，格子點下去＝只開那一個市場。
+ *
+ * 一開始只做了後者，而族群列的名字是點得動的（展開子題材）——同樣一列的名字，
+ * 上面一層點得動、下面一層點不動，而且下面一層連個 ▸ 都沒有，看起來就是最底層。
+ * 使用者做了最自然的動作（點名字）然後什麼都沒發生。
+ *
+ * 「一次攤開四市」在這一層才可行：子題材四市合計中位 12 檔、最多 41 檔。族群層
+ * 不給這個動作，那裡光台股就可能 65 檔（AI 伺服器），所以族群的名字留給子題材，
+ * 要看個股就點它的格子。
+ */
 function subRow(s, gname) {
   const rowId = `${gname}|${s.name}`;
-  return `<tr class="s">
-      <td><span class="nm">${esc(s.name)}</span>
+  const mks = markets().filter((mk) => s.cells[mk.k]).map((mk) => mk.k);
+  const open = mks.some((k) => state.cells.has(`${rowId}|${k}`));
+  return `<tr class="s" data-row="${esc(rowId)}" data-mks="${esc(mks.join(','))}">
+      <td><span class="caret">${open ? '▾' : '▸'}</span><span class="nm">${esc(s.name)}</span>
         <span class="cd">${counts(s)}</span></td>
       ${markets().map((mk) => cell(s, mk, rowId)).join('')}
       ${weakCell(s)}
@@ -326,10 +341,11 @@ function howToRead(data) {
       <li>點族群那一列可以<b>展開子題材</b>。子題材只列至少兩個市場有東西的，
         單一市場的那些在排行榜的<a class="accent" href="index.html#/sector">族群</a>分頁看。</li>
       <li><b>點任何一格數字，就會列出那個市場、那一族的成分股</b>，依當下這一段排序，
-        領先的在上面——中位數答不出「是誰在推」。展開的單位是一格不是一列：一檔個股
-        只屬於一個市場，四邊全攤開就是上百列，而且四欄裡有三欄一定是空的。
-        族群那一格與子題材那一格都點得動，而<b>只標在族群層、沒有落進任何子題材的
-        外股，只有點族群那一格才看得到</b>。台股那幾列點得進個股頁。</li>
+        領先的在上面——中位數答不出「是誰在推」。族群那一格與子題材那一格都點得動，
+        而<b>只標在族群層、沒有落進任何子題材的外股，只有點族群那一格才看得到</b>。
+        台股那幾列點得進個股頁。</li>
+      <li><b>點子題材的名字，四個市場的成分股會一次攤開</b>（合計多半十幾檔）。
+        族群的名字不給這個動作，它留給展開子題材——族群層光台股就可能六十幾檔。</li>
     </ul>
   </div>`;
 }
@@ -401,6 +417,20 @@ document.addEventListener('click', (ev) => {
   if (hit) {
     const key = `${hit.dataset.row}|${hit.dataset.mk}`;
     state.cells.has(key) ? state.cells.delete(key) : state.cells.add(key);
+    render();
+    return;
+  }
+  /*
+   * 子題材那一列：名字（或那一列上任何不是數字格的地方）點下去，把它四個市場的
+   * 成分股一起開或一起收。已經全開就收起來，否則補齊 —— 先點過單一格子再點名字，
+   * 結果會是「其餘的也跟著開」，那比「全部收掉」合理。
+   */
+  const sub = ev.target.closest('tr.s[data-row]');
+  if (sub) {
+    const keys = (sub.dataset.mks || '').split(',').filter(Boolean)
+      .map((k) => `${sub.dataset.row}|${k}`);
+    const all = keys.length > 0 && keys.every((k) => state.cells.has(k));
+    keys.forEach((k) => (all ? state.cells.delete(k) : state.cells.add(k)));
     render();
     return;
   }

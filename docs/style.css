@@ -1352,9 +1352,14 @@ table.pair tr.t:hover > td { background: var(--surface); }
 table.pair.cross tr.s > td:first-child {
   /* 並排表用左側色條分國別，這裡沒有國別可分。留一格縮排就好 */
   box-shadow: none;
-  padding-left: 26px;
+  padding-left: 14px;
 }
-table.pair.cross tr.s .cd { padding-left: 0; }
+/* 子題材那一列也點得動（名字＝四市一起攤開），所以它要跟族群列一樣有 ▸ 與手指游標。
+   少了這兩樣，它看起來就是最底層，沒有人會去點。 */
+table.pair.cross tr.s > td { cursor: pointer; }
+table.pair.cross tr.s .caret { color: var(--muted); margin-right: 6px; font-size: 11px; }
+table.pair.cross tr.s:hover > td { background: var(--surface); }
+table.pair.cross tr.s .cd { padding-left: 17px; }
 table.pair.cross tr.g > td:first-child { font-size: 14px; }
 
 /* 四個市場那四欄：等寬，數字才對得齊，掃的時候不會被欄寬變化誤導 */
@@ -1431,6 +1436,7 @@ table.pair.cross td.hit.open::after { opacity: .9; border-bottom-style: solid; }
   table.pair.cross tr.p > td:first-child { padding-left: 20px; }
   table.pair.cross tr.p .cd { padding-left: 0; }
   table.pair.cross tr.pc > td { padding-left: 16px; }
+  table.pair.cross tr.s > td:first-child { padding-left: 8px; }
 }
 
 /* ---------- 報價 ---------- */
