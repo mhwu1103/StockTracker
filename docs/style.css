@@ -35,10 +35,12 @@
   --star2: #7b61ff;
   --star1: #c77700;
 
-  /* 日股頁的國別色：日是磚紅、台是藍。磚紅比 --up 暗一階、彩度低一截，
-     不會跟漲跌的紅認錯——但它只出現在左側色條與「日」那一個字上，
-     數字欄一律是 --up / --down，兩者不會在同一格裡打架。 */
+  /* 並排表的國別色：日是磚紅、美是靛紫、台是藍。磚紅比 --up 暗一階、彩度低一截，
+     不會跟漲跌的紅認錯——但它只出現在左側色條與那一個字上，數字欄一律是
+     --up / --down，兩者不會在同一格裡打架。
+     美股不用國旗的紅藍：紅是漲跌、藍已經是台股，這裡剩下的安全色只有紫。 */
   --jp: #b8443c;
+  --us: #6f4fd8;
   --tw: #2f6fed;
 }
 
@@ -67,6 +69,7 @@
   --star1: #f0a640;
 
   --jp: #e08b80;
+  --us: #a48cff;
   --tw: #6f9dff;
 }
 
@@ -1043,32 +1046,35 @@ select, input, button {
 .scatter .dot.s2 { background: var(--star2); }
 .scatter .dot.s1 { background: var(--star1); }
 
-/* ---------- 日股頁（jp.html）：版面 ----------
+/* ---------- 並排表（jp.html 整頁、us.html 的「看並排」軸）：版面 ----------
  *
- * 全站的分頁是 720px 寬的卡片堆疊，那是為「一次看一個數字」設計的。這一頁是
+ * 全站的分頁是 720px 寬的卡片堆疊，那是為「一次看一個數字」設計的。並排表是
  * 一張七欄的對照表，卡片的框加上 720px 只會把表壓窄、再逼它橫捲——卡片幫不上忙，
  * 只是多一層框。
  *
- * 所以這一頁自己走一套：通欄、內容直接鋪在背景上，只有表格與說明有框。
- * 作用域鎖在 [data-view="jp"]，其他頁的 .card / .controls / .stat-grid 不受影響。
+ * 所以這一套自己走：通欄、內容直接鋪在背景上，只有表格與說明有框。
+ * 這裡的 .pair-* 與 .bench / .ctl / .scroller 只有這兩個地方在用（排行榜那支 SPA
+ * 一個都沒用到，改名時查過），所以不必再鎖 [data-view]；要鎖的只有版面寬度——
+ * 美股頁的另外兩個軸仍然是 720px 的卡片。
  */
-[data-view="jp"] .view {
+[data-view="jp"] .view,
+[data-view="us"] .view.pair-view {
   max-width: 1060px;
   padding: 16px 16px 48px;
 }
 
-[data-view="jp"] .jp-sub {
+.pair-sub {
   margin: 0;
   max-width: 62ch;
   font-size: 13px;
   line-height: 1.75;
   color: var(--muted);
 }
-[data-view="jp"] .jp-sub b { color: var(--text); font-weight: 600; }
+.pair-sub b { color: var(--text); font-weight: 600; }
 
 /* 控制列：pills 上面掛一個小標籤，上下用線隔開。這一組只管最右邊那一欄，
    沒有標籤的話它看起來像在切換整張表——但中間四欄不管選哪個都在。 */
-[data-view="jp"] .jp-controls {
+.pair-controls {
   display: flex;
   flex-wrap: wrap;
   gap: 14px 24px;
@@ -1077,8 +1083,8 @@ select, input, button {
   padding-block: 14px;
   border-block: 1px solid var(--line);
 }
-[data-view="jp"] .ctl { display: flex; flex-direction: column; gap: 8px; }
-[data-view="jp"] .ctl > span {
+.ctl { display: flex; flex-direction: column; gap: 8px; }
+.ctl > span {
   font-size: 10px;
   letter-spacing: .09em;
   text-transform: uppercase;
@@ -1095,7 +1101,7 @@ select, input, button {
  * 陰影往外 1px 正好填滿縫隙，外緣被 overflow: hidden 裁掉；空位沒有格子，
  * 就跟容器同色。
  */
-[data-view="jp"] .bench {
+.bench {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
   gap: 1px;
@@ -1105,41 +1111,41 @@ select, input, button {
   overflow: hidden;
   margin-bottom: 10px;
 }
-[data-view="jp"] .bench > div {
+.bench > div {
   background: var(--surface);
   box-shadow: 0 0 0 1px var(--line);
   padding: 11px 14px;
 }
-[data-view="jp"] .bname { margin-bottom: 3px; font-size: 12px; color: var(--muted); }
-[data-view="jp"] .bval {
+.bname { margin-bottom: 3px; font-size: 12px; color: var(--muted); }
+.bval {
   font-size: 17px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
 }
-[data-view="jp"] .bval .cur { font-size: .7em; margin-left: 2px; opacity: .7; }
-[data-view="jp"] .bspans {
+.bval .cur { font-size: .7em; margin-left: 2px; opacity: .7; }
+.bspans {
   margin-top: 5px;
   font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
-[data-view="jp"] .jp-hint {
+.pair-hint {
   margin: 0 0 18px;
   font-size: 12px;
   line-height: 1.75;
   color: var(--muted);
 }
-[data-view="jp"] .jp-hint b { color: var(--text); font-weight: 600; }
+.pair-hint b { color: var(--text); font-weight: 600; }
 
-[data-view="jp"] .scroller {
+.scroller {
   overflow-x: auto;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
 
-[data-view="jp"] .jp-note {
+.pair-note {
   margin-top: 18px;
   padding: 14px 16px;
   background: var(--surface);
@@ -1149,33 +1155,34 @@ select, input, button {
   line-height: 1.75;
   color: var(--muted);
 }
-[data-view="jp"] .jp-note h2 {
+.pair-note h2 {
   margin: 0 0 9px;
   font-size: 11px;
   letter-spacing: .09em;
   text-transform: uppercase;
   color: var(--text);
 }
-[data-view="jp"] .jp-note ul { margin: 0; padding-left: 1.15em; }
-[data-view="jp"] .jp-note li { margin-bottom: 6px; }
-[data-view="jp"] .jp-note li:last-child { margin-bottom: 0; }
-[data-view="jp"] .jp-note p { margin: 0 0 9px; }
-[data-view="jp"] .jp-note p:last-child { margin-bottom: 0; }
-[data-view="jp"] .jp-note b { color: var(--text); font-weight: 600; }
+.pair-note ul { margin: 0; padding-left: 1.15em; }
+.pair-note li { margin-bottom: 6px; }
+.pair-note li:last-child { margin-bottom: 0; }
+.pair-note p { margin: 0 0 9px; }
+.pair-note p:last-child { margin-bottom: 0; }
+.pair-note b { color: var(--text); font-weight: 600; }
 
 @media (max-width: 767px) {
   [data-view="jp"] .view { padding: 12px 12px 32px; }
-  [data-view="jp"] .jp-controls { margin: 12px 0 14px; padding-block: 12px; }
-  [data-view="jp"] .bench { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .pair-controls { margin: 12px 0 14px; padding-block: 12px; }
+  .bench { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 }
 
-/* ---------- 日股頁（jp.html）：族群對照表 ----------
+/* ---------- 並排表：族群對照表 ----------
  *
- * 這一頁不用 .row，用表格。.row 是排行榜的「名次｜名稱｜一個數字」，而這裡要
+ * 這張表不用 .row，用表格。.row 是排行榜的「名次｜名稱｜一個數字」，而這裡要
  * 一次並排四個期間再加一欄差距——七欄擠進三欄的格線，長字串會掉進 3.4rem 那一欄
  * 被壓成一個字寬的直排（第一版就是這樣）。
  *
- * 日股與台股用左側色條加一個字分：磚紅的「日」、藍的「台」。
+ * 兩邊用左側色條加一個字分：磚紅的「日」、靛紫的「美」、藍的「台」。
+ * 外國那一邊是哪一個顏色由 --side 決定，表格本身不必知道自己在哪一頁。
  *
  * 磚紅確實靠近漲的紅，這是知道的取捨：國別只出現在第一欄（色條與那一個字），
  * 漲跌只出現在數字欄，兩者不共格；而磚紅 #b8443c 比 --up #d92d20 暗一階、
@@ -1184,27 +1191,28 @@ select, input, button {
  *
  * 表格分三層：族群列（tr.g，點得動）→ 子族群區塊列（tr.b）→ 個股列（tr.s / tr.t）。
  */
-table.jp {
+table.pair {
+  --side: var(--jp);
   border-collapse: collapse;
   width: 100%;
   min-width: 620px;
   font-variant-numeric: tabular-nums;
 }
 
-table.jp th,
-table.jp td {
+table.pair th,
+table.pair td {
   padding: 7px 10px;
   text-align: right;
   white-space: nowrap;
 }
 
-table.jp th:first-child,
-table.jp td:first-child {
+table.pair th:first-child,
+table.pair td:first-child {
   text-align: left;
   white-space: normal;
 }
 
-table.jp thead th {
+table.pair thead th {
   position: sticky;
   top: 0;
   z-index: 1;
@@ -1217,12 +1225,12 @@ table.jp thead th {
 }
 
 /* 目前拿來算差距、也拿來排序的那一欄，要看得出是哪一欄 */
-table.jp th.on,
-table.jp td.on { background: var(--bg); }
-table.jp thead th.on { color: var(--text); }
+table.pair th.on,
+table.pair td.on { background: var(--bg); }
+table.pair thead th.on { color: var(--text); }
 
 /* 族群那一列：整頁的分段，也是點得動的展開鈕 */
-table.jp tr.g > td {
+table.pair tr.g > td {
   background: var(--bg);
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
@@ -1231,69 +1239,70 @@ table.jp tr.g > td {
   padding-bottom: 9px;
   cursor: pointer;
 }
-table.jp tr.g > td:first-child { font-size: 14px; }
-table.jp tr.g .sub {
+table.pair tr.g > td:first-child { font-size: 14px; }
+table.pair tr.g .sub {
   display: block;
   font-size: 11px;
   font-weight: 400;
   color: var(--muted);
 }
-table.jp tr.g .caret { color: var(--muted); margin-right: 6px; font-size: 11px; }
-table.jp tr.g:hover > td { background: var(--surface); }
+table.pair tr.g .caret { color: var(--muted); margin-right: 6px; font-size: 11px; }
+table.pair tr.g:hover > td { background: var(--surface); }
 
 /* 子族群那一列：族群的下一層。不給底色——底色是族群列用來分段的手段，
    這一層再鋪一次，整張表會變成一堆分不出主從的橫帶。只用一條線與縮排。 */
-table.jp tr.b > td {
+table.pair tr.b > td {
   border-top: 1px solid var(--line);
   padding-top: 9px;
   padding-bottom: 5px;
   font-size: 12px;
   font-weight: 600;
 }
-table.jp tr.b > td:first-child { padding-left: 14px; }
-table.jp tr.b .sub { margin-left: 8px; font-weight: 400; color: var(--muted); }
+table.pair tr.b > td:first-child { padding-left: 14px; }
+table.pair tr.b .sub { margin-left: 8px; font-weight: 400; color: var(--muted); }
 
-table.jp tbody tr.s > td { border-top: 1px solid var(--line); }
-table.jp tbody tr.s:first-child > td { border-top: none; }
+table.pair tbody tr.s > td { border-top: 1px solid var(--line); }
+table.pair tbody tr.s:first-child > td { border-top: none; }
 /* 區塊列已經畫過一條線了，它下面第一列再畫就變雙線 */
-table.jp tr.b + tr.s > td { border-top: none; }
+table.pair tr.b + tr.s > td { border-top: none; }
 
-/* 左側色條：日股磚紅、台股藍。用 box-shadow 不用 border，才不會推掉欄寬 */
-table.jp tr.s > td:first-child { box-shadow: inset 3px 0 0 var(--jp); }
-table.jp tr.t > td:first-child { box-shadow: inset 3px 0 0 var(--tw); }
-table.jp tr.t > td:first-child .nm { padding-left: 14px; }
+/* 左側色條：外國那一邊 --side、台股藍。用 box-shadow 不用 border，才不會推掉欄寬 */
+[data-view="us"] table.pair { --side: var(--us); }
+table.pair tr.s > td:first-child { box-shadow: inset 3px 0 0 var(--side); }
+table.pair tr.t > td:first-child { box-shadow: inset 3px 0 0 var(--tw); }
+table.pair tr.t > td:first-child .nm { padding-left: 14px; }
 
-/* 「日」「台」各一個字。寬度寫死 16px 不用 em：下面 .cd 要對齊到同一條線，
+/* 「日」「美」「台」各一個字。寬度寫死 16px 不用 em：下面 .cd 要對齊到同一條線，
    而 .tag 與 .cd 的字級不一樣（10px / 11px），用 em 兩邊會各縮各的、差 2px。 */
-table.jp .tag {
+table.pair .tag {
   display: inline-block;
   width: 16px;
   margin-right: 8px;
   font-size: 10px;
   font-weight: 700;
-  color: var(--jp);
+  color: var(--side);
 }
-table.jp tr.t .tag { color: var(--tw); }
+table.pair tr.t .tag { color: var(--tw); }
 
-table.jp .nm { display: inline-block; font-weight: 600; }
-table.jp .cd {
+table.pair .nm { display: inline-block; font-weight: 600; }
+table.pair .cd {
   display: block;
   font-size: 11px;
   font-weight: 400;
   color: var(--muted);
   padding-left: 24px;
 }
-table.jp tr.t .cd { padding-left: 38px; }
+table.pair tr.t .cd { padding-left: 38px; }
 
-table.jp td.px { color: var(--muted); font-size: 12px; }
+table.pair td.px { color: var(--muted); font-size: 12px; }
 /* 幣別跟在數字後面，但要讓得出位置：13,075 円與 944 元擺在同一欄卻不能互比，
    單位是給人分辨的標記，不是數字的一部分。 */
-table.jp td.px .cur { font-size: .85em; margin-left: 2px; opacity: .7; }
+table.pair td.px .cur { font-size: .85em; margin-left: 2px; opacity: .7; }
 
 /* 差距欄的橫條：滿格 72px，寬度由 jp.js 依全表最大絕對差距算出來。
    min-width 是留給橫條的位置——沒有它，短數字的那幾列會把欄寬縮到橫條被裁掉。 */
-table.jp td.gap { min-width: 92px; }
-table.jp .bar {
+table.pair td.gap { min-width: 92px; }
+table.pair .bar {
   display: block;
   height: 3px;
   margin-top: 3px;
@@ -1302,8 +1311,8 @@ table.jp .bar {
   background: currentColor;
   opacity: .45;
 }
-table.jp a { color: inherit; text-decoration: none; }
-table.jp tr.t:hover > td { background: var(--surface); }
+table.pair a { color: inherit; text-decoration: none; }
+table.pair tr.t:hover > td { background: var(--surface); }
 
 /*
  * 手機上把沒選到的三個期間欄收起來。
@@ -1315,22 +1324,22 @@ table.jp tr.t:hover > td { background: var(--surface); }
  * 要看別的期間就點上面的 pills——那一組本來就是為了這件事存在的。
  */
 @media (max-width: 767px) {
-  table.jp th,
-  table.jp td { padding: 6px 7px; }
-  table.jp { font-size: 13px; min-width: 0; }
-  table.jp td.gap { min-width: 72px; }
+  table.pair th,
+  table.pair td { padding: 6px 7px; }
+  table.pair { font-size: 13px; min-width: 0; }
+  table.pair td.gap { min-width: 72px; }
 
   /* 代號那一行不准換行：「6504.T ·」與「★★★」斷成兩行會讓每一列多長一截，
      整張表憑空高出三成。名稱本身還是可以換行（td:first-child 是 normal）。 */
-  table.jp .cd { white-space: nowrap; }
+  table.pair .cd { white-space: nowrap; }
 
-  /* 「日股 / 台股」那個標籤在手機上收掉：左邊的色條已經在講同一件事（琥珀日股、
-     藍台股），而它佔掉的 2.2em 會把名稱欄擠到換行，一列變三行。 */
-  table.jp .tag { display: none; }
-  table.jp .cd,
-  table.jp tr.t .cd { padding-left: 0; margin-left: 0; }
-  table.jp tr.t > td:first-child .nm { padding-left: 8px; }
-  table.jp tr.t .cd { padding-left: 8px; }
+  /* 國別那個標籤在手機上收掉：左邊的色條已經在講同一件事，而它佔掉的 2.2em
+     會把名稱欄擠到換行，一列變三行。 */
+  table.pair .tag { display: none; }
+  table.pair .cd,
+  table.pair tr.t .cd { padding-left: 0; margin-left: 0; }
+  table.pair tr.t > td:first-child .nm { padding-left: 8px; }
+  table.pair tr.t .cd { padding-left: 8px; }
 }
 
 /* ---------- 報價 ---------- */

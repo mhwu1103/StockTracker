@@ -152,7 +152,7 @@ function sortedGroups() {
  * 講在下面的方法說明裡就太晚了，人會先看表。
  */
 function intro(data) {
-  return `<p class="jp-sub">供應鏈上對得起來的日股與台股，並排看漲跌幅。
+  return `<p class="pair-sub">供應鏈上對得起來的日股與台股，並排看漲跌幅。
     日股在台北時間 8:00 開盤，比台股早一小時——<b>同一天、同一盤，不是隔夜領先</b>。
     兩邊資料都到 ${esc(data.asof)}。</p>`;
 }
@@ -165,7 +165,7 @@ function intro(data) {
  */
 function controls(data) {
   const spanOpts = data.spans.map((label, i) => ({ value: String(i), label }));
-  return `<div class="jp-controls">
+  return `<div class="pair-controls">
     <label class="ctl">
       <span>差距欄看哪個期間</span>
       ${pills('span', spanOpts, String(state.span))}
@@ -193,7 +193,7 @@ function benchCard(data) {
     </div>`;
   }).join('');
   return `<div class="bench">${cells}</div>
-    <p class="jp-hint">族群漲得比自己的大盤多才叫強。<b>美元日圓</b>那一格要反過來讀：
+    <p class="pair-hint">族群漲得比自己的大盤多才叫強。<b>美元日圓</b>那一格要反過來讀：
       它上漲＝日圓變弱，日廠報價競爭力上升，被動元件與工具機容易出現
       「日股漲、台股不跟」——紅色在那一格不代表好消息。</p>`;
 }
@@ -290,7 +290,7 @@ function table(groups) {
     .join('') + '<th class="on">差距</th>';
 
   return `<div class="scroller">
-    <table class="jp">
+    <table class="pair">
       <thead><tr>${head}</tr></thead>
       <tbody>${groups.map(groupRows).join('')}</tbody>
     </table>
@@ -304,7 +304,7 @@ function table(groups) {
  * 寫成兩段連續的散文，要找「橫條是什麼意思」得整段讀過去。
  */
 function howToRead(groups) {
-  return `<div class="jp-note">
+  return `<div class="pair-note">
     <h2>怎麼讀</h2>
     <ul>
       <li><b>收盤</b>是股價不是百分比——日股是日圓、台股是台幣，兩邊不能互相比較。
@@ -327,7 +327,7 @@ function howToRead(groups) {
 }
 
 function methodNote(data) {
-  return `<div class="jp-note">
+  return `<div class="pair-note">
     <h2>這一頁怎麼算的</h2>
     <p><b>日股不是隔夜領先，是同一盤。</b>東京 9:00–15:30（日本時間）
       ＝台北 8:00–14:30，比台股早開一小時、晚收一小時。所以這裡是<b>同一天</b>的

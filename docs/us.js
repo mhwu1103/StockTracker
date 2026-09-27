@@ -27,31 +27,38 @@ const SORTS = [
 ];
 
 /*
- * 兩個軸看同一份資料。
+ * 三個軸看同一份資料。
  *
  * 「看美股」問的是「昨晚這一檔在動，台股要盯誰」——一檔對一批，逐檔展開。
  * 「看族群」問的是「這一族昨晚整體在動嗎，台股這一族今天跟上了沒」——
  * 那件事在美股軸上看不出來：AI 伺服器有 28 檔美股，要展開 28 次才拼得回一個印象。
+ * 「看並排」把族群軸的那兩個中位數攤開成一張表：一族裡**誰跟上了、誰脫隊了**。
+ * 中位數答不出那件事，因為它本來就是拿來蓋掉個別差異的。
  *
- * 兩邊都只讀 index.json 的同一批 links，沒有第二份資料。
+ * 三個軸都只讀 index.json，沒有第二份資料——並排軸多的只是同一批標的在同一組期間
+ * 上的漲跌幅（build_us.py 的 PAIR_SPANS）。
  */
 const VIEWS = [
   { value: 'us', label: '看美股' },
   { value: 'group', label: '看族群' },
+  { value: 'pair', label: '看並排' },
 ];
 
 const state = {
   data: null,
   span: 60,          // 相關性的觀察窗（交易日）
   sort: 'corr',
-  view: 'us',        // 'us' 看美股、'group' 看族群
+  view: 'us',        // 'us' 看美股、'group' 看族群、'pair' 看並排
   open: new Set(),   // 展開中的美股代號，重畫之後要留著
   openG: new Set(),  // 展開中的族群名稱。與 open 分開，切換檢視時互不影響
+  pairSpan: 1,       // 並排軸的差距欄看哪一段：0 昨夜、1 週、2 月、3 季
+  closedP: new Set(),  // 並排軸收起來的族群。預設全部展開——那一張表是拿來掃的
 };
 
 const SPAN_KEY = 'stocktracker.usspan';
 const SORT_KEY = 'stocktracker.ussort';
 const VIEW_KEY = 'stocktracker.usview';
+const PAIR_KEY = 'stocktracker.uspairspan';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -257,6 +264,385 @@ function groupCard(groups) {
       人工標註只挑得出代表性的幾檔。要看整族的資金流向，去排行榜的
       <a class="accent" href="index.html#/sector">族群</a>分頁。</p>
   </section>`;
+}
+
+// --------------------------------------------------------------------------
+// 並排軸
+//
+// 與日股頁（jp.html）是同一張表——連 CSS 都是同一份（.pair-* 與 table.pair）。
+// 分塊的單位是「族群 › 子族群」，那正好是 labels 本來的形狀，所以不需要新資料：
+// 一族裡的美股其實分屬不同環節（AI 伺服器那一族，SMCI 對的是伺服器組裝、
+// VRT 對的是機房電力與散熱），堆成一排美股、一排台股就讀不出誰對誰。
+//
+// 這個軸上**沒有相關係數**，理由跟日股頁不一樣：那裡是算不出有意義的數字
+// （同一盤，沒有因果方向），這裡是**另外兩個軸已經整頁在講它**。同一張表上並排
+// 擺相關性與漲跌幅，會被讀成「相關性高所以今天會跟」——而這一頁自己的散點圖
+// 正好在說那件事沒有那麼牢靠。
+//
+// 期間也與相關性的觀察窗無關：那一組是 20／60／120 日的窗，這一組是「這一段各走了
+// 多少」。兩邊的天數完全一樣（build_us.py 的 PAIR_SPANS），差距那一欄才是同一段
+// 時間的比較。
+// --------------------------------------------------------------------------
+
+/*
+ * 窄螢幕只擺「當期 · 差距」，四個期間並排是桌面才放得下的東西。
+ *
+ * 欄位的增減在產生 HTML 的時候就決定，不是用 CSS 把欄 display: none——族群那一列
+ * 是 colspan，CSS 藏掉欄之後 colspan 仍然按原本的欄數要空間，表格不但沒變窄，
+ * 反而更寬（jp.js 踩過這一個，那邊多撐出 73px）。
+ */
+const NARROW_MQ = '(max-width: 767px)';
+const narrow = () => window.matchMedia(NARROW_MQ).matches;
+const pairSpans = () => state.data.pairSpans || [];
+const pairCols = () => (narrow() ? [state.pairSpan] : pairSpans().map((_, i) => i));
+const pairLabel = () => pairSpans()[state.pairSpan] || '';
+
+/** 沒有落進任何子族群的那一塊。不是子族群的名字，是「對到整族」的意思。 */
+const REST_NAME = '對到整族';
+
+/*
+ * 收盤價一定要帶單位：美股是美元、台股是台幣，430.26 與 2,460 擺在同一欄卻不能
+ * 互相比較。單位是給人分辨的標記，不是數字的一部分。
+ */
+const priceCell = (v, unit) => (v === null || v === undefined ? '—'
+  : `${num(v, 2)}${unit ? `<span class="cur">${esc(unit)}</span>` : ''}`);
+
+const pairMeds = (rows) => pairSpans().map((_, i) => median(
+  rows.map((r) => (r.chg || [])[i]).filter((v) => v !== null && v !== undefined)));
+
+/** 同一檔會被同一族的兩個子族用到，族群層的中位數不能算它兩次。 */
+function uniqBy(rows) {
+  const seen = new Set();
+  return rows.filter((r) => (seen.has(r.t) ? false : seen.add(r.t)));
+}
+
+/**
+ * 依「族群 › 子族群」重新分組，回傳已排好序的族群。
+ *
+ * 星等同一檔在兩個層級可能不同（族群層的標註套到子族群時會降一級，見 us.py），
+ * 這裡取最高的：那是對照表自己該修的事，不是這裡要調解的。台股在好幾檔美股底下會
+ * 重複出現（穩懋同時對 AAOI 與 CRDO），同一塊裡只留一列。
+ */
+function pairGroups(items) {
+  const labels = state.data.labels || [];
+  const twAll = state.data.tw || {};
+  const byName = new Map();
+
+  for (const item of items) {
+    if (!item.pchg) continue;
+    for (const row of item.links) {
+      const label = labels[row[2]] || '';
+      if (!label) continue;
+      const [top, sub = ''] = label.split(' › ');
+      let g = byName.get(top);
+      if (!g) { g = { name: top, blocks: new Map() }; byName.set(top, g); }
+      let b = g.blocks.get(sub);
+      if (!b) { b = { name: sub, us: new Map(), tw: new Map() }; g.blocks.set(sub, b); }
+
+      const u = b.us.get(item.t);
+      if (u) u.s = Math.max(u.s, row[3]);
+      else b.us.set(item.t, { t: item.t, n: item.n, px: item.ppx, chg: item.pchg, s: row[3] });
+
+      // 沒有 kline、或最後一個交易日停牌的那幾檔，build 端就不給數字：整列不出現。
+      // 留一列空的比較糟——它會跟其他檔並排，看起來像「今天沒動」。
+      const tw = twAll[row[0]];
+      if (!tw) continue;
+      const prev = b.tw.get(row[0]);
+      if (prev) prev.s = Math.max(prev.s, row[3]);
+      else b.tw.set(row[0], { t: row[0], n: row[1], px: tw.px, chg: tw.chg, s: row[3] });
+    }
+  }
+
+  const i = state.pairSpan;
+  const byChg = (a, b) => ((b.chg || [])[i] ?? -Infinity) - ((a.chg || [])[i] ?? -Infinity);
+  const groups = [];
+  for (const g of byName.values()) {
+    // 子族群在前、「對到整族」最後：那一塊裝的是只標在族群層的美股，
+    // 它是這一族的其餘，不是又一個子族。
+    const ordered = [...g.blocks.values()].sort((a, b) => (a.name ? 0 : 1) - (b.name ? 0 : 1));
+
+    /*
+     * 「對到整族」要扣掉子族群已經列過的。
+     *
+     * 對照表把族群層的美股配給**整族每一檔**台股（us.py 的 pairs_of），所以不扣的話
+     * 那一塊就是整族再抄一次：功率元件那一族的第一版，三個子族列完 17 檔台股，
+     * 「對到整族」把同樣 17 檔又列了一遍，整張表長了一倍而且沒有多講任何事。
+     *
+     * 扣完沒剩台股就整塊不要。美股那一邊也扣，但扣光時留著原本的——那幾檔正是
+     * 「標在族群層」的意思，剩下的台股需要一個對照才算得出差距。
+     */
+    const rest = ordered.find((b) => !b.name);
+    if (rest && ordered.length > 1) {
+      const usedTw = new Set();
+      const usedUs = new Set();
+      for (const b of ordered) {
+        if (b === rest) continue;
+        for (const c of b.tw.keys()) usedTw.add(c);
+        for (const u of b.us.keys()) usedUs.add(u);
+      }
+      for (const c of usedTw) rest.tw.delete(c);
+      if ([...rest.us.keys()].some((u) => !usedUs.has(u))) {
+        for (const u of usedUs) rest.us.delete(u);
+      }
+    }
+
+    const blocks = ordered
+      .map((b) => {
+        const us = [...b.us.values()].sort((x, y) => (y.s - x.s) || byChg(x, y));
+        const tw = [...b.tw.values()].sort((x, y) => (y.s - x.s) || byChg(x, y));
+        return { name: b.name, us, tw, usMed: pairMeds(us), twMed: pairMeds(tw) };
+      })
+      // 只剩美股或只剩台股的那一塊沒有對照可看，不要在表上留半排孤兒
+      .filter((b) => b.us.length && b.tw.length);
+    if (!blocks.length) continue;
+    // 整族只有一塊時不必替它取名：那個標題列會跟族群列講同一件事
+    if (blocks.length > 1) blocks.forEach((b) => { if (!b.name) b.name = REST_NAME; });
+    else blocks[0].name = '';
+
+    const us = uniqBy(blocks.flatMap((b) => b.us));
+    const tw = uniqBy(blocks.flatMap((b) => b.tw));
+    groups.push({
+      name: g.name, blocks, usN: us.length, twN: tw.length,
+      usMed: pairMeds(us), twMed: pairMeds(tw),
+    });
+  }
+
+  // 依台股這一段的漲跌排序：這個軸問的是「台股跟上了沒」，跌最多的排最後
+  return groups.sort((a, b) => (b.twMed[i] ?? -Infinity) - (a.twMed[i] ?? -Infinity));
+}
+
+/*
+ * 背離橫條的滿格基準：全表絕對差距的第 90 百分位，不是最大值。
+ *
+ * 用最大值的話尺會被離群值吃掉，其餘的全部擠在幾個 px 以內，橫條等於沒畫。代價是
+ * 最極端的那一成會一起頂到滿格——它們之間要比大小得看數字。掃的是「誰脫隊」，
+ * 那一成本來就都脫隊了。
+ *
+ * 每次重畫依當下的期間重算（昨夜與季的波動差一個量級，共用一把尺會讓「昨夜」那一欄
+ * 全部縮成看不見的一點），但不隨族群收合變動：收起一族就讓其他族的橫條跟著伸縮，
+ * 會被讀成數字變了。
+ */
+let pairGapMax = 1;
+
+function computePairGapMax(groups) {
+  const mags = [];
+  for (const g of groups) {
+    for (const b of g.blocks) {
+      const um = b.usMed[state.pairSpan];
+      if (um === null || um === undefined) continue;
+      for (const r of b.tw) {
+        const v = (r.chg || [])[state.pairSpan];
+        if (v !== null && v !== undefined) mags.push(Math.abs(v - um));
+      }
+    }
+  }
+  mags.sort((a, b) => a - b);
+  // 下限 1%：全表都貼在一起的那一天，尺不該把 0.1% 的差距放大成滿格
+  pairGapMax = mags.length ? Math.max(1, mags[Math.floor(mags.length * 0.9)]) : 1;
+}
+
+const pairChgCells = (row) => pairCols().map((i) => {
+  const v = (row.chg || [])[i];
+  return `<td class="${trend(v)}${i === state.pairSpan ? ' on' : ''}">${signedPct(v, 1)}</td>`;
+}).join('');
+
+/*
+ * 差距欄：數字後面跟一條橫條，長度是這一檔在全表裡的相對強弱。
+ *
+ * 一欄七十幾個帶正負號的百分比，要比大小得一個一個唸過去；橫條讓「誰特別脫隊」
+ * 用掃的就看得到。顏色用 currentColor 跟著漲跌走，不另外配色——這一欄已經有紅綠了。
+ */
+function pairGapCell(v) {
+  if (v === null || v === undefined) return '<td class="gap flat">—</td>';
+  const w = Math.min(72, Math.max(2, Math.round((Math.abs(v) / pairGapMax) * 72)));
+  return `<td class="gap ${trend(v)}">${signedPct(v, 1)}<span class="bar" style="width:${w}px"></span></td>`;
+}
+
+/* 國別標籤只放一個字：要分辨的是「美」與「台」，那個「股」字一頁要念三百次。 */
+const pairUsRow = (u, n) => `<tr class="s">
+    <td><span class="tag">美</span><span class="nm">${esc(u.t)} ${esc(u.n)}</span>
+      <span class="cd">對到這一塊的 ${n} 檔 · ${STARS[u.s] || ''}</span></td>
+    <td class="px">${priceCell(u.px, '美元')}</td>
+    ${pairChgCells(u)}
+    <td class="gap flat">·</td>
+  </tr>`;
+
+const pairTwRow = (r, usMed) => {
+  const v = (r.chg || [])[state.pairSpan];
+  const gap = (v === null || v === undefined || usMed === null || usMed === undefined)
+    ? null : v - usMed;
+  return `<tr class="s t">
+    <td><a href="index.html#/stock/${esc(r.t)}"><span class="tag">台</span><span class="nm">${esc(r.n)}</span>
+      <span class="cd">${esc(r.t)} · 標註 ${STARS[r.s] || ''}</span></a></td>
+    <td class="px">${priceCell(r.px, '元')}</td>
+    ${pairChgCells(r)}
+    ${pairGapCell(gap)}
+  </tr>`;
+};
+
+/*
+ * 一個區塊：子族群的名字一列，接著這一塊的美股，再接著這一塊的台股。
+ *
+ * 區塊列的差距是兩邊中位數的差，跟族群列一樣不給橫條——橫條那把尺量的是個股，
+ * 中位數擺上去會被當成同一個量級來比。
+ */
+function pairBlockRows(b, cols) {
+  const um = b.usMed[state.pairSpan];
+  const tm = b.twMed[state.pairSpan];
+  const gap = (um === null || um === undefined || tm === null || tm === undefined)
+    ? null : tm - um;
+  const head = b.name
+    ? `<tr class="b">
+        <td colspan="${cols}">${esc(b.name)}
+          <span class="sub">美 ${signedPct(um, 1)} · 台 ${signedPct(tm, 1)}</span></td>
+        <td class="gap ${trend(gap)} on">${signedPct(gap, 1)}</td>
+      </tr>`
+    : '';
+  return head + b.us.map((u) => pairUsRow(u, b.tw.length)).join('')
+    + b.tw.map((r) => pairTwRow(r, um)).join('');
+}
+
+function pairGroupRows(g) {
+  const i = state.pairSpan;
+  const um = g.usMed[i];
+  const tm = g.twMed[i];
+  const gap = (um === null || um === undefined || tm === null || tm === undefined)
+    ? null : tm - um;
+  const open = !state.closedP.has(g.name);
+  const cols = 2 + pairCols().length;
+  const head = `<tr class="g" data-group="${esc(g.name)}">
+      <td colspan="${cols}"><span class="caret">${open ? '▾' : '▸'}</span>${esc(g.name)}
+        <span class="sub">美股 ${signedPct(um, 1)} · 台股 ${signedPct(tm, 1)}
+          · ${g.usN} 檔美股、${g.twN} 檔台股</span></td>
+      <td class="gap ${trend(gap)} on"><b>${signedPct(gap, 1)}</b></td>
+    </tr>`;
+  if (!open) return head;
+  return head + g.blocks.map((b) => pairBlockRows(b, cols)).join('');
+}
+
+function pairTable(groups) {
+  const head = ['<th>標的</th>', '<th>收盤</th>']
+    .concat(pairCols().map((i) => `<th${i === state.pairSpan ? ' class="on"' : ''}>${esc(pairSpans()[i])}</th>`))
+    .join('') + '<th class="on">差距</th>';
+  return `<div class="scroller">
+    <table class="pair">
+      <thead><tr>${head}</tr></thead>
+      <tbody>${groups.map(pairGroupRows).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
+/*
+ * 開頭那一段：固定的說明，不是算出來的導讀。
+ *
+ * 這一張表最容易被誤讀的是「兩欄是同一天」，那要在看到任何數字之前就講掉——
+ * 講在下面的方法說明裡就太晚了，人會先看表。
+ */
+function pairIntro(data) {
+  return `<p class="pair-sub">同一族的美股與台股，並排看漲跌幅。最右邊那一欄是<b>差距</b>：
+    台股減掉<b>同一塊</b>美股的中位數，正值代表它走得比那一段美股強。
+    兩欄<b>不是同一天</b>——美股停在 ${esc(data.pairAsof || data.asof)} 收盤，台股停在
+    下一個交易日 ${esc(data.twAsof)}，<b>因在前、果在後</b>，與這一頁的相關性是同一種對齊。</p>`;
+}
+
+function pairControls() {
+  const opts = pairSpans().map((label, i) => ({ value: String(i), label }));
+  return `<div class="pair-controls">
+    <label class="ctl">
+      <span>差距欄看哪個期間</span>
+      ${pills('pairspan', opts, String(state.pairSpan))}
+    </label>
+  </div>`;
+}
+
+/*
+ * 大盤：四個期間一次全排出來，不跟著上面的 pills 走。族群表已經有一欄在強調當下
+ * 那一段，大盤是拿來當底的，要一眼看完整條時間線才知道「這一族比的是什麼」。
+ */
+function pairBench(data) {
+  const rows = (data.bench || []).filter((b) => b.pchg);
+  if (!rows.length) return '';
+  const cells = rows.map((b) => {
+    const spans = pairSpans().map((s, i) => {
+      const v = (b.pchg || [])[i];
+      return `${esc(s)} <span class="${trend(v)}">${signedPct(v, 1)}</span>`;
+    }).join(' · ');
+    return `<div>
+      <div class="bname">${esc(b.n)}</div>
+      <div class="bval">${priceCell(b.ppx, '')}</div>
+      <div class="bspans">${spans}</div>
+    </div>`;
+  }).join('');
+  return `<div class="bench">${cells}</div>
+    <p class="pair-hint">族群漲得比<b>費半</b>多才叫強，否則只是跟著整個半導體走。
+      <b>美元指數</b>與<b>十年期公債殖利率</b>那兩格要反過來讀：它們上漲通常是成長股的
+      逆風，紅色在那兩格不代表好消息——而且那兩個本身就是指數與百分點，
+      那一列的百分比是「它自己變動了幾 %」，不是誰的報酬。</p>`;
+}
+
+function pairNotes(data, groups) {
+  return `<div class="pair-note">
+    <h2>怎麼讀</h2>
+    <ul>
+      <li><b>收盤</b>是股價不是百分比——美股是美元、台股是台幣，兩邊不能互相比較。
+        右邊幾欄才是漲跌幅 %。</li>
+      <li>期間用<b>交易日</b>回推，兩邊同一組天數：昨夜／今天 1 日、週 5 日、
+        月 20 日、季 63 日。<b>沒有「年」</b>：台股的日 K 線從 ${esc(data.from)} 才開始，
+        湊不出 250 個交易日（美股軸上那一欄仍然有，那是美股自己的）。</li>
+      <li><b>紅漲綠跌</b>，照台股的慣例——所以美股那幾列也是紅漲，跟它們自己市場的
+        配色相反。名稱左邊的色條與那一個字是國別不是漲跌：靛紫是<b>美</b>、藍是<b>台</b>。</li>
+      <li>每一族按<b>子族群</b>分塊：一塊是「這幾檔美股 → 對得上的這幾檔台股」。
+        「${REST_NAME}」那一塊裝的是對照表只標在族群層、沒有指定子族的美股。</li>
+      <li><b>差距</b>減的是<b>自己那一塊</b>的美股中位數，不是整族的：AI 伺服器那一族裡，
+        散熱那幾檔要比的是散熱那幾檔美股。</li>
+      <li><b>橫條</b>的長度是它在整張表裡的相對大小，以第 90 百分位為滿格，
+        所以最極端的那一成會一起頂到底——要分它們得看數字。</li>
+      <li>族群列與區塊列上的是兩邊中位數的差，<b>不給橫條</b>：那跟個股那一欄不是
+        同一把尺。${groups.length} 個族群依台股的漲跌排序，
+        <b>點族群那一列可以收起來</b>。</li>
+    </ul>
+  </div>
+  <div class="pair-note">
+    <h2>這一個軸怎麼算的</h2>
+    <p><b>兩邊差一場，那是刻意的。</b>美股收在台股開盤之前，所以這裡的「昨夜」是
+      ${esc(data.pairAsof || data.asof)} 那一場美股，「今天」是台股 ${esc(data.twAsof)}——
+      台股那一天反映的就是那一夜。週、月、季照樣錯開一場往回數同樣的天數。
+      這件事很容易做錯：Yahoo 給得出的美股最後一場常常與台股是<b>同一個日期</b>
+      （美股 D 日收在台北 D+1 日清晨），直接拿兩邊的最後一天相減就整欄錯開一場，
+      而畫面上完全看不出來。所以美股這一邊一律裁到台股最後一天<b>之前</b>的那一場。</p>
+    <p><b>這個軸上沒有相關係數，是故意的。</b>相關性是另外兩個軸整頁在講的事。
+      並排擺在同一張表上，會被讀成「相關性高，所以今天會跟」——而這一頁的散點圖
+      正好在說那件事沒有那麼牢靠：原始相關裡有一大半只是整個市場一起動。要看某一對
+      綁得緊不緊，切回<b>看美股</b>。</p>
+    <p><b>台股那一邊是對照表裡的那些</b>，不是這一族的全部成員——人工標註只挑得出
+      代表性的幾檔。要看整族的資金流向，去排行榜的
+      <a class="accent" href="index.html#/sector">族群</a>分頁。漲跌幅沒有還原除權息，
+      台股多在 7–8 月配息，跨過那一段的區間會被低估。</p>
+  </div>`;
+}
+
+function pairView(data, items) {
+  // 舊的 index.json（service worker 的快取、或還沒重跑過 build_us.py）沒有這兩個欄位。
+  // 畫半張表比整張不畫更糟：那會是一張每一格都是「—」的表，看起來像市場沒動。
+  if (!data.pairSpans || !data.tw) {
+    return `<p class="hint">這份 <code>data/us/index.json</code> 還沒有並排軸要的欄位
+      （<code>pairSpans</code> 與 <code>tw</code>）。重跑一次
+      <code>python scripts/build_us.py</code> 就會有。</p>`;
+  }
+  // 台股落後美股很多天時 build 端不給 pairAsof：那時每一格都會是「—」，
+  // 而一張全是破折號的表看起來像市場沒動，不像資料沒到。
+  if (!data.pairAsof) {
+    return `<p class="hint">台股的資料落後美股太多，找不到對得上的那一場美股
+      （台股最後一個交易日是 ${esc(data.twAsof)}）。等下一次排程把台股補上就會回來；
+      另外兩個軸不受影響。</p>`;
+  }
+  const groups = pairGroups(items);
+  computePairGapMax(groups);
+  return `${pairIntro(data)}
+    ${pairControls()}
+    ${pairBench(data)}
+    ${pairTable(groups)}
+    ${pairNotes(data, groups)}`;
 }
 
 function corrBar(v, lo, hi) {
@@ -532,8 +918,26 @@ function render() {
   const items = sortedItems();
   const spanOpts = data.spans.map((s) => ({ value: String(s), label: `${s} 日` }));
 
-  $('#meta').innerHTML = `美股 ${esc(data.asof)} 收盤 · 台股至 ${esc(data.twAsof)}
-    · 相關性取最近 ${state.span} 個交易日`;
+  // 並排軸是通欄的表，另外兩個軸是 720px 的卡片堆疊。寬度掛在 #view 上而不是 body，
+  // 切換時不必碰到 app-bar 與導覽。
+  $('#view').classList.toggle('pair-view', state.view === 'pair');
+
+  $('#meta').innerHTML = state.view === 'pair'
+    ? `美股 ${esc(data.pairAsof || data.asof)} 收盤 → 台股 ${esc(data.twAsof)}
+       · 差距看${esc(pairLabel())}`
+    : `美股 ${esc(data.asof)} 收盤 · 台股至 ${esc(data.twAsof)}
+       · 相關性取最近 ${state.span} 個交易日`;
+
+  /*
+   * 並排軸不擺相關性，所以觀察窗與排序那兩排 pills 在這裡是死的控制項——按了什麼
+   * 都不會變。整排收掉，換成它自己那一排（差距欄看哪個期間）。
+   */
+  if (state.view === 'pair') {
+    $('#view').innerHTML = `
+      <div class="controls">${pills('view', VIEWS, state.view)}</div>
+      ${pairView(data, items)}`;
+    return;
+  }
 
   if (state.view === 'group') {
     const groups = groupsOf(items);
@@ -616,7 +1020,16 @@ function render() {
 // --------------------------------------------------------------------------
 document.addEventListener('click', (ev) => {
   const pill = ev.target.closest('.pill');
-  if (!pill) return;
+  if (!pill) {
+    // 並排軸：點族群那一列收合。整張表是一次畫完的（不像另外兩個軸用 details
+    // 延遲填充），所以收合就是重畫一次。
+    const grp = ev.target.closest('tr.g');
+    if (!grp) return;
+    const name = grp.dataset.group;
+    state.closedP.has(name) ? state.closedP.delete(name) : state.closedP.add(name);
+    render();
+    return;
+  }
   if (pill.dataset.view) {
     state.view = pill.dataset.view;
     try { localStorage.setItem(VIEW_KEY, state.view); } catch (err) { /* 無痕模式 */ }
@@ -626,10 +1039,18 @@ document.addEventListener('click', (ev) => {
   } else if (pill.dataset.sort) {
     state.sort = pill.dataset.sort;
     try { localStorage.setItem(SORT_KEY, state.sort); } catch (err) { /* 無痕模式 */ }
+  } else if (pill.dataset.pairspan) {
+    state.pairSpan = Number(pill.dataset.pairspan);
+    try { localStorage.setItem(PAIR_KEY, String(state.pairSpan)); } catch (err) { /* 無痕模式 */ }
   } else {
     return;
   }
   render();
+});
+
+/* 並排軸的欄數是在產生 HTML 時決定的（見 pairCols），所以換寬度要重畫一次。 */
+window.matchMedia(NARROW_MQ).addEventListener('change', () => {
+  if (state.data && state.view === 'pair') render();
 });
 
 async function start() {
@@ -653,6 +1074,15 @@ async function start() {
     if (SORTS.some((s) => s.value === sort)) state.sort = sort;
     const view = localStorage.getItem(VIEW_KEY);
     if (VIEWS.some((v) => v.value === view)) state.view = view;
+    /*
+     * 沒存過要走 state 的預設值（週），所以空值必須先擋掉：Number(null) 與 Number('')
+     * 都是 0，會一路通過下面三個檢查把期間設成「昨夜」——第一次進這個軸的人看到的
+     * 就不是我們選的那一欄，而畫面完全正常，不會有人回報。（jp.js 有同一段註解。）
+     */
+    const saved = localStorage.getItem(PAIR_KEY);
+    const pairSpan = saved ? Number(saved) : NaN;
+    if (Number.isInteger(pairSpan) && pairSpan >= 0
+        && pairSpan < (state.data.pairSpans || []).length) state.pairSpan = pairSpan;
   } catch (err) {
     /* 讀不到就用預設值 */
   }

@@ -27,6 +27,13 @@ import us
 # 漲跌幅要看的幾段（交易日）。1 日是「昨晚」，其餘是拿來判斷這一檔在什麼位置。
 CHG_SPANS = (("d1", 1), ("w1", 5), ("m1", 20), ("y1", 250))
 
+# 並排軸（看並排）兩邊共用的期間。與上面那一組的差別是**兩邊要完全一樣**：
+# 差距欄是「台股這一段減美股這一段」，天數不同的兩個數字相減沒有意義。
+#
+# 所以沒有「年」：台股的 kline 從 2026-03 起，湊不出 250 個交易日。這是資料的限制，
+# 不是參數可以調的 —— 美股那一欄有年、並排那一欄沒有，不是漏了。
+PAIR_SPANS = ((1, "昨夜"), (5, "週"), (20, "月"), (63, "季"))
+
 
 def parse_args():
     ap = argparse.ArgumentParser(description="算美股與台股的連動")
@@ -50,6 +57,19 @@ def changes(closes: list) -> dict:
         elif key == "y1" and len(vals) >= 2:
             out[key] = pct(vals[-1], vals[0])      # 上市未滿一年就用「有資料以來」
     return out
+
+
+def span_series(series: list):
+    """並排軸要的兩個東西：最後一個有效收盤，與對齊 PAIR_SPANS 的各段漲跌幅。
+
+    先濾掉 None 再回推：缺的日子不能佔掉一格，否則「五個交易日前」會被算成更早的
+    某一天。兩邊都走這一支，台股與美股的第 N 段才是同一種數法。
+    """
+    vals = [c for c in series if c is not None]
+    if len(vals) < 2:
+        return (vals[-1] if vals else None), [None] * len(PAIR_SPANS)
+    return vals[-1], [pct(vals[-1], vals[-1 - span]) if len(vals) > span else None
+                      for span, _ in PAIR_SPANS]
 
 
 def day_change(closes: dict, dates: list):
@@ -103,6 +123,21 @@ def main() -> int:
         print(f"沒有 {us.US_INDEX} 的資料，無法建立美股的交易日軸")
         return 1
 
+    # 並排軸的美股日期軸：裁到台股最後一個交易日**之前**的那一場。
+    #
+    # 相關性那一段是 us.align() 一天一天接起來的，對齊寫在算式裡，看不到這個問題。
+    # 並排軸不一樣：它拿兩邊各自的最後 N 天算漲跌幅，日期一錯位就是整欄都錯 ——
+    # 而畫面上兩個數字並排看起來完全正常（日股頁踩過同一個坑，見 build_jp.py）。
+    #
+    # 而這個錯位是常態不是例外：排程在台北時間傍晚跑，Yahoo 那時給得出的美股最後一場
+    # 常常與台股同一個日期（美股 D 日收在台北 D+1 日清晨），但台股 D 日當天反映的是
+    # 美股 D−1 日的那一夜。所以要的是「台股最後一天之前的最後一場美股」。
+    pair_axis = [d for d in us_axis if d < tw_dates[-1]]
+    if len(pair_axis) < 2:
+        # 台股落後美股很多天（行情那幾步失敗時會這樣）。並排軸寧可整個留白，
+        # 也不要拿一個對不上的日期去算差距。
+        pair_axis = []
+
     twii = us.returns(closes.get(us.TW_INDEX) or {}, tw_dates)
     ixic = us.returns(closes[us.US_INDEX], us_axis)
 
@@ -114,12 +149,17 @@ def main() -> int:
 
     # 台股那一邊只算一次：同一檔會被好幾檔美股配到
     need = {code for rows in pairs.values() for code, *_ in rows}
-    tw_ret, tw_exc, tw_chg, missing = {}, {}, {}, []
+    tw_ret, tw_exc, tw_chg, tw_pair, missing = {}, {}, {}, {}, []
     for code in sorted(need):
         tw_close = us.tw_closes(code)
         # 當日漲跌與相關性無關，但族群頁要拿它跟美股那一邊並排，
         # 而 kline 已經在手上，另外讀一次只是浪費。
         tw_chg[code] = day_change(tw_close, tw_dates)
+        # 並排軸的四段。要求最後一個交易日本身有價，理由同 day_change：停牌的那幾檔
+        # 不可以拿前天的收盤充當今天的，它會跟其他檔並排在同一欄，看不出是舊的。
+        if tw_dates[-1] in tw_close:
+            px, chg = span_series([tw_close.get(d) for d in tw_dates])
+            tw_pair[code] = {"px": px, "chg": chg}
         series = us.returns(tw_close, tw_dates)
         if len(series) < us.MIN_POINTS:
             missing.append(code)
@@ -173,11 +213,17 @@ def main() -> int:
         rest = [r for r in rows if r[3] != 3]
         keep = must + rest[:max(0, args.top - len(must))]
         keep.sort(key=lambda r: (r[mid] is None, -(r[mid] or 0)))
+        pair_px, pair_chg = span_series([closes[sym].get(d) for d in pair_axis])
         items.append({
             "t": sym,
             "n": names.get(sym, sym),
             "last": (closes[sym][sorted(closes[sym])[-1]]),
             "chg": changes([closes[sym].get(d) for d in us_axis]),
+            # 並排軸專用：收盤與漲跌都停在 pair_axis 那一天，不是 last 那一天。
+            # 兩者在多數日子是同一天，但不能假設 —— 混用的話「昨夜 +2%」配的會是
+            # 另一場的收盤價。
+            "ppx": pair_px,
+            "pchg": pair_chg,
             "mid": round(median(scores)) if scores else None,
             "pairs": len(rows),
             "links": keep,
@@ -189,17 +235,25 @@ def main() -> int:
         sym = row["t"]
         if sym not in closes:
             continue
-        series = us.returns(closes[sym], us_axis if sym != us.TW_INDEX else tw_dates)
+        own_axis = us_axis if sym != us.TW_INDEX else tw_dates
+        series = us.returns(closes[sym], own_axis)
         aligned = us.align(series, twii, tw_dates)
+        # 並排軸的大盤也要停在對的那一天：美股的指數停在 pair_axis，台股加權停在
+        # 台股自己的最後一天。兩邊差一場，正是這一頁的對齊方式。
+        b_px, b_chg = span_series([closes[sym].get(d)
+                                   for d in (pair_axis if sym != us.TW_INDEX else tw_dates)])
         bench.append({
             "t": sym,
             "n": row["n"],
             "why": row["why"],
             "last": closes[sym][sorted(closes[sym])[-1]],
             "chg": changes([closes[sym].get(d) for d in us_axis]),
+            "ppx": b_px,
+            "pchg": b_chg,
             "twr": [us.corr_pct(aligned, span) for span in us.SPANS],
         })
 
+    shown = {row[0] for it in items for row in it["links"]}
     items.sort(key=lambda it: (it["mid"] is None, -(it["mid"] or 0)))
     payload = {
         "updated": datetime.now(twse.TAIPEI).isoformat(timespec="seconds"),
@@ -207,6 +261,8 @@ def main() -> int:
         "twAsof": tw_dates[-1],
         "from": tw_dates[0],
         "spans": list(us.SPANS),
+        "pairSpans": [label for _, label in PAIR_SPANS],
+        "pairAsof": pair_axis[-1] if pair_axis else None,
         "minPoints": us.MIN_POINTS,
         # 前端照名字查位置（不是照算式），所以這裡加欄位不必兩邊一起改
         "cols": list(COL_HEAD)
@@ -214,6 +270,10 @@ def main() -> int:
         "minWindows": us.MIN_WINDOWS,
         "labels": labels,
         "items": items,
+        # 並排軸的台股那一邊。**按代號存一份**，不是加進每一列 ——
+        # 同一檔台股平均出現在五組配對裡（2330 出現在 26 組），存進列裡就是同一組數字
+        # 複製五份。只留真的被輸出的那些列用得到的代號。
+        "tw": {c: v for c, v in tw_pair.items() if c in shown},
         "bench": bench,
     }
     twse.write_json(us.INDEX_PATH, payload)
@@ -224,6 +284,8 @@ def main() -> int:
           f" -> {us.INDEX_PATH.relative_to(twse.ROOT)}（{kb:.0f} KB）")
     print(f"對齊窗：台股 {tw_dates[0]} ~ {tw_dates[-1]}（{len(tw_dates)} 個交易日）"
           f"、美股到 {us_axis[-1]}")
+    print(f"並排軸：美股 {pair_axis[-1] if pair_axis else '—'}（台股 {tw_dates[-1]} 那天反映的"
+          f"就是這一場） / 台股 {len(payload['tw'])} 檔有四段漲跌")
     if missing:
         print(f"! 沒有足夠 K 線的台股 {len(missing)} 檔（沒進過排行就沒有 kline）："
               f"{'、'.join(missing[:12])}{' …' if len(missing) > 12 else ''}")
@@ -238,8 +300,11 @@ def main() -> int:
             at = col_at(60)
             band = (f" 擺盪 {row[at + 2]}~{row[at + 3]}%"
                     if row[at + 2] is not None else " 擺盪 —")
+            # 天數是倒數第二欄，不是最後一欄：列尾後來多了 twchg。
+            # 這一行印了一陣子的「3.06 天」其實是當日漲跌 3.06%（前端犯過同一個錯，
+            # 那邊改成照 cols 查位置了，見 us.js 的註解）。
             print(f"  {sym:<6} vs {code} {row[1]:<6} r60={row[at]}% x60={row[at + 1]}%"
-                  f"{band}（{row[-1]} 天）")
+                  f"{band}（{row[-2]} 天）")
     return 0
 
 
