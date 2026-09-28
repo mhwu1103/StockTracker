@@ -9,7 +9,8 @@
  *
  *   最近   他這幾天寫了什麼（時間軸）
  *   主題   關稅、晶片、利率…各講了幾次、最近熱度在哪（點開看每一則）
- *   族群   照台股族群分：哪一族最近被他的哪幾個主題碰到
+ *   標的   一檔台股一列：被他的話碰到幾次（點開看每一則），跟 Serenity 的標的軸同一個形狀
+ *   族群   族群 → 標的 → 貼文
  *
  * 只收他自己寫的字：影片、純連結、轉發都不在資料裡（理由見 scripts/trump.py）。
  *
@@ -30,6 +31,7 @@ const SRC_LABEL = { truth: 'Truth Social', x: 'X' };
 const VIEWS = [
   { value: 'recent', label: '最近' },
   { value: 'topic', label: '主題' },
+  { value: 'stock', label: '標的' },
   { value: 'group', label: '族群' },
 ];
 
@@ -46,10 +48,11 @@ const state = {
   kind: 'policy',
   openK: new Set(),     // 展開中的主題
   openG: new Set(),     // 展開中的族群
+  openS: new Set(),     // 展開中的標的（台股代號）
   openP: new Set(),     // 展開全文的貼文 id
   shown: new Map(),     // 每個主題目前畫了幾則
-  days: '30',           // 族群軸的天數篩選
-  gsort: 'count',       // 族群軸的排序
+  days: '30',           // 標的與族群軸的天數篩選
+  gsort: 'count',       // 標的與族群軸的排序
 };
 
 const PAGE = 40;
@@ -239,7 +242,7 @@ function sortedTopics(data) {
  *
  * 清單來自 themes.json（人工維護的題材族群），對照的粒度是**子族群**：「汽車」只列
  * 汽車零件與功率半導體，不會把整個傳產（塑化、水泥、零售）一起倒出來。
- * blocks 裡同一個子族群可能出現兩次（族群軸把好幾個主題合在一起時），這裡去重。
+ * 股票是按鈕：點了跳到標的軸展開那一檔，往個股頁的連結在那裡。
  */
 function stockBlock(blocks, title = '相關台股') {
   const seen = new Set();
@@ -255,8 +258,8 @@ function stockBlock(blocks, title = '相關台股') {
     <h3>${esc(title)} <span>${num(total)} 檔</span></h3>
     ${rows.map((b) => `<div class="x-stocks__row">
       <span class="x-stocks__sub">${esc(b.sub)}</span>
-      <span class="x-stocks__list">${b.c.map(([code, name]) => `<a class="x-stock"
-        href="index.html#/stock/${encodeURIComponent(code)}">${esc(name || code)}<span>${esc(code)}</span></a>`).join('')}</span>
+      <span class="x-stocks__list">${b.c.map(([code, name]) => `<button class="x-stock"
+        data-jumpstock="${esc(code)}">${esc(name || code)}<span>${esc(code)}</span></button>`).join('')}</span>
     </div>`).join('')}
   </section>`;
 }
@@ -308,7 +311,7 @@ function topicView(data) {
     ${sortedTopics(data).map((t) => topicRow(t)).join('')}`;
 }
 
-/** 族群軸的天數篩選。0 是「全部」。 */
+/** 標的與族群軸的天數篩選。0 是「全部」。 */
 const DAYS = [
   { value: '7', label: '7 天' },
   { value: '30', label: '30 天' },
@@ -317,7 +320,7 @@ const DAYS = [
 ];
 
 /*
- * 族群軸的排序。「最新」照這一族最後一次被碰到的時間 —— 看「他剛剛講到哪一族」；
+ * 標的與族群軸的排序。「最新」照這一族最後一次被碰到的時間 —— 看「他剛剛講到哪一族」；
  * 「最早」反過來，看這段期間裡哪一族是先被碰到的。
  */
 const GSORTS = [
@@ -341,63 +344,188 @@ function windowed(t, since) {
   return { ...t, c: ts.length, last: ts[0] || null, first: ts[ts.length - 1] || null };
 }
 
-function groupView(data) {
-  // 一個主題可以對到好幾族，一族也會被好幾個主題碰到。從族群找過來的人要看到
-  // 的是「這一族最近被他的哪些話碰到」，所以每一族底下列主題，主題再展開貼文。
+const newer = (a, b) => String(b || '').localeCompare(String(a || ''));
+
+/** 族群軸與標的軸共用的排序：則數、最新（最後一次被碰到）、最早（第一次被碰到）。 */
+function orderBy() {
+  return {
+    count: (a, b) => b.count - a.count || newer(a.last, b.last),
+    new: (a, b) => newer(a.last, b.last) || b.count - a.count,
+    old: (a, b) => newer(b.first, a.first) || b.count - a.count,
+  }[state.gsort] || ((a, b) => b.count - a.count);
+}
+
+// --------------------------------------------------------------------------
+// 標的：一檔台股 ← 對到它的那幾個主題 ← 那些主題的貼文
+// --------------------------------------------------------------------------
+
+/**
+ * 從各主題的 tw（子族群 → 代號）反推「每一檔被哪幾個主題、哪幾個子族群碰到」。
+ *
+ * 一檔的貼文是它那幾個主題的貼文**聯集**，用貼文 id 去重：同一則碰到「關稅」
+ * 又碰到「汽車」的話，東陽只算一次。直接把主題次數相加的話，跨主題的熱門股
+ * 會被灌水，排序也跟著錯。
+ */
+function stockIndex(data) {
+  if (data._stocks) return data._stocks;
+  const map = new Map();
+  for (const t of data.topics || []) {
+    for (const b of t.tw || []) {
+      for (const [code, name] of b.c) {
+        if (!map.has(code)) map.set(code, { code, name, topics: new Set(), subs: [], groups: new Set() });
+        const s = map.get(code);
+        s.topics.add(t.k);
+        s.groups.add(b.g);
+        if (!s.subs.includes(b.sub)) s.subs.push(b.sub);
+      }
+    }
+  }
+  data._stocks = map;
+  return map;
+}
+
+/** 一檔在篩選範圍內的樣子：去重後的則數、最後一次與第一次被碰到的時間。 */
+function stockWindow(s, since) {
+  const seen = new Map();
+  for (const k of s.topics) {
+    const t = topicOf(k);
+    (t.ids || []).forEach((id, i) => {
+      const ts = t.ts[i];
+      if (!since || ts >= since) seen.set(id, ts);
+    });
+  }
+  const ts = [...seen.values()].sort().reverse();
+  return { ...s, count: ts.length, last: ts[0] || null, first: ts[ts.length - 1] || null };
+}
+
+const showKey = (code) => `s:${code}`;
+
+function stockRow(s, since) {
+  const open = state.openS.has(s.code);
+  const topics = [...s.topics].map((k) => topicOf(k)?.label || k).join('、');
+  return `<article class="card x-tick ${open ? 'is-open' : ''}" data-stockrow="${esc(s.code)}">
+    <button class="x-tick__head" data-stock="${esc(s.code)}">
+      <span class="x-tick__sym">${open ? '▾' : '▸'} ${esc(s.name || s.code)}</span>
+      <span class="x-tick__name">${esc(s.code)} · ${esc(topics)}</span>
+      <span class="x-tick__chips">${s.subs.map((x) => `<span class="chip accent">${esc(x)}</span>`).join('')}</span>
+      <span class="x-tick__num">${esc(dayLabel())} ${num(s.count)} 則</span>
+      <span class="x-tick__ago">${esc(ago(state.gsort === 'old' ? s.first : s.last))}</span>
+    </button>
+    ${open ? stockDetail(s, since) : ''}
+  </article>`;
+}
+
+/** 展開一檔：它那幾個主題檔都載到之後，合併、去重、照時間新到舊。 */
+function stockDetail(s, since) {
+  const payloads = [...s.topics].map((k) => topicCache.get(k));
+  const stock = `<p class="x-stocklink"><a class="linky" href="index.html#/stock/${encodeURIComponent(s.code)}">
+    ${esc(s.name || s.code)} ${esc(s.code)} 個股頁 ↗</a></p>`;
+  if (payloads.some((p) => p === undefined)) return `<div class="x-tick__body">${stock}<p class="hint">載入中…</p></div>`;
+
+  const byId = new Map();
+  for (const p of payloads) {
+    for (const item of (p && p.items) || []) {
+      if (!since || (item.ts || '') >= since) byId.set(item.id, item);
+    }
+  }
+  const items = [...byId.values()].sort((a, b) => newer(a.ts, b.ts));
+  const shown = items.slice(0, state.shown.get(showKey(s.code)) || PAGE);
+  const rest = items.length - shown.length;
+  // 貼文底下留著 #主題：一檔股票被列進來的理由就是那幾個主題，要看得出是哪一個
+  return `<div class="x-tick__body">
+    ${stock}
+    ${shown.map((p) => tweetCard(p)).join('')}
+    ${rest > 0 ? `<button class="pill x-more" data-more="${esc(showKey(s.code))}">再看 ${num(Math.min(rest, PAGE))} 則更早的（還有 ${num(rest)} 則）</button>` : ''}
+  </div>`;
+}
+
+function openStock(code) {
+  const s = stockIndex(state.data).get(code);
+  if (!s) return;
+  state.openS.add(code);
+  for (const k of s.topics) loadTopic(k);
+}
+
+/** 篩選與排序的那一排，族群軸與標的軸共用。 */
+const windowControls = () => `<div class="controls">
+    ${pills('days', DAYS, state.days)}
+    ${pills('gsort', GSORTS, state.gsort)}
+  </div>`;
+
+function stockView(data) {
   const since = sinceOf();
+  const rows = [...stockIndex(data).values()]
+    .map((s) => stockWindow(s, since))
+    .filter((s) => s.count)
+    .sort(orderBy());
+  const intro = `<section class="card">
+      <p class="lede">他講的政策碰到哪幾檔台股，一檔一列。一檔是從「主題 → 子族群」對過來的
+      （對照表是 <code>themes.json</code>），點開看碰到它的每一則貼文，貼文底下的 #主題 就是它被列進來的理由。</p>
+      ${coverage(data)}
+      ${windowControls()}
+    </section>`;
+  if (!rows.length) return `${intro}<p class="hint">${esc(dayLabel())}沒有任何貼文對得上台股，把天數放寬看看。</p>`;
+  // 一次列 60 檔；展開中的那幾檔不管排第幾都要在（從主題的台股跳過來的就是這種）
+  const limit = state.shown.get('stocks') || 60;
+  const shown = rows.filter((s, i) => i < limit || state.openS.has(s.code));
+  const rest = rows.length - shown.length;
+  return `${intro}
+    ${shown.map((s) => stockRow(s, since)).join('')}
+    ${rest > 0 ? `<button class="pill x-more" data-more="stocks">再列 ${num(Math.min(rest, 60))} 檔（還有 ${num(rest)} 檔）</button>` : ''}`;
+}
+
+function groupView(data) {
+  // 族群 → 標的 → 貼文，與 Serenity 那頁的族群軸同一個層次。一族的則數是底下
+  // 那幾個主題的貼文**去重後**的則數：一則碰到兩個主題、兩個主題又都對到這一族的話，
+  // 只算一次。
+  const since = sinceOf();
+  const index = stockIndex(data);
   const byGroup = new Map();
   for (const raw of data.topics || []) {
     const t = windowed(raw, since);
     if (!t.c) continue;
     for (const g of t.g || []) {
-      if (!byGroup.has(g)) byGroup.set(g, []);
-      byGroup.get(g).push(t);
+      if (!byGroup.has(g)) byGroup.set(g, { topics: [], codes: new Set() });
+      const slot = byGroup.get(g);
+      slot.topics.push(raw);
+      for (const b of raw.tw || []) if (b.g === g) b.c.forEach(([code]) => slot.codes.add(code));
     }
   }
   const intro = `<section class="card">
-      <p class="lede">他講的政策落在台股的哪一族。一則貼文碰到兩個主題時兩邊都算，
-      所以同一族底下的次數加起來會比實際貼文多。</p>
+      <p class="lede">他講的政策落在台股的哪一族。點開一族看底下的標的，再點開一檔看碰到它的貼文。</p>
       ${coverage(data)}
-      <div class="controls">
-        ${pills('days', DAYS, state.days)}
-        ${pills('gsort', GSORTS, state.gsort)}
-      </div>
+      ${windowControls()}
     </section>`;
   if (!byGroup.size) return `${intro}<p class="hint">${esc(dayLabel())}沒有任何貼文對得上台股族群，把天數放寬看看。</p>`;
 
-  const newer = (a, b) => String(b || '').localeCompare(String(a || ''));
-  const order = {
-    count: (a, b) => b.count - a.count || newer(a.last, b.last),
-    new: (a, b) => newer(a.last, b.last) || b.count - a.count,
-    old: (a, b) => newer(b.first, a.first) || b.count - a.count,
-  }[state.gsort] || ((a, b) => b.count - a.count);
-
+  const order = orderBy();
   const groups = [...byGroup.entries()]
-    .map(([name, topics]) => ({
-      name,
-      // 族群底下的主題跟著同一個排序走，不然外層照時間、裡面照次數，讀起來是亂的
-      topics: topics.sort((a, b) => order({ count: a.c, last: a.last, first: a.first },
-        { count: b.c, last: b.last, first: b.first })),
-      count: topics.reduce((n, t) => n + t.c, 0),
-      last: topics.reduce((m, t) => (t.last > m ? t.last : m), ''),
-      first: topics.reduce((m, t) => (!m || t.first < m ? t.first : m), ''),
-    }))
+    .map(([name, slot]) => {
+      const w = stockWindow({ topics: new Set(slot.topics.map((t) => t.k)) }, since);
+      return { name, topics: slot.topics, codes: slot.codes, count: w.count, last: w.last, first: w.first };
+    })
     .sort(order);
 
   return `${intro}
     ${groups.map((g) => {
       const open = state.openG.has(g.name);
+      const labels = g.topics.map((t) => t.label).join('、');
+      let body = '';
+      if (open) {
+        // 族群底下的標的跟著同一個排序走，不然外層照時間、裡面照則數，讀起來是亂的
+        const rows = [...g.codes].map((c) => index.get(c)).filter(Boolean)
+          .map((s) => stockWindow(s, since)).filter((s) => s.count).sort(order);
+        body = `<div class="x-tick__body">${rows.map((s) => stockRow(s, since)).join('')}</div>`;
+      }
       return `<article class="card x-tick ${open ? 'is-open' : ''}">
         <button class="x-tick__head" data-group="${esc(g.name)}">
           <span class="x-tick__sym">${open ? '▾' : '▸'} ${esc(g.name)}</span>
-          <span class="x-tick__name">${esc(g.topics.map((t) => t.label).join('、'))}</span>
+          <span class="x-tick__name">${esc(labels)} · ${num(g.codes.size)} 檔</span>
           <span class="x-tick__chips"></span>
           <span class="x-tick__num">${esc(dayLabel())} ${num(g.count)} 則</span>
           <span class="x-tick__ago">${esc(ago(state.gsort === 'old' ? g.first : g.last))}</span>
         </button>
-        ${open ? `<div class="x-tick__body">
-          ${stockBlock(g.topics.flatMap((t) => (t.tw || []).filter((b) => b.g === g.name)), `${g.name}：該看的台股`)}
-          ${g.topics.map((t) => topicRow(t, since || '')).join('')}</div>` : ''}
+        ${body}
       </article>`;
     }).join('')}`;
 }
@@ -412,6 +540,7 @@ function render() {
     + ` · ${String(from).slice(0, 10)} ~ ${String(to).slice(0, 10)}${gap}`;
 
   const view = state.view === 'topic' ? topicView(data)
+    : state.view === 'stock' ? stockView(data)
     : state.view === 'group' ? groupView(data)
       : recentView(data);
 
@@ -473,6 +602,23 @@ function bind() {
         loadTopic(k);
       }
       return render();
+    }
+    if (btn.dataset.stock) {
+      const c = btn.dataset.stock;
+      if (state.openS.has(c)) state.openS.delete(c);
+      else openStock(c);
+      return render();
+    }
+    if (btn.dataset.jumpstock) {
+      // 主題底下的台股點了跳到標的軸、展開那一檔、捲過去（同 Serenity 的 $代號）
+      const c = btn.dataset.jumpstock;
+      state.view = 'stock';
+      state.days = '0';
+      openStock(c);
+      render();
+      const row = [...document.querySelectorAll('[data-stockrow]')].find((el) => el.dataset.stockrow === c);
+      if (row) row.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
     }
     if (btn.dataset.group) {
       const g = btn.dataset.group;

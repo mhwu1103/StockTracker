@@ -2177,6 +2177,16 @@ button.ustag {
   text-decoration: none;
 }
 
+/* 主題底下的台股是按鈕（跳到標的軸），不是連結，要把按鈕的預設樣式拿掉 */
+button.x-stock { background: none; font: inherit; font-size: 13px; cursor: pointer; }
+
+/* 從主題的台股跳過來時捲到這一列：留出頂部工具列的高度，不然標頭會被蓋住 */
+[data-stockrow] { scroll-margin-top: 96px; }
+
+/* 標的展開後最上面那一行：往個股頁的出口 */
+.x-stocklink { margin: 0 0 10px; }
+.x-stocklink .linky { margin-left: 0; }
+
 .x-stock span { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 @media (min-width: 768px) {
