@@ -6,9 +6,8 @@
  * ## 帳號
  *
  * 收哪幾個帳號由 data/x/accounts.json 決定（scripts/xposts.py 的 ACCOUNTS 產生），
- * 這支不寫死任何一個。目前的帳號放在網址 `?u=` 上，換帳號就是換網址、整頁重載：
- * 兩個帳號的標的、月檔、展開狀態全都不共用，與其在一頁裡清乾淨所有快取，不如
- * 讓瀏覽器重來一次 —— 而且網址本身就能分享、能加書籤。
+ * 這支不寫死任何一個。目前的帳號放在網址 `?u=` 上，能分享、能加書籤；
+ * 換帳號在頁內完成（history.pushState），不整頁重載，理由見 switchUser。
  *
  * Elon 幾乎不用 $cashtag，他的「標的」多半是關鍵字主題（Optimus、xAI、SpaceX），
  * 資料裡標 `k: "topic"`。主題不是代號，畫的時候不加 `$`，名字用主題名。
@@ -441,10 +440,14 @@ function sourceNote(data) {
 
 function bind() {
   $('#view').addEventListener('click', (ev) => {
-    // 帳號切換是一般連結（?u=…），讓它照常換頁；這裡只順手記住選了誰
+    // 帳號切換：保留 <a href="?u=…">（中鍵、新分頁照樣能開），一般點擊則
+    // 攔下來在頁內換，免得整頁重載的跳動。理由見 switchUser。
     const link = ev.target.closest('a[data-user]');
     if (link) {
       save(KEYS.user, link.dataset.user);
+      if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+      ev.preventDefault();
+      switchUser(link.dataset.user);
       return;
     }
     const btn = ev.target.closest('button');
@@ -545,6 +548,68 @@ function pickUser(accounts) {
   return known(DEFAULT_USER) ? DEFAULT_USER : accounts[0]?.user || DEFAULT_USER;
 }
 
+/** 一個帳號的 index.json ＋ tickers.json。失敗就丟例外，由呼叫端決定怎麼畫。 */
+async function loadData(user) {
+  const base = `${DATA}/x/${encodeURIComponent(user)}`;
+  // 兩份一起載：index.json 是首頁與近期流，tickers.json 是完整的標的清單
+  // （index 裡只有前 40 名，標的軸要全部）。
+  const [index, tickers] = await Promise.all([
+    fetch(`${base}/index.json`).then((r) => {
+      if (!r.ok) throw new Error(`index.json ${r.status}`);
+      return r.json();
+    }),
+    fetch(`${base}/tickers.json`).then((r) => (r.ok ? r.json() : null)),
+  ]);
+  index.tickers = (tickers && tickers.items) || index.hot || [];
+  return index;
+}
+
+/** 標題、頁尾這些跟著帳號走、但不在 #view 裡的字。 */
+function applyAccountChrome() {
+  const acct = state.accounts.find((a) => a.user === state.user);
+  const title = acct?.title || `@${state.user}`;
+  document.title = title;
+  $('h1').textContent = title;
+  $('#source-user').textContent = `@${state.user}${acct ? `（${acct.name}）` : ''}`;
+}
+
+/**
+ * 在同一頁裡換帳號。
+ *
+ * 第一版是一般連結、整頁重載：標題先閃回「觀點」、內容先變「載入中…」，
+ * 資料到了才畫出來，切一次整頁跳兩下。現在是**先把新帳號的資料載完，再一次
+ * 換掉整個畫面**，舊畫面留到最後一刻，中間不經過任何空白狀態。
+ *
+ * 兩個帳號的標的檔、月檔、展開狀態全都不共用，所以換帳號時整批清掉 ——
+ * 同一個代號（$NVDA）在兩個帳號底下是兩份不同的檔。
+ *
+ * 連得太快（還沒載完又按另一個）時只認最後一次，不然先發的慢回應會蓋掉後發的。
+ */
+let switching = 0;
+async function switchUser(user, { push = true } = {}) {
+  if (user === state.user && state.data) return;
+  const ticket = ++switching;
+  let data;
+  try {
+    data = await loadData(user);
+  } catch (err) {
+    console.error(err);
+    if (push) location.href = `?u=${encodeURIComponent(user)}`;   // 退回整頁載入，讓錯誤照常顯示
+    return;
+  }
+  if (ticket !== switching) return;
+  state.user = user;
+  state.data = data;
+  tickerCache.clear();
+  monthCache.clear();
+  state.openT.clear();
+  state.openP.clear();
+  state.openG.clear();
+  if (push) history.pushState({ u: user }, '', `?u=${encodeURIComponent(user)}`);
+  applyAccountChrome();
+  render();
+}
+
 async function main() {
   restore();
   try {
@@ -554,24 +619,10 @@ async function main() {
     state.accounts = [];
   }
   state.user = pickUser(state.accounts);
-  const acct = state.accounts.find((a) => a.user === state.user);
-  const title = acct?.title || `@${state.user}`;
-  document.title = title;
-  $('h1').textContent = title;
-  $('#source-user').textContent = `@${state.user}${acct ? `（${acct.name}）` : ''}`;
+  applyAccountChrome();
 
   try {
-    // 兩份一起載：index.json 是首頁與近期流，tickers.json 是完整的標的清單
-    // （index 裡只有前 40 名，標的軸要全部）。
-    const [index, tickers] = await Promise.all([
-      fetch(`${dir()}/index.json`).then((r) => {
-        if (!r.ok) throw new Error(`index.json ${r.status}`);
-        return r.json();
-      }),
-      fetch(`${dir()}/tickers.json`).then((r) => (r.ok ? r.json() : null)),
-    ]);
-    state.data = index;
-    state.data.tickers = (tickers && tickers.items) || index.hot || [];
+    state.data = await loadData(state.user);
   } catch (err) {
     console.error(err);
     $('#meta').textContent = '載入失敗';
@@ -581,6 +632,15 @@ async function main() {
   }
   bind();
   render();
+
+  // 瀏覽器的上一頁／下一頁：網址換了帳號，畫面跟著換，但不要再推一筆歷史
+  // 回到沒帶 ?u= 的那一筆時是預設帳號，不是 localStorage 裡上次選的那個 ——
+  // 那一筆歷史當初顯示的是什麼，回去就該是什麼。
+  window.addEventListener('popstate', () => {
+    const u = new URLSearchParams(location.search).get('u');
+    const known = state.accounts.some((acct) => acct.user === u);
+    switchUser(known ? u : DEFAULT_USER, { push: false });
+  });
 }
 
 main();

@@ -2065,6 +2065,12 @@ body[data-view="x"] .card > .controls {
   padding: 10px 14px;
 }
 
+/*
+ * 捲軸位置固定保留。Serenity 那頁很長、Elon 那頁很短，切換帳號時捲軸一下有
+ * 一下沒有，整頁內容就跟著左右移 15px —— 那就是「切一下跳一下」的其中一半。
+ */
+html:has(body[data-view="x"]) { scrollbar-gutter: stable; }
+
 /* 帳號列本身就是 .card，只補內距 —— 不能動 margin，桌面版的置中與卡片間距靠它 */
 .x-accounts { padding: 10px 14px; }
 
