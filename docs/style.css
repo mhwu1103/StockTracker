@@ -1355,13 +1355,14 @@ table.pair tr.t:hover > td { background: var(--surface); }
  * 沒事（它的第二層是 tr.b，有自己的 12px），在這裡卻壞掉：子題材名沒有規則，
  * 就變成 15px，**比族群名（14px）還大**，階層是反的。
  *
- * 四欄數字一律 14px：跨列比數字是這一頁在做的事，數字忽大忽小就比不動。名字則
- * 一層小一階：族群 15 / 子題材 14 / 個股 13。
+ * 四欄數字一律 14px：跨列比數字是這一頁在做的事，數字忽大忽小就比不動。
  *
- * 一階要差得看得出來。第一版排成 15 / 13.5 / 13，而 13.5 與 13 差半個 px——
- * 展開之後那十幾列跟點開它的那一列看起來一樣大，等於沒有階層。現在兩段各差 1px，
- * 再讓字重接手：子題材的名字 600、個股的名字 400（原本 500，跟 600 也分不出來）。
- * 個股列不再往下縮：12px 在這張表上細得像註腳，而那幾列才是要讀的東西。
+ * 名字只有兩級：族群 15，**子題材與它展開的個股同樣 14**。
+ *
+ * 前兩版都在調那半級（15 / 13.5 / 13，再改成 15 / 14 / 13），方向本身是錯的：
+ * 展開的那幾列是使用者點下去要讀的東西，把它排在比標題小的位置，就是把整頁的
+ * 內容都設成註腳。階層改由縮排、左側色條與字重去講（子題材 600、個股 400），
+ * 那三樣都不必犧牲可讀性——字級只負責一件事：這幾個字讀不讀得動。
  */
 table.pair.cross { font-size: 14px; }
 table.pair.cross tr.g > td:first-child { font-size: 15px; }
@@ -1424,8 +1425,9 @@ table.pair.cross .all {
  * 區塊就靠那條色條連成一體——**不另外鋪底色**：底色在這張表上已經是「族群列」的語彙
  * （tr.g 用 --bg 分段），再鋪一層會讓人以為那是另一個層級。
  *
- * 字級 13px，比子題材那一列小一階但不能再小。第一版給了 12px、代號那一行 10.5px，
- * 在 1060px 寬的表上細得像註腳——而這幾列正是這一頁要讀的東西，不是註腳。
+ * **字級跟子題材那一列一樣 14px**，不再小一階。這幾列是點下去之後要讀的東西，
+ * 一次十幾檔、要橫著比數字；先是 12px、再 13px，在 1060px 寬的表上都細得像註腳。
+ * 「它是誰的下一層」由縮排 30px、左側色條與字重 400 去講，不必從字級裡扣。
  *
  * **每一檔之間一條線**。這一塊一次十幾列、每列六欄，沒有線就是一整片等距的字，
  * 橫著看一列的四個數字要靠眼睛自己對——而橫著比正是這一頁在做的事。行距也從
@@ -1438,7 +1440,7 @@ table.pair.cross tr.p > td {
   border-top: 1px solid var(--line);
   padding-top: 6px;
   padding-bottom: 6px;
-  font-size: 13px;
+  font-size: 14px;
 }
 /* 抬頭底下那一條不畫：抬頭自己上面已經有一條，兩條把它夾成表頭，而它是這一塊的
    說明，要黏著下面那幾列。第一條線出現在第一檔與第二檔之間。 */
@@ -1485,7 +1487,7 @@ table.pair.cross tr.p .cd {
   display: inline;
   margin-left: 8px;
   padding-left: 0;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted);
 }
 table.pair.cross tr.p:hover > td { background: var(--bg); }
@@ -1494,14 +1496,15 @@ table.pair.cross tr.p a:hover .nm { text-decoration: underline; }
 
 /* 個股區塊的抬頭：這一段是哪一個市場的哪一族、幾檔、中位數在哪裡。
    沒有它的話，一族底下接著十幾列會不知道自己在看什麼。
-   原本 10px 加字距，看起來像系統標籤而不是句子——這裡要人讀，所以回到 11.5px、
-   不加字距，並且跟著個股列吃同一條色條，整塊才連得起來。 */
+   原本 10px 加字距，看起來像系統標籤而不是句子——這裡要人讀，所以放大到 12.5px、
+   不加字距，並且跟著個股列吃同一條色條，整塊才連得起來。它仍然比個股列小一階
+   （14px）：這一行是那一塊的說明，不是那一塊的內容。 */
 table.pair.cross tr.pc > td {
   padding: 9px 10px 4px 30px;
   border-top: 1px solid var(--line);
   box-shadow: inset 3px 0 0 var(--side);
   text-align: left;
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: var(--muted);
   white-space: normal;
 }
@@ -1522,12 +1525,12 @@ table.pair.cross td.hit.open { background: var(--bg); }
 table.pair.cross td.hit.open::after { opacity: .9; border-bottom-style: solid; }
 
 @media (max-width: 767px) {
-  /* 手機上整張表是 13px，個股列再小一階就好——小於 12px 在手機上是讀不動的 */
-  table.pair.cross tr.p > td { font-size: 12.5px; }
+  /* 手機上一樣跟著子題材那一列走（13.5px），不再自己小一階 */
+  table.pair.cross tr.p > td { font-size: 13.5px; }
   table.pair.cross tr.p > td:first-child { padding-left: 18px; }
-  table.pair.cross tr.p .cd { margin-left: 6px; font-size: 11px; }
+  table.pair.cross tr.p .cd { margin-left: 6px; font-size: 11.5px; }
   table.pair.cross tr.p .tag { display: inline-block; }
-  table.pair.cross tr.pc > td { padding-left: 18px; font-size: 11px; }
+  table.pair.cross tr.pc > td { padding-left: 18px; font-size: 12px; }
   table.pair.cross tr.s > td:first-child { padding-left: 8px; }
 }
 
