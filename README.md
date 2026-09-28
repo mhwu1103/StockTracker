@@ -222,13 +222,17 @@ SK 海力士 +6.7%）對台股 +0.9%，而台股那 15 檔從愛普 +7.9% 一路
 
 三頁的方法都寫在自己的「怎麼算的」裡。
 
-### 第五頁：Serenity 供應鏈觀點
+### 第五頁：觀點（Serenity、Elon Musk）
 
-`x.html`，入口在「觀點」。前四頁都是價格，這一頁是**文字**：X 上
-[@aleabitoreddit](https://x.com/aleabitoreddit)（Serenity）談 AI 與半導體供應鏈的公開貼文，
-六千多則，原文存檔，依標的索引。
+`x.html`，入口在「觀點」。前四頁都是價格，這一頁是**文字**：X 上幾個帳號的公開貼文，
+原文存檔，依標的索引。頁面頂端切換帳號，網址是 `x.html?u=<帳號>`；收哪幾個帳號在
+`scripts/xposts.py` 的 `ACCOUNTS`，前端從 `data/x/accounts.json` 讀，加帳號不必改前端。
 
-收這一個帳號的理由是它與這個站的重疊：他提過 700 個代號，其中 78 檔在 `us_link.json` 上，
+- [@aleabitoreddit](https://x.com/aleabitoreddit)（Serenity）：談 AI 與半導體供應鏈的瓶頸，六千多則。
+- [@elonmusk](https://x.com/elonmusk)：他一句話就是台股機器人、AI 伺服器、低軌衛星族群隔天的
+  跳空來源。從 2026-09-28 開始抓，沒有歷史。
+
+收 Serenity 的理由是它與這個站的重疊：他提過 700 個代號，其中 78 檔在 `us_link.json` 上，
 所以那幾檔可以直接標出台股族群，接回美股頁與四市題材。而**另外 622 檔才是這一頁的產出**
 ——那份對照表是照台股供應鏈整理的，本來就不會有 SIVE、NBIS、AXTI、IREN 這些還沒進台股
 視野的名字，頁面上把它們獨立成「未追蹤」，那是一份「可能值得加進對照表」的候選名單。
@@ -237,17 +241,33 @@ SK 海力士 +6.7%）對台股 +0.9%，而台股那 15 檔從愛普 +7.9% 一路
 對那一檔說過的每一句）、**族群**（他講的東西落在台股的哪一族）。貼文內文裡的 `$代號`
 點得動，會跳到那一檔。
 
+#### Elon 不用 $代號，所以配了一張關鍵字表
+
+照 Serenity 那套只認 cashtag 的索引，Elon 的貼文一檔都接不到。所以他的帳號另外配了
+關鍵字主題（`xposts.ELON_TOPICS`）：Optimus／humanoid → 機器人族群、Grok／xAI／Colossus →
+AI 伺服器、SpaceX／Starship → 航太、Starlink → 網通（低軌衛星）、Neuralink → 生技醫療，
+Tesla／FSD／Robotaxi 則直接併進 `TSLA` 走 `us_link.json` 的族群。主題在資料裡標 `k: "topic"`，
+畫面上不加 `$`。字寫得很窄：`Falcon` 只收 Falcon 9／Heavy，`X` 這個平台本身不收。
+
+他一大半貼文是引用別人、自己只回一句「True」「Accurate」，所以**被引用那一則的內容也算
+進主題**，而且那一則的摘要另外存成 `quote` 顯示在貼文底下——不帶原文的話那一句沒有意思。
+
+Elon 一個月兩千則，所以他的貼文是**一天一檔**（`tweets/YYYY-MM-DD.json`）而不是一月一檔：
+排程每一輪都有他的新貼文，照月檔存的話每半小時就是一次 1 MB 的 git 差異。
+
 #### 抓取頻率就是資料完整性
 
 X 未登入時仍然會把首屏的貼文伺服器端算好塞在 HTML 裡，這一頁讀的就是那一段：不碰
-cookie、不碰登入狀態、不用 API key。但**首屏一次只有 5 則，而他日均約 15 則**，
-所以排程是每 3 小時一次（`.github/workflows/x.yml`），一天 8 次共 40 則的容量。
+cookie、不碰登入狀態、不用 API key。但**首屏一次只有 5 則，而 Serenity 日均約 15 則、
+Elon 約 70 則**，所以排程是每 30 分鐘一次（`.github/workflows/x.yml`），一天 48 次。
+repo 是公開的，GitHub 託管的 runner 不計分鐘數，這個頻率不會產生費用。即使如此，Elon
+半夜一小時連發十幾則的時候還是會漏幾則；公開頁的「貼文」分頁也不含回覆，他的回覆這裡收不到。
 
-每天只跑一次會漏掉大半，而且**漏掉就沒了**——單篇貼文頁未登入只回 51 字的 og 摘要，
+跑得不夠勤就會漏，而且**漏掉就沒了**——單篇貼文頁未登入只回 51 字的 og 摘要，
 補不回來。`fetch_x.py` 在「首屏整屏都是新的」時會印警告，那代表兩次排程之間他發的量
 已經超過首屏容量，看到就要把間隔再調短。
 
-走過而不採用的路，理由記在 `scripts/serenity.py` 的 docstring 裡免得有人再試一次：
+走過而不採用的路，理由記在 `scripts/xposts.py` 的 docstring 裡免得有人再試一次：
 官方 API（免費層讀不到別人的時間軸）、Nitter 各公開實例（實測全數連不上）、
 `r.jina.ai` 之類的純文字代理（對 x.com 回 403）。
 
@@ -260,6 +280,11 @@ cookie、不碰登入狀態、不用 API key。但**首屏一次只有 5 則，�
 那一段裡還埋著一個坑：`note_tweet` 底下 `entity_set.symbols[].text` 排在全文的 `text`
 前面，照順序抓會抓到 `AKAM`、`SPY` 這種四個字的 cashtag。第一版就是這樣，存進去的三則
 貼文內文分別是「AKAM」「SPY」。現在取的是那一段裡**最長**的 `text`。
+
+但「最長」遇到引用推文又錯了一次：被引用的那一則整段嵌在同一段裡，連同它自己的
+`note_tweet`。Elon 的「Accurate」因此存成了被他引用的那篇 AGI 長文——內文是別人寫的，
+作者欄卻是他。現在先在 `quoted_tweet_results` / `retweeted_status_result` 那裡切開，
+前面才是自己的。
 
 時間則一律從貼文 id 解（snowflake 的高位就是毫秒時間戳）而不讀 `created_at`：
 實測首屏 5 則裡只有 1 則帶那個欄位，而時間是分月存檔的依據。兩者對照過，秒數一致。
@@ -377,7 +402,7 @@ localStorage，不會上傳，換裝置或清除瀏覽資料就會消失。
 | 美股日線（連動頁） | `https://query1.finance.yahoo.com/v8/finance/chart/{美股代號}?range=1y&interval=1d` |
 | 日股日線（族群頁） | `https://query1.finance.yahoo.com/v8/finance/chart/{四碼}.T?range=1y&interval=1d` |
 | 韓股日線（族群頁） | `https://query1.finance.yahoo.com/v8/finance/chart/{六碼}.{KS,KQ}?range=1y&interval=1d` |
-| Serenity 的公開貼文（觀點頁） | `https://x.com/aleabitoreddit`（讀首屏的伺服器端資料，不登入） |
+| 觀點頁的公開貼文 | `https://x.com/{aleabitoreddit,elonmusk}`（讀首屏的伺服器端資料，不登入） |
 | Serenity 的歷史存檔（一次性灌入） | `https://raw.githubusercontent.com/yan-labs/serenity-aleabitoreddit/HEAD/data/aleabitoreddit_tweets.json` |
 | 報價與集保歷史回補 | `http://web.archive.org/cdx/search/cdx` + `https://web.archive.org/web/{時間戳}id_/…` |
 
@@ -438,13 +463,15 @@ scripts/
   build_cross.py    四市題材 → docs/data/cross/index.json。把 us／jp／kr 三份
                     market.json 與台股 kline/ 接成「一個題材在四個市場的溫度」。
                     不抓任何東西，純粹重算；要排在上面全部之後
-  serenity.py       共用：X 帳號 @aleabitoreddit 的貼文擷取與解析。首屏那份
-                    伺服器端資料怎麼讀、長貼文的全文在哪個欄位、為什麼時間要從
-                    貼文 id 解，以及走過而不採用的那幾條路
-  fetch_x.py        抓新貼文 → docs/data/x/tweets/YYYY-MM.json。--seed 是首次建檔，
-                    把社群維護的歷史存檔灌進來（標 src: archive）
-  build_x.py        由月檔出索引 → docs/data/x/{index,tickers}.json 與 ticker/。
-                    與 us_link.json 對照，標出哪幾檔接得回台股族群
+  xposts.py         共用：X 帳號的貼文擷取與解析，收哪幾個帳號（ACCOUNTS）與 Elon
+                    的關鍵字主題表（ELON_TOPICS）也在這裡。首屏那份伺服器端資料怎麼讀、
+                    長貼文的全文在哪個欄位、引用推文怎麼切開、為什麼時間要從貼文 id
+                    解，以及走過而不採用的那幾條路
+  fetch_x.py        抓新貼文 → docs/data/x/<帳號>/tweets/。--user 只抓一個帳號；
+                    --seed 是首次建檔，把社群維護的歷史存檔灌進來（標 src: archive）
+  build_x.py        由存檔出索引 → docs/data/x/<帳號>/{index,tickers}.json 與 ticker/，
+                    外加 docs/data/x/accounts.json。與 us_link.json 對照，標出哪幾檔
+                    接得回台股族群
   fetch_taiex.py    抓加權指數每日收盤（證交所 FMTQIK）→ docs/data/taiex.json。
                     平常重抓當月與上月；--months 15 是首次回補（年線要 240 天）
   build_rule.py     紀律頁 → docs/data/rule.json：全市場每一檔在 10／20／60／240
@@ -474,8 +501,8 @@ docs/               GitHub Pages 網站根目錄
                     頁尾與族群頁的說明裡也各有一個
   cross.html cross.js 「四市題材」——美、日、韓、台同一段時間的題材漲跌，入口在「四市」。
                     不吃 pair.js：那一支是兩欄的「外國 vs 台灣」，這一頁是四欄並列
-  x.html x.js        「Serenity 供應鏈觀點」——X 上 @aleabitoreddit 的貼文，依標的索引，
-                    入口在「觀點」。全站唯一一頁主角是文字不是數字的，所以行高與
+  x.html x.js        「觀點」——X 上 Serenity、Elon Musk 的貼文，依標的索引，
+                    入口在「觀點」，x.html?u=<帳號> 切換。全站唯一一頁主角是文字不是數字的，所以行高與
                     行寬照長文的標準走，不共用 .row
   jp.html kr.html    「日股 × 台股族群」與「韓股 × 台股族群」，入口在「日股」「韓股」。
   pair.js            與美股那頁的差別是它們**不算相關係數**，只並排漲跌幅，理由見下。
@@ -504,20 +531,23 @@ docs/               GitHub Pages 網站根目錄
     {jp,kr}/market.json  對照表裡每一檔外股的日線，與 us/market.json 同一個形狀
     {jp,kr}/index.json   族群頁直接讀的表：一族一組子族群區塊，每一塊是
                     「這幾檔外股 → 這幾檔台股」，兩邊各自的漲跌幅與中位數
-    x/tweets/YYYY-MM.json  Serenity 的貼文全文，一個月一檔（最大的月份約 700 KB）。
-                    id、時間（由貼文 id 解）、全文、互動數、提到的標的。
+    x/accounts.json 觀點頁收了哪幾個帳號，前端的帳號切換照這一份畫
+    x/<帳號>/       以下每個帳號一套（aleabitoreddit、elonmusk）
+    x/<帳號>/tweets/*.json  貼文全文。Serenity 一個月一檔（YYYY-MM，最大約 700 KB），
+                    Elon 一天一檔（YYYY-MM-DD）。id、時間（由貼文 id 解）、全文、
+                    互動數、提到的標的，引用別人時另帶 quote（被引用那一則的摘要）。
                     src: archive 的那些來自一次性灌入的第三方存檔
-    x/index.json    觀點頁的首頁：近期貼文流（120 則摘要）、標的排行、整體統計
-    x/tickers.json  他提過的每一個標的一列：提及次數、近 30 天熱度、首末提及，
+    x/<帳號>/index.json    觀點頁的首頁：近期貼文流（120 則摘要）、標的排行、整體統計
+    x/<帳號>/tickers.json  他提過的每一個標的一列：提及次數、近 30 天熱度、首末提及，
                     以及與 us_link.json 對照出的中文名與台股族群（**族群是列表**，
                     一檔美股可以同時屬於好幾族——NVDA 在對照表裡橫跨七族）
-    x/ticker/<代號>.json  那一檔的每一則貼文，只有 240 字的摘要與所屬月份；
+    x/<帳號>/ticker/<代號>.json  那一檔（或那個關鍵字主題）的每一則貼文，只有 240 字的摘要與所屬月份；
                     要全文時前端去載那個月檔。理由見 build_x.py 的 docstring
     taiex.json      加權指數每日收盤 {d: 日期, c: 收盤}，台股自己的交易日曆
     rule.json       紀律頁直接讀的表：stocks 是代號 -> [簡稱, 收, 漲跌%, 10／20／60／240
                     日線, 10／20／60 日線連續站上（正）跌破（負）天數, 多頭排列, 外資連買天數]，
                     另帶整份 taiex。判斷規則不在檔案裡，在 docs/rule.js
-    x/state.json    抓取游標與健康狀態：最後一則的 id、上次抓到東西是什麼時候。
+    x/<帳號>/state.json    抓取游標與健康狀態：最後一則的 id、上次抓到東西是什麼時候。
                     排程停掉或頁面結構變了的話，這一份是唯一看得出來的地方
     cross/index.json 四市題材頁直接讀的表：一族一列，四個市場各一格中位數與成分股代號，
                     加上各市場自己的大盤（超額要拿它減）與每一段的起訖日期。

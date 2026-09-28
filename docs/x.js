@@ -1,7 +1,19 @@
 /*
- * Serenity 供應鏈觀點（x.html）：X 上 @aleabitoreddit 的貼文，依標的索引。
+ * 觀點（x.html）：X 上幾個帳號的貼文，依標的索引。
  *
  * 回答的問題：**他最近在講哪幾檔、講了什麼，而那接到台股的哪一族**。
+ *
+ * ## 帳號
+ *
+ * 收哪幾個帳號由 data/x/accounts.json 決定（scripts/xposts.py 的 ACCOUNTS 產生），
+ * 這支不寫死任何一個。目前的帳號放在網址 `?u=` 上，換帳號就是換網址、整頁重載：
+ * 兩個帳號的標的、月檔、展開狀態全都不共用，與其在一頁裡清乾淨所有快取，不如
+ * 讓瀏覽器重來一次 —— 而且網址本身就能分享、能加書籤。
+ *
+ * Elon 幾乎不用 $cashtag，他的「標的」多半是關鍵字主題（Optimus、xAI、SpaceX），
+ * 資料裡標 `k: "topic"`。主題不是代號，畫的時候不加 `$`，名字用主題名。
+ *
+ * 以下是這一頁最初為 Serenity（@aleabitoreddit）寫的說明，原則對每個帳號都一樣：
  *
  * 他寫的是 AI 與半導體供應鏈上「還沒被看到的瓶頸」，六千多則貼文裡提過七百個
  * 代號。整包讀完是不可能的，所以這一頁的入口不是時間，是標的：
@@ -57,7 +69,12 @@ const SORTS = [
   { value: 'last', label: '最後提及' },
 ];
 
+// 沒帶 ?u= 的時候看誰。Serenity 是這一頁最早的那個帳號，舊連結都是指他。
+const DEFAULT_USER = 'aleabitoreddit';
+
 const state = {
+  accounts: [],
+  user: DEFAULT_USER,
   data: null,
   view: 'recent',
   filter: 'all',
@@ -68,6 +85,7 @@ const state = {
 };
 
 const KEYS = {
+  user: 'stocktracker.xuser',
   view: 'stocktracker.xview',
   filter: 'stocktracker.xfilter',
   sort: 'stocktracker.xsort',
@@ -80,6 +98,15 @@ const monthCache = new Map();
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const num = (v) => (v === null || v === undefined ? '—' : v.toLocaleString('zh-TW'));
+
+/** 目前這個帳號的資料目錄。 */
+const dir = () => `${DATA}/x/${encodeURIComponent(state.user)}`;
+
+/** 標的在畫面上的樣子：代號是 `$NVDA`，關鍵字主題是它的名字（「xAI · Grok」）。 */
+function tagLabel(t) {
+  const row = (state.data?.tickers || []).find((s) => s.t === t);
+  return row && row.k === 'topic' ? (row.n || t) : `$${t}`;
+}
 
 /** 貼文時間一律顯示台北時間；資料裡存的是 UTC。 */
 function when(iso) {
@@ -156,7 +183,13 @@ function tweetCard(p, { showTickers = true } = {}) {
     ? '<span class="hint">載入全文中…</span>' : '';
 
   const tags = showTickers && (p.t || []).length
-    ? `<div class="conds">${p.t.map((t) => `<button class="ustag" data-jump="${esc(t)}">$${esc(t)}</button>`).join('')}</div>`
+    ? `<div class="conds">${p.t.map((t) => `<button class="ustag" data-jump="${esc(t)}">${esc(tagLabel(t))}</button>`).join('')}</div>`
+    : '';
+
+  // 被引用的那一則：摘要＋作者，點了到原文。它是別人寫的字，樣式上要分得開。
+  const quote = p.q
+    ? `<a class="x-quote" href="https://x.com/${esc(p.q.u || 'i')}/status/${esc(p.q.id)}"
+         target="_blank" rel="noopener noreferrer"><b>@${esc(p.q.u || '?')}</b>　${esc(p.q.s || '')}</a>`
     : '';
 
   return `<article class="card x-post">
@@ -164,11 +197,14 @@ function tweetCard(p, { showTickers = true } = {}) {
       <time datetime="${esc(p.ts || '')}">${esc(when(p.ts))}</time>
       <span class="x-post__ago">${esc(ago(p.ts))}</span>
       ${p.reply ? '<span class="chip">回覆</span>' : ''}
+      ${p.q ? '<span class="chip">引用</span>' : ''}
+      ${p.rt ? `<span class="chip">轉推 @${esc(p.rt)}</span>` : ''}
       ${p.locked ? '<span class="chip">付費</span>' : ''}
-      <a class="linky" href="https://x.com/aleabitoreddit/status/${esc(p.id)}"
+      <a class="linky" href="https://x.com/${esc(state.user)}/status/${esc(p.id)}"
          target="_blank" rel="noopener noreferrer">原文 ↗</a>
     </header>
     <div class="x-post__body">${body(text)}</div>
+    ${quote}
     ${locked}
     ${tags}
     <footer class="x-post__foot">
@@ -195,7 +231,7 @@ async function loadMonth(month) {
   if (monthCache.has(month)) return;
   monthCache.set(month, undefined);
   try {
-    const res = await fetch(`${DATA}/x/tweets/${month}.json`);
+    const res = await fetch(`${dir()}/tweets/${month}.json`);
     if (!res.ok) throw new Error(res.status);
     const payload = await res.json();
     monthCache.set(month, new Map((payload.items || []).map((r) => [r.id, r.text])));
@@ -210,7 +246,7 @@ async function loadTicker(ticker) {
   if (tickerCache.has(ticker)) return;
   tickerCache.set(ticker, undefined);
   try {
-    const res = await fetch(`${DATA}/x/ticker/${encodeURIComponent(ticker)}.json`);
+    const res = await fetch(`${dir()}/ticker/${encodeURIComponent(ticker)}.json`);
     if (!res.ok) throw new Error(res.status);
     tickerCache.set(ticker, await res.json());
   } catch (err) {
@@ -226,7 +262,7 @@ async function loadTicker(ticker) {
 
 function recentView(data) {
   return `<section class="card">
-      <p class="lede">他最近 ${data.recent.length} 則貼文，新的在上面。點 $ 代號可以跳到那一檔的全部貼文。</p>
+      <p class="lede">他最近 ${data.recent.length} 則貼文，新的在上面。點底下的標的可以跳到那一檔的全部貼文。</p>
     </section>
     ${data.recent.map((p) => tweetCard(p)).join('')}`;
 }
@@ -250,8 +286,8 @@ function tickerRow(row) {
   const detail = open ? tickerDetail(row.t) : '';
   return `<article class="card x-tick ${open ? 'is-open' : ''}">
     <button class="x-tick__head" data-ticker="${esc(row.t)}">
-      <span class="x-tick__sym">${open ? '▾' : '▸'} $${esc(row.t)}</span>
-      <span class="x-tick__name">${esc(row.n || '')}</span>
+      <span class="x-tick__sym">${open ? '▾' : '▸'} ${esc(row.k === 'topic' ? (row.n || row.t) : `$${row.t}`)}</span>
+      <span class="x-tick__name">${esc(row.k === 'topic' ? '關鍵字' : (row.n || ''))}</span>
       <span class="x-tick__chips">${linkChips(row)}</span>
       <span class="x-tick__num">${row.hot ? `近 ${state.data.hotDays} 天 ${row.hot} 則 · ` : ''}共 ${num(row.c)} 則</span>
       <span class="x-tick__ago">${esc(ago(row.last))}</span>
@@ -267,11 +303,14 @@ function tickerDetail(ticker) {
   // 一檔可能有幾百則，一次全畫會卡住捲動。先給最近的，要更早的再按。
   const shown = payload.items.slice(0, 40);
   const rest = payload.items.length - shown.length;
+  // 關鍵字主題在 X 上沒有對應的搜尋字（它是好幾個字的聯集），只給代號的搜尋連結
+  const isTopic = (state.data.tickers || []).some((s) => s.t === ticker && s.k === 'topic');
+  const search = `https://x.com/search?q=${encodeURIComponent(`$${ticker} from:${state.user}`)}&f=live`;
   return `<div class="x-tick__body">
     ${shown.map((p) => tweetCard(p, { showTickers: false })).join('')}
-    ${rest > 0 ? `<p class="hint">還有 ${num(rest)} 則更早的，到 X 上看：
-      <a class="linky" href="https://x.com/search?q=%24${esc(ticker)}%20from%3Aaleabitoreddit&f=live"
-         target="_blank" rel="noopener noreferrer">$${esc(ticker)} 的全部貼文 ↗</a></p>` : ''}
+    ${rest > 0 ? `<p class="hint">還有 ${num(rest)} 則更早的${isTopic ? '沒有列出來。' : `，到 X 上看：
+      <a class="linky" href="${esc(search)}"
+         target="_blank" rel="noopener noreferrer">$${esc(ticker)} 的全部貼文 ↗</a>`}</p>` : ''}
   </div>`;
 }
 
@@ -279,7 +318,7 @@ function tickerView(data) {
   const rows = sortedTickers(data.tickers || []);
   const note = state.filter === 'new'
     ? `<p class="lede">他提過、但 <code>us_link.json</code> 上還沒有的 ${num(rows.length)} 檔。
-       這一份是「可能值得加進對照表」的候選名單 —— 他的主題就是還沒被看到的瓶頸。</p>`
+       這一份是「可能值得加進對照表」的候選名單。</p>`
     : state.filter === 'linked'
       ? '<p class="lede">他提過、而且已經在台股對照表上的那幾檔。點開看他對那一檔說過什麼。</p>'
       : `<p class="lede">他提過的 ${num(rows.length)} 檔，預設照最近 ${data.hotDays} 天的提及次數排。</p>`;
@@ -345,6 +384,7 @@ function render() {
       : recentView(data);
 
   $('#view').innerHTML = `
+    ${accountBar()}
     <section class="card">
       <div class="controls">${pills('view', VIEWS, state.view)}</div>
     </section>
@@ -352,16 +392,48 @@ function render() {
     ${sourceNote(data)}`;
 }
 
+/** 帳號切換。只有一個帳號的時候不畫 —— 沒得選的選單只是雜訊。 */
+function accountBar() {
+  if (state.accounts.length < 2) return '';
+  const cur = state.accounts.find((a) => a.user === state.user);
+  return `<section class="card x-accounts">
+    <div class="pills">${state.accounts.map((a) => `<a class="pill ${a.user === state.user ? 'active' : ''}"
+      href="?u=${encodeURIComponent(a.user)}" data-user="${esc(a.user)}">${esc(a.name)}</a>`).join('')}</div>
+    ${cur?.blurb ? `<p class="x-accounts__blurb">@${esc(cur.user)}：${esc(cur.blurb)}</p>` : ''}
+  </section>`;
+}
+
+/**
+ * 「這份資料怎麼來的」。
+ *
+ * 兩個帳號的來源與缺口不一樣，要各自講清楚：Serenity 有一大段是第三方存檔
+ * 灌進來的；Elon 沒有歷史、而且公開頁不含回覆，他的回覆量比貼文還多。
+ */
 function sourceNote(data) {
-  return `<section class="card note">
-    <h2>這份資料怎麼來的</h2>
-    <p>來源是 X 上 <a class="linky" href="https://x.com/aleabitoreddit" target="_blank"
-      rel="noopener noreferrer">@aleabitoreddit</a> 的公開貼文，每 3 小時抓一次首屏。
-      內容原樣保存，沒有翻譯也沒有改寫。</p>
-    <p>2025-07 到 2026-09-17 的 6592 則是從社群維護的公開存檔一次灌進來的（標記為
+  const u = esc(state.user);
+  const profile = `<a class="linky" href="https://x.com/${u}" target="_blank"
+      rel="noopener noreferrer">@${u}</a>`;
+  const specific = state.user === 'aleabitoreddit'
+    ? `<p>2025-07 到 2026-09-17 的 6592 則是從社群維護的公開存檔一次灌進來的（標記為
       <code>archive</code>），那一段沒辦法逐則回頭核對；之後的是這裡自己抓的。
       首屏一次只有 5 則而他日均約 15 則，所以排程頻率就是資料完整性本身 ——
-      漏掉的貼文沒有第二個地方拿得到。</p>
+      漏掉的貼文沒有第二個地方拿得到。</p>`
+    : state.user === 'elonmusk'
+      ? `<p>從 2026-09-28 開始抓，之前的沒有 —— 找不到可信的公開存檔，單篇貼文頁
+        未登入又只給得出一句摘要。公開頁的「貼文」分頁<b>不含他的回覆</b>，而他回覆的
+        量比貼文還多，那一半這裡收不到。他日均約 70 則、首屏一次只有 5 則，偶爾一小時
+        連發十幾則的時候還是會漏。</p>
+      <p>他幾乎不用 $ 代號，所以這裡的「標的」多半是關鍵字主題：講到 Optimus、humanoid
+        就歸「Optimus 人形機器人」接機器人族群，講到 Grok、xAI、Colossus 就歸 AI 伺服器，
+        以此類推（對照表在 <code>scripts/xposts.py</code> 的 <code>ELON_TOPICS</code>）。
+        引用別人的貼文時，被引用那一則的內容也算進去 —— 他只回一句「Accurate」的時候，
+        他講的就是被引用的那件事。</p>`
+      : '';
+  return `<section class="card note">
+    <h2>這份資料怎麼來的</h2>
+    <p>來源是 X 上 ${profile} 的公開貼文，每 30 分鐘抓一次首屏。
+      內容原樣保存，沒有翻譯也沒有改寫。</p>
+    ${specific}
     <p>他的貼文是一個人的判斷，而且多半是還沒被市場確認的推論。這一頁只負責讓你
       查得到他說過什麼、什麼時候說的，不對內容做任何背書。</p>
   </section>`;
@@ -369,6 +441,12 @@ function sourceNote(data) {
 
 function bind() {
   $('#view').addEventListener('click', (ev) => {
+    // 帳號切換是一般連結（?u=…），讓它照常換頁；這裡只順手記住選了誰
+    const link = ev.target.closest('a[data-user]');
+    if (link) {
+      save(KEYS.user, link.dataset.user);
+      return;
+    }
     const btn = ev.target.closest('button');
     if (!btn) return;
 
@@ -447,17 +525,50 @@ function restore() {
   }
 }
 
+/**
+ * 這次要看誰：網址的 ?u= 優先，其次是上次選的，最後是預設。
+ *
+ * 帳號清單載不到的時候（accounts.json 還沒產生）照樣用預設帳號畫 ——
+ * 切換列只是少了，頁面本身不該因此整個打不開。
+ */
+function pickUser(accounts) {
+  const known = (u) => u && (!accounts.length || accounts.some((a) => a.user === u));
+  const fromUrl = new URLSearchParams(location.search).get('u');
+  if (known(fromUrl)) return fromUrl;
+  let saved = null;
+  try {
+    saved = localStorage.getItem(KEYS.user);
+  } catch (err) {
+    /* 讀不到就用預設 */
+  }
+  if (known(saved)) return saved;
+  return known(DEFAULT_USER) ? DEFAULT_USER : accounts[0]?.user || DEFAULT_USER;
+}
+
 async function main() {
   restore();
+  try {
+    const list = await fetch(`${DATA}/x/accounts.json`).then((r) => (r.ok ? r.json() : null));
+    state.accounts = (list && list.items) || [];
+  } catch (err) {
+    state.accounts = [];
+  }
+  state.user = pickUser(state.accounts);
+  const acct = state.accounts.find((a) => a.user === state.user);
+  const title = acct?.title || `@${state.user}`;
+  document.title = title;
+  $('h1').textContent = title;
+  $('#source-user').textContent = `@${state.user}${acct ? `（${acct.name}）` : ''}`;
+
   try {
     // 兩份一起載：index.json 是首頁與近期流，tickers.json 是完整的標的清單
     // （index 裡只有前 40 名，標的軸要全部）。
     const [index, tickers] = await Promise.all([
-      fetch(`${DATA}/x/index.json`).then((r) => {
+      fetch(`${dir()}/index.json`).then((r) => {
         if (!r.ok) throw new Error(`index.json ${r.status}`);
         return r.json();
       }),
-      fetch(`${DATA}/x/tickers.json`).then((r) => (r.ok ? r.json() : null)),
+      fetch(`${dir()}/tickers.json`).then((r) => (r.ok ? r.json() : null)),
     ]);
     state.data = index;
     state.data.tickers = (tickers && tickers.items) || index.hot || [];

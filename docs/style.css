@@ -1950,8 +1950,8 @@ table.pair.cross td.hit.open::after { opacity: .9; border-bottom-style: solid; }
 }
 
 /* ==========================================================================
-   Serenity 供應鏈觀點（x.html）
-   
+   觀點（x.html）：X 上 Serenity、Elon Musk 等帳號的貼文
+
    這一頁與其他頁最大的差別：主角是**一段一段的文字**，不是數字。其他頁的一列
    是「代號＋幾個數字」，掃的是欄位；這裡的一則貼文有三百到一萬字，讀的是句子。
    所以行高、段距、每行字數都照長文的標準走，不跟排行列共用 .row。
@@ -2031,6 +2031,38 @@ button.ustag {
   border-color: var(--line);
   background: var(--surface);
 }
+
+/*
+ * 被引用的那一則。
+ *
+ * Elon 的貼文一大半是引用別人、自己只回一句「True」「Accurate」—— 不帶原文的話
+ * 那一句沒有意思。但它是**別人寫的字**，要一眼分得出來：左邊一條線、字小一號、
+ * 顏色退一階，而且作者名放在最前面。
+ */
+.x-quote {
+  display: block;
+  max-width: 65ch;
+  margin: 10px 0 0;
+  padding: 6px 0 6px 12px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.x-quote b { color: var(--text); font-weight: 600; }
+
+/* 帳號切換在最上面，跟下面那排軸同一種 pill，但要看得出是「換一個人」這一層 */
+.x-accounts .pill {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+  text-decoration: none;       /* 它是換頁的 <a>，不是 <button>，底線要拿掉 */
+}
+.x-accounts .x-accounts__blurb { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
 
 /* --------------------------------------------------------------------------
    標的列：點開展開那一檔的貼文

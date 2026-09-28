@@ -1,15 +1,20 @@
-name: 抓 Serenity 的貼文
+name: 抓 X 上的觀點貼文
 
-# 每 3 小時一次。這個頻率不是效能取捨，是資料完整性本身：
-# x.com 的公開 profile 一次只吐首屏 5 則，而他日均約 15 則 —— 每天只跑一次
-# 會漏掉大半，而且**漏掉就沒了**（單篇貼文頁未登入只回 51 字摘要，補不回來）。
-# 一天 8 次 × 5 則 = 40 則的容量，對日均 15 則留了兩倍以上的餘裕。
+# 每 30 分鐘一次，收的帳號在 scripts/xposts.py 的 ACCOUNTS（Serenity、Elon Musk）。
+# 這個頻率不是效能取捨，是資料完整性本身：x.com 的公開 profile 一次只吐首屏
+# 5 則，而 Elon 日均約 70 則 —— 跑得不夠勤就會漏，而且**漏掉就沒了**（單篇
+# 貼文頁未登入只回 51 字摘要，補不回來）。一天 48 次 × 4 則 = 192 則的容量，
+# 對日均 70 則留了兩倍半的餘裕。但他偶爾半夜一小時連發十幾則，那種時候
+# 半小時一輪（每輪 5 則）還是會漏幾則 —— 這是公開首屏這條路的上限。
+#
+# 這個 repo 是公開的，GitHub 託管的 runner 對公開 repo 不計分鐘數，
+# 一天 48 輪不會產生費用。repo 改成私有的話這個頻率要重新算。
 #
 # fetch_x.py 在「首屏整屏都是新的」時會印警告 —— 那代表兩次排程之間他發的量
 # 已經超過首屏容量，看到就把下面的間隔再調短。
 on:
   schedule:
-    - cron: "0 */3 * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -18,7 +23,7 @@ permissions:
   id-token: write
 
 # 與每日更新分開一個群組：那支要跑將近一小時，兩邊互相取消的話
-# 不是掉一天的行情就是掉三小時的貼文。推不上去的情況由下面的 rebase 處理。
+# 不是掉一天的行情就是掉半小時的貼文。推不上去的情況由下面的 rebase 處理。
 concurrency:
   group: x-update
   cancel-in-progress: false
@@ -42,7 +47,7 @@ jobs:
       # 這一條流程只用標準函式庫與 curl，不必裝 requirements.txt。
 
       # 抓不到不該讓流程紅掉 —— X 改版、暫時擋住、或 runner 的 IP 被限流都有可能，
-      # 下一次排程（三小時後）會再試。但要留得下痕跡：fetch_x.py 解析不出東西時
+      # 下一次排程（半小時後）會再試。但要留得下痕跡：fetch_x.py 解析不出東西時
       # 回非零並印出「頁面結構可能變了」，那是要有人去改 parse_profile 的訊號。
       #
       # 已知風險：GitHub 的 runner 走 Azure 的 IP 段，X 對雲端 IP 的態度隨時會變。
@@ -70,16 +75,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add docs/data/x
-          substantive=$(git diff --staged --name-only -- docs/data/x/tweets docs/data/x/ticker)
+          # 結尾的 /* 不能省：git 的 pathspec 萬用字元比的是完整檔案路徑，
+          # 'docs/data/x/*/tweets' 對不到底下任何一個檔，那樣就永遠不會提交。
+          substantive=$(git diff --staged --name-only -- 'docs/data/x/*/tweets/*' 'docs/data/x/*/ticker/*')
           if [ -z "$substantive" ]; then
             echo "只有時間戳變動，不提交（網站仍會用這一份發佈）。"
             git restore --staged docs/data/x
           else
             echo "有變動的貼文檔："
             echo "$substantive" | head -20
-            git commit -m "Serenity 貼文更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
+            git commit -m "觀點貼文更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
 
-            # 一天跑 8 次，撞上每日更新那一小時的機會不低。同 daily.yml 的理由
+            # 一天跑 48 次，撞上每日更新那一小時是一定的。同 daily.yml 的理由
             # 不能用 --force：這次的工作樹可能是幾分鐘前的，強推會把期間的改動
             # 整批回退。-X theirs 在 rebase 裡指「正在被套用的那一邊」，也就是
             # bot 自己 —— 這個 commit 只碰 docs/data/x，不會蓋到別人的東西。
@@ -114,5 +121,5 @@ jobs:
         if: steps.fetch.outcome == 'failure'
         run: |
           echo "fetch_x.py 這一輪沒抓到東西。偶爾一次是正常的（X 限流、暫時性錯誤），"
-          echo "連續幾輪都這樣就要去看 scripts/serenity.py 的 parse_profile 還對不對。"
+          echo "連續幾輪都這樣就要去看 scripts/xposts.py 的 parse_profile 還對不對。"
           exit 1
