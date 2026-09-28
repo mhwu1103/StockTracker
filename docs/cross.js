@@ -158,15 +158,63 @@ function intro(data) {
     也在漲，這個題材才算在漲。四欄量的是同一段日曆時間，各市場最後一場：${asof}。</p>`;
 }
 
+/*
+ * 這一頁所有展得開的東西：每一個族群（展開它的子題材），以及每一個有資料的
+ * 「列 | 市場」格子（展開那一格的成分股）——族群列的四格與子題材列的四格都算。
+ *
+ * 全開會重複：族群那一格給的是整族的成分股，子題材那幾格是它的子集合，同一檔
+ * 因此在兩個區塊各出現一次。那是這一頁本來的結構（手動把兩層都點開也是這樣），
+ * 「全部展開」的定義就是「每一個 ▸ 都變成 ▾」，不在這裡偷偷少開幾格。
+ */
+function expandable() {
+  const groups = [];
+  const cells = [];
+  for (const g of state.data.groups) {
+    groups.push(g.name);
+    markets().forEach((mk) => { if (g.cells[mk.k]) cells.push(`${g.name}|${mk.k}`); });
+    for (const s of g.subs) {
+      const rowId = `${g.name}|${s.name}`;
+      markets().forEach((mk) => { if (s.cells[mk.k]) cells.push(`${rowId}|${mk.k}`); });
+    }
+  }
+  return { groups, cells };
+}
+
+/** 全開了沒有。全開的時候那顆按鈕要變成「全部收起」，不然它按下去沒有任何事發生。 */
+function allExpanded() {
+  const { groups, cells } = expandable();
+  return groups.length > 0
+    && groups.every((n) => state.open.has(n))
+    && cells.every((k) => state.cells.has(k));
+}
+
+/** 全開之後會多出幾列個股——按鈕的 title 要先講，一千多列不該是按下去才知道。 */
+function expandedRows() {
+  let n = 0;
+  for (const g of state.data.groups) {
+    markets().forEach((mk) => { n += g.cells[mk.k] ? g.cells[mk.k].codes.length : 0; });
+    for (const s of g.subs) {
+      markets().forEach((mk) => { n += s.cells[mk.k] ? s.cells[mk.k].codes.length : 0; });
+    }
+  }
+  return n;
+}
+
 function controls(data) {
   const pills = (name, options, current) => `<div class="pills">${options
     .map((o) => `<button class="pill ${o.value === current ? 'active' : ''}" data-${name}="${o.value}">${esc(o.label)}</button>`)
     .join('')}</div>`;
   const spanOpts = data.spans.map((label, i) => ({ value: String(i), label }));
+  const all = allExpanded();
+  // 一顆按鈕輪流當兩個動作：展開／收起是同一件事的兩個方向，擺成兩顆永遠有一顆是死的。
+  const expand = `<div class="pills"><button class="pill wide" data-expand="${all ? 'none' : 'all'}"
+    title="${all ? '收掉所有展開的族群、子題材與個股' : `展開所有族群、子題材與四市成分股（約 ${expandedRows()} 列個股）`}"
+    >${all ? '全部收起' : '全部展開'}</button></div>`;
   return `<div class="pair-controls">
     <label class="ctl"><span>看哪一段</span>${pills('span', spanOpts, String(state.span))}</label>
     <label class="ctl"><span>怎麼比</span>${pills('mode', MODES, state.mode)}</label>
     <label class="ctl"><span>排序</span>${pills('sort', SORTS, state.sort)}</label>
+    <label class="ctl"><span>整頁</span>${expand}</label>
   </div>`;
 }
 
@@ -398,6 +446,23 @@ function render() {
 // 啟動
 // --------------------------------------------------------------------------
 document.addEventListener('click', (ev) => {
+  /*
+   * 全部展開／全部收起。要排在 .pill 前面判斷：它自己也是一顆 .pill（長相與那三組
+   * 一樣），掉進下面那一段的話 span／mode／sort 三個都是 undefined，等於白畫一次。
+   */
+  const expand = ev.target.closest('[data-expand]');
+  if (expand) {
+    if (expand.dataset.expand === 'all') {
+      const { groups, cells } = expandable();
+      groups.forEach((n) => state.open.add(n));
+      cells.forEach((k) => state.cells.add(k));
+    } else {
+      state.open.clear();
+      state.cells.clear();
+    }
+    render();
+    return;
+  }
   const pill = ev.target.closest('.pill');
   if (pill) {
     const { span, mode, sort } = pill.dataset;
