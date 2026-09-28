@@ -1356,7 +1356,12 @@ table.pair tr.t:hover > td { background: var(--surface); }
  * 就變成 15px，**比族群名（14px）還大**，階層是反的。
  *
  * 四欄數字一律 14px：跨列比數字是這一頁在做的事，數字忽大忽小就比不動。名字則
- * 一層小一階：族群 15 / 子題材 13.5 / 個股 13。
+ * 一層小一階：族群 15 / 子題材 14 / 個股 13。
+ *
+ * 一階要差得看得出來。第一版排成 15 / 13.5 / 13，而 13.5 與 13 差半個 px——
+ * 展開之後那十幾列跟點開它的那一列看起來一樣大，等於沒有階層。現在兩段各差 1px，
+ * 再讓字重接手：子題材的名字 600、個股的名字 400（原本 500，跟 600 也分不出來）。
+ * 個股列不再往下縮：12px 在這張表上細得像註腳，而那幾列才是要讀的東西。
  */
 table.pair.cross { font-size: 14px; }
 table.pair.cross tr.g > td:first-child { font-size: 15px; }
@@ -1365,7 +1370,7 @@ table.pair.cross tr.s > td:first-child {
   /* 並排表用左側色條分國別，這裡沒有國別可分。留一格縮排就好 */
   box-shadow: none;
   padding-left: 14px;
-  font-size: 13.5px;
+  font-size: 14px;
 }
 /* 子題材那一列也點得動（名字＝四市一起攤開），所以它要跟族群列一樣有 ▸ 與手指游標。
    少了這兩樣，它看起來就是最底層，沒有人會去點。 */
@@ -1398,10 +1403,12 @@ table.pair.cross .all {
 
 @media (max-width: 767px) {
   /* 手機上整體降一階。這一條要自己寫：table.pair 的 13px 選擇器比 .cross 弱，
-     不補的話手機上會停在桌面的 14px。 */
+     不補的話手機上會停在桌面的 14px。
+     三層名字一律桌面 -0.5px，三段的間距就跟桌面一樣是 1px——只降最外面那一層的話，
+     省下來的空間是從層與層的距離裡扣的，而那個距離正是階層本身。 */
   table.pair.cross { font-size: 13px; }
-  table.pair.cross tr.g > td:first-child { font-size: 14px; }
-  table.pair.cross tr.s > td:first-child { font-size: 13px; }
+  table.pair.cross tr.g > td:first-child { font-size: 14.5px; }
+  table.pair.cross tr.s > td:first-child { font-size: 13.5px; }
 
   /* 六欄在手機上本來就塞得下（題材名 + 四個兩字欄 + 最弱），不必像並排表那樣收欄。
      但名稱要讓得出位置，四欄各自縮到剛好放得下 -00.0% */
@@ -1470,7 +1477,10 @@ table.pair.cross tr.p .tag {
   color: var(--side);
 }
 table.pair.cross tr.p.tw .tag { color: var(--tw); }
-table.pair.cross tr.p .nm { font-weight: 500; }
+/* 400，不是並排表的 600、也不是第一版的 500：上一層的子題材名是 600，差一階分不出來。
+   名字在這一列本來就是最大最黑的東西（代號與收盤價 11.5px 而且是 --muted），
+   不必再靠字重去搶。 */
+table.pair.cross tr.p .nm { font-weight: 400; }
 table.pair.cross tr.p .cd {
   display: inline;
   margin-left: 8px;
