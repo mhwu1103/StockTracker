@@ -1,0 +1,118 @@
+name: 抓 Serenity 的貼文
+
+# 每 3 小時一次。這個頻率不是效能取捨，是資料完整性本身：
+# x.com 的公開 profile 一次只吐首屏 5 則，而他日均約 15 則 —— 每天只跑一次
+# 會漏掉大半，而且**漏掉就沒了**（單篇貼文頁未登入只回 51 字摘要，補不回來）。
+# 一天 8 次 × 5 則 = 40 則的容量，對日均 15 則留了兩倍以上的餘裕。
+#
+# fetch_x.py 在「首屏整屏都是新的」時會印警告 —— 那代表兩次排程之間他發的量
+# 已經超過首屏容量，看到就把下面的間隔再調短。
+on:
+  schedule:
+    - cron: "0 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# 與每日更新分開一個群組：那支要跑將近一小時，兩邊互相取消的話
+# 不是掉一天的行情就是掉三小時的貼文。推不上去的情況由下面的 rebase 處理。
+concurrency:
+  group: x-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # 與 daily.yml 同樣的理由抓完整歷史：下面推不上去時要 rebase 到遠端的新 commit。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 這一條流程只用標準函式庫與 curl，不必裝 requirements.txt。
+
+      # 抓不到不該讓流程紅掉 —— X 改版、暫時擋住、或 runner 的 IP 被限流都有可能，
+      # 下一次排程（三小時後）會再試。但要留得下痕跡：fetch_x.py 解析不出東西時
+      # 回非零並印出「頁面結構可能變了」，那是要有人去改 parse_profile 的訊號。
+      #
+      # 已知風險：GitHub 的 runner 走 Azure 的 IP 段，X 對雲端 IP 的態度隨時會變。
+      # 真的被擋的話，這一步會連續幾天都抓不到 —— 那時要改成本機或 self-hosted
+      # runner 來跑，資料格式與 build 步驟都不用動。
+      - name: 抓新貼文
+        id: fetch
+        continue-on-error: true
+        timeout-minutes: 5
+        run: python scripts/fetch_x.py
+
+      # 就算這次沒抓到新的也要重建：互動數會變，而「最近 30 天熱度」是滑動窗，
+      # 不重算的話它會停在上一次真的抓到東西的那一天。
+      - name: 重建索引
+        run: python scripts/build_x.py
+
+      # 只有「真的有貼文內容變動」才提交。
+      #
+      # index.json 與 state.json 帶著抓取時間，每一輪都會變 —— 照那個判斷的話
+      # 一天會生出 8 個內容只有時間戳的 commit。而**不提交不影響網站**：
+      # 下面的 upload-pages-artifact 打包的是 runner 上的 docs/ 目錄，不是
+      # commit 的內容，所以頁面上的「抓取於」照樣是最新的。
+      - name: 提交資料變更
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/data/x
+          substantive=$(git diff --staged --name-only -- docs/data/x/tweets docs/data/x/ticker)
+          if [ -z "$substantive" ]; then
+            echo "只有時間戳變動，不提交（網站仍會用這一份發佈）。"
+            git restore --staged docs/data/x
+          else
+            echo "有變動的貼文檔："
+            echo "$substantive" | head -20
+            git commit -m "Serenity 貼文更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
+
+            # 一天跑 8 次，撞上每日更新那一小時的機會不低。同 daily.yml 的理由
+            # 不能用 --force：這次的工作樹可能是幾分鐘前的，強推會把期間的改動
+            # 整批回退。-X theirs 在 rebase 裡指「正在被套用的那一邊」，也就是
+            # bot 自己 —— 這個 commit 只碰 docs/data/x，不會蓋到別人的東西。
+            for i in 1 2 3; do
+              if git push origin HEAD:main; then
+                pushed=1
+                break
+              fi
+              echo "推不上去（第 $i 次）：遠端前進了，拉回來 rebase 再試。"
+              git pull --rebase -X theirs origin main
+            done
+            if [ -z "$pushed" ]; then
+              echo "連續三次都推不上去，放棄。"
+              exit 1
+            fi
+          fi
+
+      # 與 daily.yml 同樣由流程直接發佈，不倚賴 push 觸發 —— bot 的 push
+      # 不會觸發後續事件，那條路會讓網站停在舊資料。
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+      # 抓取那一步是 continue-on-error，失敗時整個流程仍然是綠的。
+      # 連續失敗會讓資料悄悄停住，所以這裡明確地讓它紅一次。
+      - name: 抓取失敗就讓流程紅
+        if: steps.fetch.outcome == 'failure'
+        run: |
+          echo "fetch_x.py 這一輪沒抓到東西。偶爾一次是正常的（X 限流、暫時性錯誤），"
+          echo "連續幾輪都這樣就要去看 scripts/serenity.py 的 parse_profile 還對不對。"
+          exit 1

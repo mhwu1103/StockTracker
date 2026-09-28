@@ -1948,3 +1948,181 @@ table.pair.cross td.hit.open::after { opacity: .9; border-bottom-style: solid; }
   .pill:hover { border-color: var(--accent); }
   .linky:hover { text-decoration: underline; }
 }
+
+/* ==========================================================================
+   Serenity 供應鏈觀點（x.html）
+   
+   這一頁與其他頁最大的差別：主角是**一段一段的文字**，不是數字。其他頁的一列
+   是「代號＋幾個數字」，掃的是欄位；這裡的一則貼文有三百到一萬字，讀的是句子。
+   所以行高、段距、每行字數都照長文的標準走，不跟排行列共用 .row。
+   ========================================================================== */
+
+.x-post { padding: 12px 14px; }
+
+.x-post__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.x-post__ago { opacity: 0.75; }
+
+/*
+ * 貼文正文。
+ *
+ * pre-wrap 是必須的：他的貼文靠空行分段，那些換行就是結構（一行一個論點、
+ * 空行分節）。摺掉之後整則會變成一大塊，讀起來完全是另一回事。
+ *
+ * 65ch 是長文的可讀行寬上限。桌面全寬時一行會到一百多個字，眼睛回到行首時
+ * 找不到下一行在哪 —— 這一頁在桌面上尤其明顯，因為卡片本來就撐滿欄寬。
+ */
+.x-post__body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 65ch;
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+.x-post__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 展開／收合是次要動作，不該長得跟上面那排軸一樣重 */
+.x-post__foot .pill {
+  min-height: 32px;
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+/* 內文裡的 $代號：點得動，但在一段文字中間不可以看起來像按鈕 */
+button.ustag {
+  display: inline;
+  background: none;
+  font: inherit;
+  font-size: 0.95em;
+  color: var(--accent);
+  border-color: transparent;
+  cursor: pointer;
+}
+
+/* 貼文底下那排標的則相反，它們是清單不是句子，要看得出是一顆一顆的 */
+.x-post .conds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 0;
+}
+
+.x-post .conds .ustag {
+  display: inline-block;
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+/* --------------------------------------------------------------------------
+   標的列：點開展開那一檔的貼文
+   -------------------------------------------------------------------------- */
+
+.x-tick__head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 4px 10px;
+  width: 100%;
+  padding: 12px 14px;
+  background: none;
+  border: 0;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.x-tick__sym {
+  font-weight: 600;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.x-tick__name {
+  color: var(--muted);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.x-tick__num,
+.x-tick__ago {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/*
+ * 族群標籤與提及次數在手機上換到第二列。
+ *
+ * 三欄擠在一列時，族群名（「光通訊 · CPO · 矽光子」）會把右邊的次數推出畫面，
+ * 而次數正是排序的依據 —— 排序看不到依據，那個排序就等於不存在。
+ */
+.x-tick__chips {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.x-tick__chips .chip {
+  margin: 0;
+  padding: 1px 8px;
+  font-size: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+}
+
+/* 對得上台股族群的那幾檔要看得出來——它們是能直接接回既有頁面的那一批 */
+.x-tick__chips .chip.accent {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent);
+}
+
+.x-tick.is-open .x-tick__head { border-bottom: 1px solid var(--line); }
+
+/*
+ * 展開後的貼文用底色壓一層，並且縮排。
+ *
+ * 展開的內容與外面的標的列是同一種卡片，不做區隔的話捲到一半會分不出
+ * 「這一則是誰的」—— 尤其展開兩檔之後，中間那條邊界在視覺上消失。
+ */
+.x-tick__body {
+  padding: 10px 10px 2px;
+  background: var(--bg);
+}
+
+.x-tick__body .x-post {
+  margin-bottom: 10px;
+  border-radius: 10px;
+}
+
+/* 族群軸是「族群 → 標的 → 貼文」三層，最裡面那層不要再疊一次底色 */
+.x-tick__body .x-tick__body { background: none; padding: 0 0 0 8px; }
+
+@media (min-width: 768px) {
+  /* 寬度夠了就把族群標籤收回同一列，右邊留給次數與時間 */
+  .x-tick__head { grid-template-columns: auto auto 1fr auto auto; }
+  .x-tick__chips { grid-column: auto; flex-wrap: nowrap; }
+}
