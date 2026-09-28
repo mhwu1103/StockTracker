@@ -52,6 +52,9 @@ window.StockNav = (function () {
       { v: 'x', label: '觀點', href: 'x.html' }] },
     { key: 'find', label: '查詢', views: [
       { v: 'stock', label: '個股' }, { v: 'compare', label: '對照' }] },
+    // 紀律不回答「市場上發生了什麼」，回答「照規則我今天該做什麼」—— 跟上面六組都不是
+    // 同一種問題，所以自成一組，而不是塞進技術或資金裡當第五個分頁。
+    { key: 'rule', label: '紀律', views: [{ v: 'rule', label: '紀律', href: 'rule.html' }] },
   ];
 
   /*
@@ -94,8 +97,10 @@ window.StockNav = (function () {
     const tabs = document.querySelector('.tabs');
     if (tabs) {
       tabs.innerHTML = NAV.map((g) => {
-        const hash = navLast[g.key] || `#/${g.views[0].v}`;
-        return `<a class="${g.key === group.key ? 'active' : ''}" href="${esc(base + hash)}"`
+        // 整組只有獨立頁的（紀律）沒有 hash 可以記，直接連到那一頁
+        const first = g.views[0];
+        const url = navLast[g.key] ? base + navLast[g.key] : first.href || `${base}#/${first.v}`;
+        return `<a class="${g.key === group.key ? 'active' : ''}" href="${esc(url)}"`
           + `>${esc(g.label)}</a>`;
       }).join('');
     }

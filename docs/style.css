@@ -233,8 +233,8 @@ select, input, button {
   display: flex;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
-  /* 目前六個群組在 390px 上剛好排得下（各 63px），這條橫向捲是留給「哪天又多一個」
-     的安全網：寧可整排捲，也不要把兩個字折成上下兩行——那比捲動難讀得多。 */
+  /* 目前七個群組在 390px 上排得下（各 55px，兩個字加 padding 只要 34px），這條橫向捲
+     是留給「哪天又多幾個」的安全網：寧可整排捲，也不要把兩個字折成上下兩行——那比捲動難讀得多。 */
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -2126,3 +2126,161 @@ button.ustag {
   .x-tick__head { grid-template-columns: auto auto 1fr auto auto; }
   .x-tick__chips { grid-column: auto; flex-wrap: nowrap; }
 }
+
+/* --------------------------------------------------------------------------
+ * 操盤紀律（rule.html）
+ *
+ * 這一頁的顏色有第三種意思：「規則叫你做什麼」。紅綠已經被漲跌佔滿了（持股列裡
+ * 同時就有漲跌數字），拿紅色標「該出場」會被讀成「這一檔在漲」。所以出場／警戒用
+ * 琥珀與磚紅（--star1／--side），續抱用主色，而且每一個狀態都有文字，不只靠顏色。
+ * -------------------------------------------------------------------------- */
+.rule-good { color: var(--accent); font-weight: 600; }
+.rule-bad { color: var(--star1); font-weight: 600; }
+
+/* 溫控水位：整頁最先要讀到的那一句 */
+.rule-level {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  box-shadow: inset 4px 0 0 var(--rule-tone);
+  background: color-mix(in srgb, var(--rule-tone) 8%, var(--surface));
+}
+.rule-level b { font-size: 18px; color: var(--rule-tone); }
+.rule-level span { font-size: 14px; }
+.rule-level--ok { --rule-tone: var(--accent); }
+.rule-level--warn { --rule-tone: var(--star1); }
+.rule-level--stop { --rule-tone: var(--side); }
+
+.rule-ladder {
+  list-style: none;
+  margin: 0;
+  padding: 4px 14px;
+  border-top: 1px solid var(--line);
+}
+.rule-ladder li {
+  display: grid;
+  grid-template-columns: 8.5em 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 0;
+  font-size: 13px;
+  color: var(--muted);
+  border-bottom: 1px dashed var(--line);
+}
+.rule-ladder li:last-child { border-bottom: 0; }
+.rule-ladder li.is-on { color: var(--star1); font-weight: 600; }
+.rule-ladder__now { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.rule-chart { margin: 0; padding: 8px 14px 4px; border-top: 1px solid var(--line); }
+.rule-chart svg { display: block; width: 100%; height: 160px; }
+.rule-line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.rule-line--c { stroke: var(--text); stroke-width: 2; }
+.rule-line--10 { stroke: var(--accent); }
+.rule-line--20 { stroke: var(--star2); }
+.rule-line--60 { stroke: var(--star1); }
+.rule-chart figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.rule-key::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+  background: currentColor;
+}
+.rule-key.rule-line--c { color: var(--text); }
+.rule-key.rule-line--10 { color: var(--accent); }
+.rule-key.rule-line--20 { color: var(--star2); }
+.rule-key.rule-line--60 { color: var(--star1); }
+.rule-key__range { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+/* 持股列：門派｜名稱與判決｜價格。判決那兩行要能折行，不能切掉 */
+.rule-pos { align-items: start; }
+.rule-pos .ident .rule-say { display: block; font-size: 13px; font-weight: 600; margin-top: 2px; }
+.rule-pos .ident .rule-detail { display: block; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.rule-pos--exit { box-shadow: inset 4px 0 0 var(--side); }
+.rule-pos--exit .rule-say { color: var(--side); }
+.rule-pos--buy .rule-say { color: var(--star1); }
+.rule-pos--hold .rule-say { color: var(--accent); }
+.rule-pos--na .rule-say { color: var(--muted); }
+.rule-school {
+  align-self: start;
+  justify-self: center;
+  margin-top: 2px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.rule-pos .figures .rule-del,
+.rule-scan .figures .linky { margin: 6px 0 0; }
+
+.rule-scan { grid-template-columns: 1fr auto; }
+
+.rule-cash { padding: 0 14px 12px; }
+.rule-cash label,
+.rule-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.rule-cash input { width: 100%; max-width: 240px; }
+
+.rule-add { border-top: 1px solid var(--line); }
+.rule-add > summary,
+.rule-more > summary {
+  padding: 12px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+.rule-more { border-top: 1px solid var(--line); }
+.rule-more[open] > summary { border-bottom: 1px solid var(--line); }
+
+.rule-form { padding: 0 14px 14px; }
+.rule-form__row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+.rule-form__row input,
+.rule-form__row select { width: 100%; min-width: 0; }
+.rule-form__preview { min-height: 1.5em; margin: 0 0 8px; font-size: 13px; }
+.rule-oath {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.rule-oath legend { padding: 0 4px; font-size: 12px; font-weight: 600; }
+.rule-oath label {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 13px;
+  color: var(--text);
+}
+.rule-oath input { min-height: 0; margin-top: 3px; flex: 0 0 auto; }
+.rule-form button[disabled] { opacity: .45; cursor: not-allowed; }
+
+.rule-controls { align-items: center; padding: 12px 14px 0; }
+.rule-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.rule-toggle input { min-height: 0; }
+.rule-funnel { padding: 0 14px; }
+.card > .lede.rule-bad { font-size: 13px; }
+
+.rule-rules { list-style: none; margin: 0; padding: 4px 14px; }
+.rule-rules li { padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+.rule-rules li:last-child { border-bottom: 0; }
+.rule-rules li b { display: block; }
+.rule-rules li span { color: var(--muted); }
+
+.rule-matrix th,
+.rule-matrix td { text-align: center; }
+.rule-matrix thead small { font-weight: 400; }

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>四市題材</title>
-<meta name="description" content="美、日、韓、台四個市場同一段時間的題材漲跌，找出哪些題材是四市一起在漲">
+<title>操盤紀律</title>
+<meta name="description" content="大盤溫控、持股出場線、短中線進場訊號與六大鐵律：照規則走，不照情緒走">
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#0f1216">
 <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
@@ -14,18 +14,17 @@
      否則深色使用者每次開頁都會先被白底閃一下。理由完整版在 theme.js 的開頭。 -->
 <script src="theme.js?v=66"></script>
 </head>
-<!-- data-view 告訴 nav.js：這是獨立頁面，而且停在「四市」那一項。
-     這一頁不吃 pair.js（那一支是兩欄的外國 vs 台灣），所以不必進它的 MARKETS。 -->
-<body data-view="cross">
+<!-- data-view 告訴 nav.js：這是獨立頁面，而且停在「紀律」那一項 -->
+<body data-view="rule">
 
 <header class="app-bar">
   <div class="app-bar__top">
-    <h1>四市題材</h1>
+    <h1>操盤紀律</h1>
   </div>
   <p class="app-bar__meta" id="meta">載入中…</p>
 </header>
 
-<!-- 與排行榜同一套兩層導覽，由 nav.js 從同一份 NAV 畫出來 -->
+<!-- 與排行榜同一套兩層導覽，由 nav.js 從同一份 NAV 畫出來。 -->
 <nav class="tabs"></nav>
 <nav class="subtabs"></nav>
 
@@ -34,11 +33,11 @@
 </main>
 
 <footer class="foot">
-  外股報價來源：Yahoo Finance；台股為本站自己的日 K 線。四欄量的是同一段日曆時間，
-  但各市場的假期不同，最後一場可能差一兩天，頁面上會標出來。僅供參考，非投資建議。
+  規則整理自《股市大贏家》系列的操作手冊：鐵血六律、動能趨勢投資法與系統化操盤守則。
+  這一頁只照收盤價與均線機械式地套規則，不是投資建議；持股只存在這台裝置的瀏覽器裡。
 </footer>
 
 <script src="nav.js?v=66" defer></script>
-<script src="cross.js?v=66" defer></script>
+<script src="rule.js?v=66" defer></script>
 </body>
 </html>

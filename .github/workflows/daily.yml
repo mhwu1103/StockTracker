@@ -44,6 +44,12 @@ jobs:
       - name: 補抓遺漏的交易日
         run: python scripts/backfill.py --days 14 --sleep 4
 
+      # 紀律頁的大盤溫控。每次重抓這個月與上個月再與舊檔合併，排程漏跑幾天也補得回來。
+      # 掛掉只影響紀律頁那一張卡，不該連帶讓當日行情更新失敗。
+      - name: 抓加權指數
+        continue-on-error: true
+        run: python scripts/fetch_taiex.py
+
       # 產業別幾乎不會變，但它只是輔助資訊：證交所這支 API 掛掉時
       # 不該連帶讓當日行情更新失敗，所以允許這一步出錯。
       - name: 更新產業別對照
@@ -135,6 +141,12 @@ jobs:
       - name: 重建法人目錄與外資連續買賣超
         continue-on-error: true
         run: python scripts/build_institutions.py
+
+      # 要放在 build_institutions.py 後面：短線訊號的「外資連買」讀的是它剛寫出來的
+      # insti/streak/。放在前面也不會報錯，只是那一欄會是昨天的、或整欄空的。
+      - name: 重建紀律頁的出場線
+        continue-on-error: true
+        run: python scripts/build_rule.py
 
       # 要放在 build_history.py 後面：相關性的台股那一邊吃 index.json 的交易日軸與
       # kline/，兩者都是那一步寫的。排在它前面的話，算出來的 twAsof 會停在上一次
