@@ -29,7 +29,7 @@
 | 技術 | 爆量 · 均線 · MACD | 價量出現什麼訊號 |
 | 籌碼 | 大戶 · 法人 · 買超 · 連買 · 雷達 | 誰在買、買了多久 |
 | 資金 | 族群 · 流向 · 大盤 | 錢往哪一族去 |
-| 環境 | 報價 · 美股 · 日股 · 韓股 · 四市 · 觀點 | 上游報價、昨夜美股、同盤的日股與韓股、四個市場橫著比、供應鏈上有人在講什麼 |
+| 環境 | 報價 · 美股 · 日股 · 韓股 · 四市 · 觀點 · 川普 | 上游報價、昨夜美股、同盤的日股與韓股、四個市場橫著比、供應鏈上有人在講什麼、白宮在講什麼政策 |
 | 查詢 | 個股 · 對照 | 查一檔、比兩天 |
 
 分頁清單只寫在 `docs/nav.js` 的 `NAV` 一處，`index.html` 與三個獨立頁都只列群組——
@@ -289,7 +289,43 @@ cookie、不碰登入狀態、不用 API key。但**首屏一次只有 5 則，�
 這一頁不翻譯也不評價，只負責讓你查得到他說過什麼、什麼時候說的。他的貼文是一個人的判斷，
 多半是還沒被市場確認的推論。
 
-### 第六頁：操盤紀律
+### 第六頁：川普政策觀點
+
+`trump.html`，入口在「川普」。X 上 [@realDonaldTrump](https://x.com/realDonaldTrump) 的公開貼文，
+依**政策主題**索引。擷取走的是與 Serenity 同一條路（`scripts/trump.py` 直接借 `serenity.py`
+的解析），排程也搭同一條 `.github/workflows/x.yml`，每 3 小時一次。
+
+跟 Serenity 那頁的差別在索引軸。Serenity 講個股、寫 `$代號`，所以那頁是「代號 → 族群」；
+他講的是關稅、晶片、利率、戰事，而且**一個 `$` 都不寫**（拿 Truth Social 存檔的 2.9 萬則
+驗過，cashtag 是 0 個）——那些話一出來台股是整族一起跳空，所以這一頁是「主題 → 族群」。
+主題是英文關鍵字比對，表在 `scripts/trump.py` 的 `TOPICS`，每一條都寫了它對到哪幾族；
+族群名稱必須與 `us_link.json` 一字不差，`build_trump.py` 每一輪都會核對。
+
+三個軸：**最近**（時間軸，影片與文字都在）、**主題**（各講了幾次、最近熱度在哪）、
+**族群**（哪一族最近被他的哪幾個主題碰到）。
+
+#### 他在 X 上多半只發影片
+
+實測首屏 5 則全是影片（2026-09-27 六分鐘內連發五段），`full_text` 只有一個 t.co——
+那就是影片本身。解析時照 `media_entities2[].indices` 把那段 t.co 從內文切掉、影片另存成
+縮圖與長度，否則畫面上會是一整排「https://t.co/…」。其餘的 t.co 換成展開後的網址。
+
+影片沒有字，主題標不上去。主題與族群兩軸只涵蓋有文字的那部分，頁面上直接寫出「幾則裡
+有幾則只有影片」——否則「關稅 3 則」看起來會像是他只講過三次。
+
+#### 為什麼不收 Truth Social
+
+他的文字發言主要在那邊，但：公開 API 回 Cloudflare 403；GitHub 上
+`stiles/trump-truth-social-archive` 的社群存檔 2025-10 之後斷斷續續、最後一則停在
+2026-05-02，還有編碼亂碼。只能當歷史、接不了即時，所以這一頁只看 X，歷史從第一次排程開始
+累積（沒有 `--seed`）。
+
+#### 主題每一輪重標
+
+月檔裡的 `topics` 是抓到那一刻的標法。關鍵字表之後一定會改，所以 `build_trump.py` 每一輪
+都拿全文重標，否則改表之後新舊兩批會在同一個主題底下混著兩種標準。
+
+### 第七頁：操盤紀律
 
 `rule.html`，入口在「紀律」。把《股市大贏家》系列操作手冊的規則變成每天打開就知道
 該做什麼的一頁，由上而下是手冊裡「大贏家飛輪」的順序：
@@ -378,6 +414,7 @@ localStorage，不會上傳，換裝置或清除瀏覽資料就會消失。
 | 日股日線（族群頁） | `https://query1.finance.yahoo.com/v8/finance/chart/{四碼}.T?range=1y&interval=1d` |
 | 韓股日線（族群頁） | `https://query1.finance.yahoo.com/v8/finance/chart/{六碼}.{KS,KQ}?range=1y&interval=1d` |
 | Serenity 的公開貼文（觀點頁） | `https://x.com/aleabitoreddit`（讀首屏的伺服器端資料，不登入） |
+| 川普的公開貼文（川普頁） | `https://x.com/realDonaldTrump`（同上，讀首屏） |
 | Serenity 的歷史存檔（一次性灌入） | `https://raw.githubusercontent.com/yan-labs/serenity-aleabitoreddit/HEAD/data/aleabitoreddit_tweets.json` |
 | 報價與集保歷史回補 | `http://web.archive.org/cdx/search/cdx` + `https://web.archive.org/web/{時間戳}id_/…` |
 
@@ -445,6 +482,11 @@ scripts/
                     把社群維護的歷史存檔灌進來（標 src: archive）
   build_x.py        由月檔出索引 → docs/data/x/{index,tickers}.json 與 ticker/。
                     與 us_link.json 對照，標出哪幾檔接得回台股族群
+  trump.py          共用：X 帳號 @realDonaldTrump 的解析補充（影片、展開連結）與
+                    政策主題的關鍵字表 TOPICS（主題 → 台股族群）
+  fetch_trump.py    抓新貼文 → docs/data/trump/tweets/YYYY-MM.json
+  build_trump.py    由月檔出索引 → docs/data/trump/index.json 與 topic/。
+                    每一輪拿全文重標主題，並核對族群名稱與 us_link.json 一致
   fetch_taiex.py    抓加權指數每日收盤（證交所 FMTQIK）→ docs/data/taiex.json。
                     平常重抓當月與上月；--months 15 是首次回補（年線要 240 天）
   build_rule.py     紀律頁 → docs/data/rule.json：全市場每一檔在 10／20／60／240
@@ -477,6 +519,8 @@ docs/               GitHub Pages 網站根目錄
   x.html x.js        「Serenity 供應鏈觀點」——X 上 @aleabitoreddit 的貼文，依標的索引，
                     入口在「觀點」。全站唯一一頁主角是文字不是數字的，所以行高與
                     行寬照長文的標準走，不共用 .row
+  trump.html trump.js 「川普政策觀點」——X 上 @realDonaldTrump 的貼文，依政策主題索引，
+                    入口在「川普」。沿用 x.html 的卡片樣式，另外畫影片縮圖
   jp.html kr.html    「日股 × 台股族群」與「韓股 × 台股族群」，入口在「日股」「韓股」。
   pair.js            與美股那頁的差別是它們**不算相關係數**，只並排漲跌幅，理由見下。
                     兩頁的資料形狀一樣（同一支 build_pair.py 出的），所以共用
@@ -519,6 +563,12 @@ docs/               GitHub Pages 網站根目錄
                     另帶整份 taiex。判斷規則不在檔案裡，在 docs/rule.js
     x/state.json    抓取游標與健康狀態：最後一則的 id、上次抓到東西是什麼時候。
                     排程停掉或頁面結構變了的話，這一份是唯一看得出來的地方
+    trump/tweets/YYYY-MM.json  川普的貼文，一個月一檔。內文（媒體的 t.co 已切掉）、
+                    media（類型、縮圖、影片長度）、互動數與觀看數、topics
+    trump/index.json 川普頁的首頁：近期 150 則摘要、每個主題的次數／近 30 天熱度／
+                    對應族群、只有影片的貼文有幾則
+    trump/topic/<主題>.json  那個主題的每一則貼文摘要
+    trump/state.json 同 x/state.json
     cross/index.json 四市題材頁直接讀的表：一族一列，四個市場各一格中位數與成分股代號，
                     加上各市場自己的大盤（超額要拿它減）與每一段的起訖日期。
                     個股列按市場存在頂層的 stocks，格子裡只留代號 —— 同一檔會被好幾格

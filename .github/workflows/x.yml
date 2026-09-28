@@ -1,9 +1,12 @@
-name: 抓 Serenity 的貼文
+name: 抓 X 上的觀點貼文（Serenity、川普）
 
 # 每 3 小時一次。這個頻率不是效能取捨，是資料完整性本身：
 # x.com 的公開 profile 一次只吐首屏 5 則，而他日均約 15 則 —— 每天只跑一次
 # 會漏掉大半，而且**漏掉就沒了**（單篇貼文頁未登入只回 51 字摘要，補不回來）。
 # 一天 8 次 × 5 則 = 40 則的容量，對日均 15 則留了兩倍以上的餘裕。
+#
+# 川普（@realDonaldTrump，trump.html）搭同一條流程：同樣是首屏 5 則、同樣要常跑，
+# 另開一條的話兩條流程會在同一時間搶著推 main、搶著發佈 Pages。
 #
 # fetch_x.py 在「首屏整屏都是新的」時會印警告 —— 那代表兩次排程之間他發的量
 # 已經超過首屏容量，看到就把下面的間隔再調短。
@@ -54,10 +57,21 @@ jobs:
         timeout-minutes: 5
         run: python scripts/fetch_x.py
 
+      # 兩個帳號分開抓、分開 continue-on-error：一邊被擋不該拖著另一邊一起沒資料。
+      - name: 抓川普的新貼文
+        id: fetch_trump
+        continue-on-error: true
+        timeout-minutes: 5
+        run: python scripts/fetch_trump.py
+
       # 就算這次沒抓到新的也要重建：互動數會變，而「最近 30 天熱度」是滑動窗，
       # 不重算的話它會停在上一次真的抓到東西的那一天。
       - name: 重建索引
         run: python scripts/build_x.py
+
+      # 川普那一頁的主題是每一輪拿全文重標的（見 build_trump.py），同樣每次都重建。
+      - name: 重建川普的索引
+        run: python scripts/build_trump.py
 
       # 只有「真的有貼文內容變動」才提交。
       #
@@ -69,20 +83,20 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/data/x
-          substantive=$(git diff --staged --name-only -- docs/data/x/tweets docs/data/x/ticker)
+          git add docs/data/x docs/data/trump
+          substantive=$(git diff --staged --name-only -- docs/data/x/tweets docs/data/x/ticker             docs/data/trump/tweets docs/data/trump/topic)
           if [ -z "$substantive" ]; then
             echo "只有時間戳變動，不提交（網站仍會用這一份發佈）。"
-            git restore --staged docs/data/x
+            git restore --staged docs/data/x docs/data/trump
           else
             echo "有變動的貼文檔："
             echo "$substantive" | head -20
-            git commit -m "Serenity 貼文更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
+            git commit -m "X 觀點貼文更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
 
             # 一天跑 8 次，撞上每日更新那一小時的機會不低。同 daily.yml 的理由
             # 不能用 --force：這次的工作樹可能是幾分鐘前的，強推會把期間的改動
             # 整批回退。-X theirs 在 rebase 裡指「正在被套用的那一邊」，也就是
-            # bot 自己 —— 這個 commit 只碰 docs/data/x，不會蓋到別人的東西。
+            # bot 自己 —— 這個 commit 只碰 docs/data/x 與 docs/data/trump，不會蓋到別人的東西。
             for i in 1 2 3; do
               if git push origin HEAD:main; then
                 pushed=1
@@ -111,8 +125,9 @@ jobs:
       # 抓取那一步是 continue-on-error，失敗時整個流程仍然是綠的。
       # 連續失敗會讓資料悄悄停住，所以這裡明確地讓它紅一次。
       - name: 抓取失敗就讓流程紅
-        if: steps.fetch.outcome == 'failure'
+        if: steps.fetch.outcome == 'failure' || steps.fetch_trump.outcome == 'failure'
         run: |
-          echo "fetch_x.py 這一輪沒抓到東西。偶爾一次是正常的（X 限流、暫時性錯誤），"
-          echo "連續幾輪都這樣就要去看 scripts/serenity.py 的 parse_profile 還對不對。"
+          echo "Serenity：${{ steps.fetch.outcome }}　川普：${{ steps.fetch_trump.outcome }}"
+          echo "偶爾一次是正常的（X 限流、暫時性錯誤），連續幾輪都這樣就要去看"
+          echo "scripts/serenity.py 的 parse_profile（兩個帳號共用）與 scripts/trump.py 的媒體解析。"
           exit 1
