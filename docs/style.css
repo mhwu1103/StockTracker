@@ -2128,55 +2128,13 @@ button.ustag {
 }
 
 /* --------------------------------------------------------------------------
-   川普政策觀點（trump.html）：沿用上面整套 x-post／x-tick，只多了媒體縮圖
+   川普政策觀點（trump.html）：沿用上面整套 x-post／x-tick
    -------------------------------------------------------------------------- */
 
-/*
- * 他在 X 上多半只發影片，一則貼文沒有一個字。縮圖就是那一則的全部內容，
- * 所以它要夠大到看得出畫面是誰在講話，但不能大過 65ch 的正文欄寬 ——
- * 否則文字貼文與影片貼文交錯時，版面左右寬度會一直跳。
- */
-.x-media {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 6px;
-  max-width: min(65ch, 100%);
-  margin-top: 4px;
-}
+/* 主題展開後「再看更早的」：放在一串貼文的最後，跟貼文卡片同寬才看得出它屬於這一串 */
+.x-more { display: block; width: 100%; margin: 0 0 10px; }
 
-.x-media__item {
-  position: relative;
-  display: block;
-  aspect-ratio: 16 / 9;
-  overflow: hidden;
-  border-radius: 8px;
-  background: var(--bg);
-}
-
-/* 只有一段影片（最常見的情況）時佔滿整欄，不要縮成一格小縮圖 */
-.x-media__item:only-child { grid-column: 1 / -1; }
-
-.x-media__item img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-/* 疊在縮圖上的字：底色固定深色，亮暗模式都要讀得到 */
-.x-media__badge {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: rgb(0 0 0 / 0.72);
-  color: #fff;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-/* 「主題只涵蓋有文字的貼文」那一句：是前言的註腳，不是空狀態，不能用置中的 .hint */
+/* 「背書文不算進主題」那一句：是前言的註腳，不是空狀態，不能用置中的 .hint */
 .x-cover {
   margin: 0;
   padding: 10px 14px 12px;

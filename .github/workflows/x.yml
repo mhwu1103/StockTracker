@@ -5,8 +5,9 @@ name: 抓 X 上的觀點貼文（Serenity、川普）
 # 會漏掉大半，而且**漏掉就沒了**（單篇貼文頁未登入只回 51 字摘要，補不回來）。
 # 一天 8 次 × 5 則 = 40 則的容量，對日均 15 則留了兩倍以上的餘裕。
 #
-# 川普（@realDonaldTrump，trump.html）搭同一條流程：同樣是首屏 5 則、同樣要常跑，
-# 另開一條的話兩條流程會在同一時間搶著推 main、搶著發佈 Pages。
+# 川普（trump.html）搭同一條流程：Truth Social（經由 trumpstruth.org）加上 X 首屏，
+# 另開一條的話兩條流程會在同一時間搶著推 main、搶著發佈 Pages。Truth Social 那邊
+# 漏了會自己往回翻頁補（見 fetch_trump.py），所以頻率對它不是完整性問題。
 #
 # fetch_x.py 在「首屏整屏都是新的」時會印警告 —— 那代表兩次排程之間他發的量
 # 已經超過首屏容量，看到就把下面的間隔再調短。
@@ -58,7 +59,7 @@ jobs:
         run: python scripts/fetch_x.py
 
       # 兩個帳號分開抓、分開 continue-on-error：一邊被擋不該拖著另一邊一起沒資料。
-      - name: 抓川普的新貼文
+      - name: 抓川普的新貼文（Truth Social＋X）
         id: fetch_trump
         continue-on-error: true
         timeout-minutes: 5
@@ -84,7 +85,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add docs/data/x docs/data/trump
-          substantive=$(git diff --staged --name-only -- docs/data/x/tweets docs/data/x/ticker             docs/data/trump/tweets docs/data/trump/topic)
+          substantive=$(git diff --staged --name-only -- docs/data/x/tweets docs/data/x/ticker             docs/data/trump/truth docs/data/trump/tweets docs/data/trump/topic)
           if [ -z "$substantive" ]; then
             echo "只有時間戳變動，不提交（網站仍會用這一份發佈）。"
             git restore --staged docs/data/x docs/data/trump
@@ -129,5 +130,6 @@ jobs:
         run: |
           echo "Serenity：${{ steps.fetch.outcome }}　川普：${{ steps.fetch_trump.outcome }}"
           echo "偶爾一次是正常的（X 限流、暫時性錯誤），連續幾輪都這樣就要去看"
-          echo "scripts/serenity.py 的 parse_profile（兩個帳號共用）與 scripts/trump.py 的媒體解析。"
+          echo "scripts/serenity.py 的 parse_profile（兩個帳號共用），川普那邊另外看"
+          echo "scripts/trump.py 的 parse_truth_list（trumpstruth.org 的列表頁結構）。"
           exit 1

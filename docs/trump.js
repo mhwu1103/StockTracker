@@ -1,5 +1,5 @@
 /*
- * 川普政策觀點（trump.html）：X 上 @realDonaldTrump 的貼文，依政策主題索引。
+ * 川普政策觀點（trump.html）：他在 Truth Social 與 X 上寫的字，依政策主題索引。
  *
  * 回答的問題：**他最近在講什麼政策，而那會先打到台股的哪一族**。
  *
@@ -7,21 +7,25 @@
  * 是「代號 → 族群」；他講的是關稅、晶片、利率、戰事，而且一個 $ 都不寫 ——
  * 那些話一出來台股是整族一起跳空，所以這一頁是「主題 → 族群」：
  *
- *   最近   他這幾天發了什麼（時間軸，影片與文字都在）
+ *   最近   他這幾天寫了什麼（時間軸）
  *   主題   關稅、晶片、利率…各講了幾次、最近熱度在哪（點開看每一則）
  *   族群   照台股族群分：哪一族最近被他的哪幾個主題碰到
  *
- * ## 他在 X 上多半發影片
+ * 只收他自己寫的字：影片、純連結、轉發都不在資料裡（理由見 scripts/trump.py）。
  *
- * 影片貼文沒有一個字，主題標不上去。所以主題與族群兩軸只涵蓋「有文字的那部分」，
- * 頁面上要把這件事說出來 —— 否則「關稅 3 則」看起來像是他只講過三次，而實際上
- * 是另外那幾十段影片裡講了什麼，這裡讀不到。
+ * ## 背書文預設收起來
+ *
+ * 他有字的貼文約兩成是替候選人背書，每一則都附一段制式政見（汽油、軍隊、關稅…）。
+ * 那些不標主題，最近那一軸也預設不列 —— 否則一打開整片都是「X has my Complete
+ * and Total Endorsement」，真正講政策的那幾則被擠到下面。
  *
  * 主題的關鍵字表在 scripts/trump.py 的 TOPICS，數字由 build_trump.py 算好。
  */
 
 const DATA = 'data/trump';
-const X_USER = 'realDonaldTrump';
+// 月檔在哪個目錄：摘要帶著 src，全文要去對應來源的月檔拿
+const SRC_DIR = { truth: 'truth', x: 'tweets' };
+const SRC_LABEL = { truth: 'Truth Social', x: 'X' };
 
 const VIEWS = [
   { value: 'recent', label: '最近' },
@@ -29,21 +33,24 @@ const VIEWS = [
   { value: 'group', label: '族群' },
 ];
 
-// 最近那一軸的篩選。影片佔大宗，只想看他寫了什麼的時候要濾得掉。
+// 最近那一軸的篩選
 const KINDS = [
+  { value: 'policy', label: '不含背書' },
   { value: 'all', label: '全部' },
-  { value: 'text', label: '有文字' },
-  { value: 'media', label: '只有影片' },
+  { value: 'endorse', label: '只看背書' },
 ];
 
 const state = {
   data: null,
   view: 'recent',
-  kind: 'all',
+  kind: 'policy',
   openK: new Set(),     // 展開中的主題
   openG: new Set(),     // 展開中的族群
   openP: new Set(),     // 展開全文的貼文 id
+  shown: new Map(),     // 每個主題目前畫了幾則
 };
+
+const PAGE = 40;
 
 const KEYS = { view: 'stocktracker.trumpview', kind: 'stocktracker.trumpkind' };
 
@@ -84,12 +91,6 @@ function ago(iso) {
   return mon < 12 ? `${mon} 個月前` : `${Math.floor(mon / 12)} 年前`;
 }
 
-function duration(ms) {
-  if (!ms) return '';
-  const s = Math.round(ms / 1000);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-}
-
 function pills(name, options, current) {
   return `<div class="pills">${options
     .map((o) => `<button class="pill ${o.value === current ? 'active' : ''}" data-${name}="${o.value}">${esc(o.label)}</button>`)
@@ -114,25 +115,8 @@ function groupChips(groups) {
 // 一則貼文
 // --------------------------------------------------------------------------
 
-/**
- * 影片與圖片畫成縮圖，點了到 X 上看。
- *
- * 不在這裡內嵌播放：X 的影片網址是帶簽章的 HLS，會過期，存下來的連結過幾天
- * 就播不動了。縮圖（pbs.twimg.com）則是穩定的。
- */
-function mediaBlock(p) {
-  const media = p.media || [];
-  if (!media.length) return '';
-  const href = `https://x.com/${X_USER}/status/${esc(p.id)}`;
-  return `<div class="x-media">${media.map((m) => {
-    const video = m.type === 'video' || m.type === 'animated_gif';
-    return `<a class="x-media__item" href="${href}" target="_blank" rel="noopener noreferrer"
-        aria-label="${video ? '在 X 上看這段影片' : '在 X 上看這張圖'}">
-      <img src="${esc(m.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">
-      ${video ? `<span class="x-media__badge">▶ ${esc(duration(m.ms) || '影片')}</span>` : ''}
-    </a>`;
-  }).join('')}</div>`;
-}
+/** 原文連結只接受 https，其餘一律不畫 —— 網址來自別人的站，不能原樣塞進 href。 */
+const safeUrl = (u) => (/^https:\/\//.test(u || '') ? u : null);
 
 function tweetCard(p, { showTopics = true } = {}) {
   const open = state.openP.has(p.id);
@@ -150,48 +134,56 @@ function tweetCard(p, { showTopics = true } = {}) {
     }).join('')}</div>`
     : '';
 
+  const link = (url, label) => (safeUrl(url)
+    ? `<a class="linky" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${label} ↗</a>` : '');
+
+  // 互動數只有 X 有，Truth Social 的存檔不提供 —— 沒有就整排不畫，不要畫一排「—」
+  const stats = [
+    p.likes ? `<span>♥ ${num(p.likes)}</span>` : '',
+    p.replies ? `<span>↩ ${num(p.replies)}</span>` : '',
+    p.views ? `<span>👁 ${compact(p.views)}</span>` : '',
+  ].join('');
+
   return `<article class="card x-post">
     <header class="x-post__head">
       <time datetime="${esc(p.ts || '')}">${esc(when(p.ts))}</time>
       <span class="x-post__ago">${esc(ago(p.ts))}</span>
-      ${p.rt ? '<span class="chip">轉推</span>' : ''}
-      ${p.reply ? '<span class="chip">回覆</span>' : ''}
-      <a class="linky" href="https://x.com/${X_USER}/status/${esc(p.id)}"
-         target="_blank" rel="noopener noreferrer">原文 ↗</a>
+      <span class="chip">${esc(SRC_LABEL[p.src] || p.src)}</span>
+      ${p.e ? '<span class="chip">背書</span>' : ''}
+      ${link(p.url, '原文')}
+      ${p.xurl ? link(p.xurl, 'X') : ''}
     </header>
-    ${text ? `<div class="x-post__body">${body(text)}</div>` : ''}
-    ${mediaBlock(p)}
+    <div class="x-post__body">${body(text)}</div>
     ${tags}
-    <footer class="x-post__foot">
-      <span>♥ ${num(p.likes)}</span>
-      <span>↩ ${num(p.replies)}</span>
-      ${p.views ? `<span>👁 ${compact(p.views)}</span>` : ''}
-      ${more}${less}${pending}
-    </footer>
+    ${stats || more || less || pending ? `<footer class="x-post__foot">${stats}${more}${less}${pending}</footer>` : ''}
   </article>`;
 }
 
+// 月檔快取的鍵是「來源/月份」：兩個來源的同一個月是不同的檔
+const monthKey = (p) => `${SRC_DIR[p.src] || 'truth'}/${p.m}`;
+
 function fullTextOf(p) {
-  const month = monthCache.get(p.m);
+  const key = monthKey(p);
+  const month = monthCache.get(key);
   if (month === undefined) {
-    loadMonth(p.m);
+    loadMonth(key);
     return null;
   }
   if (month === null) return p.s;
   return month.get(p.id) || p.s;
 }
 
-async function loadMonth(month) {
-  if (monthCache.has(month)) return;
-  monthCache.set(month, undefined);
+async function loadMonth(key) {
+  if (monthCache.has(key)) return;
+  monthCache.set(key, undefined);
   try {
-    const res = await fetch(`${DATA}/tweets/${month}.json`);
+    const res = await fetch(`${DATA}/${key}.json`);
     if (!res.ok) throw new Error(res.status);
     const payload = await res.json();
-    monthCache.set(month, new Map((payload.items || []).map((r) => [r.id, r.text])));
+    monthCache.set(key, new Map((payload.items || []).map((r) => [r.id, r.text])));
   } catch (err) {
-    console.warn('載不到月檔', month, err);
-    monthCache.set(month, null);
+    console.warn('載不到月檔', key, err);
+    monthCache.set(key, null);
   }
   render();
 }
@@ -215,8 +207,8 @@ async function loadTopic(k) {
 // --------------------------------------------------------------------------
 
 function recentView(data) {
-  const rows = data.recent.filter((p) => (state.kind === 'text' ? p.s
-    : state.kind === 'media' ? !p.s : true));
+  const rows = data.recent.filter((p) => (state.kind === 'policy' ? !p.e
+    : state.kind === 'endorse' ? p.e : true));
   return `<section class="card">
       <p class="lede">他最近 ${data.recent.length} 則貼文，新的在上面。貼文底下的 #主題 點得動。</p>
       <div class="controls">${pills('kind', KINDS, state.kind)}</div>
@@ -224,11 +216,10 @@ function recentView(data) {
     ${rows.length ? rows.map((p) => tweetCard(p)).join('') : '<p class="hint">這個條件下沒有貼文。</p>'}`;
 }
 
-/** 主題與族群兩軸的前言：說清楚影片不在索引裡。 */
+/** 主題與族群兩軸的前言：說清楚背書文不在統計裡。 */
 function coverage(data) {
-  const textN = data.total - (data.mediaOnly || 0);
-  return `<p class="x-cover">主題只標得上有文字的貼文：${num(data.total)} 則裡有
-    ${num(data.mediaOnly || 0)} 則只有影片或圖片，那些不在這裡的統計裡（有文字的是 ${num(textN)} 則）。</p>`;
+  return `<p class="x-cover">${num(data.total)} 則貼文裡有 ${num(data.endorse || 0)} 則是替候選人背書，
+    那些都附一段制式政見（汽油、軍隊、關稅…），不算進主題 —— 否則次數會跟著他背書了幾個人走。</p>`;
 }
 
 function sortedTopics(data) {
@@ -256,11 +247,12 @@ function topicDetail(k) {
   const payload = topicCache.get(k);
   if (payload === undefined) return '<p class="hint">載入中…</p>';
   if (payload === null) return '<p class="hint">這個主題的貼文載不到，重新整理看看。</p>';
-  const shown = payload.items.slice(0, 40);
+  // 一個主題可能有上百則（戰事），一次全畫會卡住捲動。先給最近的，要更早的再按。
+  const shown = payload.items.slice(0, state.shown.get(k) || PAGE);
   const rest = payload.items.length - shown.length;
   return `<div class="x-tick__body">
     ${shown.map((p) => tweetCard(p, { showTopics: false })).join('')}
-    ${rest > 0 ? `<p class="hint">還有 ${num(rest)} 則更早的，到 X 上搜尋。</p>` : ''}
+    ${rest > 0 ? `<button class="pill x-more" data-more="${esc(k)}">再看 ${num(Math.min(rest, PAGE))} 則更早的（還有 ${num(rest)} 則）</button>` : ''}
   </div>`;
 }
 
@@ -339,11 +331,15 @@ function render() {
 function sourceNote(data) {
   return `<section class="card note">
     <h2>這份資料怎麼來的</h2>
-    <p>來源是 X 上 <a class="linky" href="https://x.com/${X_USER}" target="_blank"
-      rel="noopener noreferrer">@${X_USER}</a> 的公開貼文，每 3 小時抓一次首屏，
-      從 ${esc(String((data.span || [])[0] || '').slice(0, 10))} 開始累積。內容原樣保存，沒有翻譯也沒有改寫。</p>
-    <p>他在 X 上多半是轉貼演講與訪談的影片，文字發言主要在 Truth Social。Truth Social
-      試過但抓不到（公開 API 被 Cloudflare 擋下），所以這一頁只看得到 X 那一半。</p>
+    <p>主要來源是他在 Truth Social 上的貼文，經由
+      <a class="linky" href="https://www.trumpstruth.org/" target="_blank" rel="noopener noreferrer">trumpstruth.org</a>
+      的公開存檔取得（Truth Social 官方 API 被 Cloudflare 擋下）；另外補上 X
+      <a class="linky" href="https://x.com/realDonaldTrump" target="_blank" rel="noopener noreferrer">@realDonaldTrump</a>
+      上有字的貼文，與 Truth Social 同文的只留一則。每 3 小時更新一次，
+      從 ${esc(String((data.span || [])[0] || '').slice(0, 10))} 起共 ${num(data.total)} 則。
+      內容原樣保存，沒有翻譯也沒有改寫。</p>
+    <p>只收他自己寫的字：純影片、純連結、ReTruth／轉推都不收。Truth Social 的存檔沒有讚數，
+      所以那些貼文不顯示互動數。</p>
     <p>主題是照英文關鍵字標的（關鍵字表在 <code>scripts/trump.py</code>），會有誤標與漏標；
       族群對照是「這句話一出來台股哪一族先動」的判斷，不是事實查核，更不是投資建議。</p>
   </section>`;
@@ -377,6 +373,11 @@ function bind() {
       const g = btn.dataset.group;
       if (state.openG.has(g)) state.openG.delete(g);
       else state.openG.add(g);
+      return render();
+    }
+    if (btn.dataset.more) {
+      const k = btn.dataset.more;
+      state.shown.set(k, (state.shown.get(k) || PAGE) + PAGE);
       return render();
     }
     if (btn.dataset.open) {
