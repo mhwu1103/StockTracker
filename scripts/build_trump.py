@@ -124,6 +124,48 @@ def check_groups() -> None:
                 print(f"! 主題「{t['label']}」的族群「{g}」不在 us_link.json 上")
 
 
+def load_stocks() -> dict:
+    """族群 -> 子族群 -> [[代號, 股名], …]，來自 themes.json 與 industry.json 的股名。
+
+    代號的順序照 themes.json（那份是人工排的，前面的是族群裡的代表股）。
+    """
+    themes_path = twse.DATA_DIR / "themes.json"
+    names_path = twse.DATA_DIR / "industry.json"
+    if not themes_path.exists():
+        print("! 找不到 themes.json，這一輪不列台股代號")
+        return {}
+    names = {}
+    if names_path.exists():
+        names = json.loads(names_path.read_text(encoding="utf-8")).get("names") or {}
+    out = {}
+    for group in json.loads(themes_path.read_text(encoding="utf-8")).get("groups") or []:
+        out[group["name"]] = {
+            sub["name"]: [[c, names.get(c) or ""] for c in sub.get("codes") or []]
+            for sub in group.get("subs") or []
+        }
+    return out
+
+
+def stocks_of(topic: dict, stocks: dict) -> list:
+    """這個主題對到的台股：[{g: 族群, sub: 子族群, c: [[代號, 股名], …]}]。
+
+    有寫 TOPIC_SUBS 的族群只取那幾個子族群，沒寫的整族都取。
+    子族群名稱對不上 themes.json 的會印出來 —— 那一塊會安靜地變成空的，畫面上
+    看不出少了東西。
+    """
+    out = []
+    for g in topic["g"]:
+        subs = stocks.get(g) or {}
+        wanted = topic["subs"].get(g) or list(subs)
+        for sub in wanted:
+            if sub not in subs:
+                print(f"! 主題「{topic['label']}」的子族群「{g} / {sub}」不在 themes.json 上")
+                continue
+            if subs[sub]:
+                out.append({"g": g, "sub": sub, "c": subs[sub]})
+    return out
+
+
 def main() -> int:
     truth = load_source("truth")
     x = load_source("x")
@@ -133,6 +175,7 @@ def main() -> int:
         return 1
 
     check_groups()
+    stocks = load_stocks()
 
     for row in rows:
         row["endorse"] = trump.is_endorsement(row.get("text"))
@@ -165,6 +208,8 @@ def main() -> int:
             # 每一則的發文時間（新的在前）。族群軸的天數篩選在前端算：有主題的貼文
             # 一共才幾百則，全部帶著比每換一個天數就回伺服器要一份省事。
             "ts": [r.get("ts") for r in items],
+            # 這個主題一出來該看的台股，照子族群分塊
+            "tw": stocks_of(t, stocks),
         })
         if not items:
             continue

@@ -235,6 +235,33 @@ function sortedTopics(data) {
 }
 
 /**
+ * 相關台股：一個子族群一行，股票點了進個股頁。
+ *
+ * 清單來自 themes.json（人工維護的題材族群），對照的粒度是**子族群**：「汽車」只列
+ * 汽車零件與功率半導體，不會把整個傳產（塑化、水泥、零售）一起倒出來。
+ * blocks 裡同一個子族群可能出現兩次（族群軸把好幾個主題合在一起時），這裡去重。
+ */
+function stockBlock(blocks, title = '相關台股') {
+  const seen = new Set();
+  const rows = (blocks || []).filter((b) => {
+    const key = `${b.g}/${b.sub}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (!rows.length) return '';
+  const total = new Set(rows.flatMap((b) => b.c.map(([code]) => code))).size;
+  return `<section class="x-stocks">
+    <h3>${esc(title)} <span>${num(total)} 檔</span></h3>
+    ${rows.map((b) => `<div class="x-stocks__row">
+      <span class="x-stocks__sub">${esc(b.sub)}</span>
+      <span class="x-stocks__list">${b.c.map(([code, name]) => `<a class="x-stock"
+        href="index.html#/stock/${encodeURIComponent(code)}">${esc(name || code)}<span>${esc(code)}</span></a>`).join('')}</span>
+    </div>`).join('')}
+  </section>`;
+}
+
+/**
  * 一個主題列。`since` 有給的時候（族群軸的天數篩選）次數與展開的貼文都只算
  * 那一段 —— 標頭寫「7 天內 3 則」、點開卻列出 177 則，兩個數字對不起來。
  */
@@ -252,11 +279,12 @@ function topicRow(t, since = null) {
       <span class="x-tick__num">${empty ? '還沒提到' : num_}</span>
       <span class="x-tick__ago">${esc(ago(t.last))}</span>
     </button>
-    ${open ? topicDetail(t.k, since) : ''}
+    ${open ? topicDetail(t.k, since, since === null ? t.tw : null) : ''}
   </article>`;
 }
 
-function topicDetail(k, since = null) {
+// stocks：主題軸才傳（貼文上面先列該看的台股）；族群軸的台股已經畫在族群那一層，不重複
+function topicDetail(k, since = null, stocks = null) {
   const payload = topicCache.get(k);
   if (payload === undefined) return '<p class="hint">載入中…</p>';
   if (payload === null) return '<p class="hint">這個主題的貼文載不到，重新整理看看。</p>';
@@ -265,6 +293,7 @@ function topicDetail(k, since = null) {
   const shown = items.slice(0, state.shown.get(k) || PAGE);
   const rest = items.length - shown.length;
   return `<div class="x-tick__body">
+    ${stockBlock(stocks)}
     ${shown.map((p) => tweetCard(p, { showTopics: false })).join('')}
     ${rest > 0 ? `<button class="pill x-more" data-more="${esc(k)}">再看 ${num(Math.min(rest, PAGE))} 則更早的（還有 ${num(rest)} 則）</button>` : ''}
   </div>`;
@@ -366,7 +395,9 @@ function groupView(data) {
           <span class="x-tick__num">${esc(dayLabel())} ${num(g.count)} 則</span>
           <span class="x-tick__ago">${esc(ago(state.gsort === 'old' ? g.first : g.last))}</span>
         </button>
-        ${open ? `<div class="x-tick__body">${g.topics.map((t) => topicRow(t, since || '')).join('')}</div>` : ''}
+        ${open ? `<div class="x-tick__body">
+          ${stockBlock(g.topics.flatMap((t) => (t.tw || []).filter((b) => b.g === g.name)), `${g.name}：該看的台股`)}
+          ${g.topics.map((t) => topicRow(t, since || '')).join('')}</div>` : ''}
       </article>`;
     }).join('')}`;
 }

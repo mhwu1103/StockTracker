@@ -2131,6 +2131,62 @@ button.ustag {
    川普政策觀點（trump.html）：沿用上面整套 x-post／x-tick
    -------------------------------------------------------------------------- */
 
+/*
+ * 相關台股：一個子族群一行，股票是一顆一顆的連結。
+ *
+ * 子族群名稱固定寬度靠左，手機上換到股票上面一行 —— 股票數量從 1 到 16 都有，
+ * 並排的話短的那幾行右邊會空一大塊，長的那幾行會把子族群名擠成兩行。
+ */
+.x-stocks {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.x-stocks h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.x-stocks h3 span { margin-left: 4px; font-weight: 400; color: var(--muted); font-size: 12px; }
+
+.x-stocks__row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+
+.x-stocks__sub { font-size: 12px; color: var(--muted); }
+
+.x-stocks__list { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.x-stock {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 13px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.x-stock span { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+@media (min-width: 768px) {
+  .x-stocks__row { grid-template-columns: 9em 1fr; align-items: baseline; }
+}
+
+@media (hover: hover) {
+  .x-stock:hover { border-color: var(--accent); color: var(--accent); }
+}
+
 /* 主題展開後「再看更早的」：放在一串貼文的最後，跟貼文卡片同寬才看得出它屬於這一串 */
 .x-more { display: block; width: 100%; margin: 0 0 10px; }
 
