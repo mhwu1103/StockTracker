@@ -1420,20 +1420,43 @@ table.pair.cross .all {
  * 字級 13px，比子題材那一列小一階但不能再小。第一版給了 12px、代號那一行 10.5px，
  * 在 1060px 寬的表上細得像註腳——而這幾列正是這一頁要讀的東西，不是註腳。
  *
+ * **每一檔之間一條線**。這一塊一次十幾列、每列六欄，沒有線就是一整片等距的字，
+ * 橫著看一列的四個數字要靠眼睛自己對——而橫著比正是這一頁在做的事。行距也從
+ * 5px 給到 6px：線一畫上去，原本的 5px 會把字夾得沒有呼吸。
+ *
  * 色條的 class 用 .tw 不是並排表的 .t：那邊的 tr.t 還帶了 .nm 的縮排與 .cd 的
  * padding，沿用會把這裡的對齊一起繼承走，而兩張表的第一欄結構不一樣。
  */
 table.pair.cross tr.p > td {
-  border-top: none;
-  padding-top: 5px;
-  padding-bottom: 5px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  padding-bottom: 6px;
   font-size: 13px;
 }
+/* 抬頭底下那一條不畫：抬頭自己上面已經有一條，兩條把它夾成表頭，而它是這一塊的
+   說明，要黏著下面那幾列。第一條線出現在第一檔與第二檔之間。 */
+table.pair.cross tr.pc + tr.p > td { border-top: none; }
+
+/* 色條改用 ::before，不再用 inset box-shadow。
+ *
+ * inset 陰影被裁在 padding box，而上面那條線把 padding box 往下推 1px ——
+ * 每一列的色條頂端就被啃掉一格，十幾列排下來色條變成虛線，連不成一塊，
+ * 而「連成一塊」正是它在做的事。絕對定位的那一條往上多蓋 1px（top: -1px）
+ * 補回線佔掉的位置，色條就一路通到底。 */
 table.pair.cross tr.p > td:first-child {
+  position: relative;
   padding-left: 30px;
-  box-shadow: inset 3px 0 0 var(--side);
 }
-table.pair.cross tr.p.tw > td:first-child { box-shadow: inset 3px 0 0 var(--tw); }
+table.pair.cross tr.p > td:first-child::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: -1px;
+  bottom: 0;
+  width: 3px;
+  background: var(--side);
+}
+table.pair.cross tr.p.tw > td:first-child::before { background: var(--tw); }
 
 /* 代號與收盤價跟名字**同一行**。第一版沿用並排表的作法讓它 display: block 掉到第二行，
    那在並排表上是對的（一列就是一檔、名字長、只有幾列），這裡不對：一次展開十幾列，
