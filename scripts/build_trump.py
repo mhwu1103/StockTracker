@@ -162,6 +162,9 @@ def main() -> int:
             "c": len(items),
             "hot": sum(1 for r in items if (r.get("ts") or "") >= hot_since),
             "last": items[0].get("ts") if items else None,
+            # 每一則的發文時間（新的在前）。族群軸的天數篩選在前端算：有主題的貼文
+            # 一共才幾百則，全部帶著比每換一個天數就回伺服器要一份省事。
+            "ts": [r.get("ts") for r in items],
         })
         if not items:
             continue

@@ -48,11 +48,18 @@ const state = {
   openG: new Set(),     // 展開中的族群
   openP: new Set(),     // 展開全文的貼文 id
   shown: new Map(),     // 每個主題目前畫了幾則
+  days: '30',           // 族群軸的天數篩選
+  gsort: 'count',       // 族群軸的排序
 };
 
 const PAGE = 40;
 
-const KEYS = { view: 'stocktracker.trumpview', kind: 'stocktracker.trumpkind' };
+const KEYS = {
+  view: 'stocktracker.trumpview',
+  kind: 'stocktracker.trumpkind',
+  days: 'stocktracker.trumpdays',
+  gsort: 'stocktracker.trumpgsort',
+};
 
 const topicCache = new Map();
 const monthCache = new Map();
@@ -227,29 +234,36 @@ function sortedTopics(data) {
     .sort((a, b) => b.hot - a.hot || b.c - a.c || String(b.last).localeCompare(String(a.last)));
 }
 
-function topicRow(t) {
+/**
+ * 一個主題列。`since` 有給的時候（族群軸的天數篩選）次數與展開的貼文都只算
+ * 那一段 —— 標頭寫「7 天內 3 則」、點開卻列出 177 則，兩個數字對不起來。
+ */
+function topicRow(t, since = null) {
   const open = state.openK.has(t.k);
   const empty = !t.c;
+  const num_ = since !== null
+    ? `${esc(dayLabel())} ${num(t.c)} 則`
+    : `${t.hot ? `近 ${state.data.hotDays} 天 ${t.hot} 則 · ` : ''}共 ${num(t.c)} 則`;
   return `<article class="card x-tick ${open ? 'is-open' : ''} ${empty ? 'is-empty' : ''}">
     <button class="x-tick__head" data-topic="${esc(t.k)}" ${empty ? 'disabled' : ''}>
       <span class="x-tick__sym">${empty ? '·' : open ? '▾' : '▸'} ${esc(t.label)}</span>
       <span class="x-tick__name"></span>
       <span class="x-tick__chips">${groupChips(t.g)}</span>
-      <span class="x-tick__num">${empty ? '還沒提到'
-        : `${t.hot ? `近 ${state.data.hotDays} 天 ${t.hot} 則 · ` : ''}共 ${num(t.c)} 則`}</span>
+      <span class="x-tick__num">${empty ? '還沒提到' : num_}</span>
       <span class="x-tick__ago">${esc(ago(t.last))}</span>
     </button>
-    ${open ? topicDetail(t.k) : ''}
+    ${open ? topicDetail(t.k, since) : ''}
   </article>`;
 }
 
-function topicDetail(k) {
+function topicDetail(k, since = null) {
   const payload = topicCache.get(k);
   if (payload === undefined) return '<p class="hint">載入中…</p>';
   if (payload === null) return '<p class="hint">這個主題的貼文載不到，重新整理看看。</p>';
+  const items = since !== null ? payload.items.filter((p) => (p.ts || '') >= since) : payload.items;
   // 一個主題可能有上百則（戰事），一次全畫會卡住捲動。先給最近的，要更早的再按。
-  const shown = payload.items.slice(0, state.shown.get(k) || PAGE);
-  const rest = payload.items.length - shown.length;
+  const shown = items.slice(0, state.shown.get(k) || PAGE);
+  const rest = items.length - shown.length;
   return `<div class="x-tick__body">
     ${shown.map((p) => tweetCard(p, { showTopics: false })).join('')}
     ${rest > 0 ? `<button class="pill x-more" data-more="${esc(k)}">再看 ${num(Math.min(rest, PAGE))} 則更早的（還有 ${num(rest)} 則）</button>` : ''}
@@ -262,14 +276,49 @@ function topicView(data) {
       「這個主題一出來，台股先動的那幾族」，名稱與美股頁、四市題材同一套。</p>
       ${coverage(data)}
     </section>
-    ${sortedTopics(data).map(topicRow).join('')}`;
+    ${sortedTopics(data).map((t) => topicRow(t)).join('')}`;
+}
+
+/** 族群軸的天數篩選。0 是「全部」。 */
+const DAYS = [
+  { value: '7', label: '7 天' },
+  { value: '30', label: '30 天' },
+  { value: '90', label: '90 天' },
+  { value: '0', label: '全部' },
+];
+
+/*
+ * 族群軸的排序。「最新」照這一族最後一次被碰到的時間 —— 看「他剛剛講到哪一族」；
+ * 「最早」反過來，看這段期間裡哪一族是先被碰到的。
+ */
+const GSORTS = [
+  { value: 'count', label: '則數' },
+  { value: 'new', label: '最新' },
+  { value: 'old', label: '最早' },
+];
+
+const dayLabel = () => (state.days === '0' ? '全部' : `${state.days} 天內`);
+
+/** 天數篩選的起點（UTC ISO）。「全部」回 null。 */
+function sinceOf() {
+  const n = Number(state.days);
+  if (!n) return null;
+  return new Date(Date.now() - n * 86400000).toISOString().replace(/\.\d+Z$/, 'Z');
+}
+
+/** 某個主題在篩選範圍內的樣子：次數、最後一次與第一次被提到的時間。 */
+function windowed(t, since) {
+  const ts = since ? (t.ts || []).filter((x) => x >= since) : (t.ts || []);
+  return { ...t, c: ts.length, last: ts[0] || null, first: ts[ts.length - 1] || null };
 }
 
 function groupView(data) {
   // 一個主題可以對到好幾族，一族也會被好幾個主題碰到。從族群找過來的人要看到
   // 的是「這一族最近被他的哪些話碰到」，所以每一族底下列主題，主題再展開貼文。
+  const since = sinceOf();
   const byGroup = new Map();
-  for (const t of data.topics || []) {
+  for (const raw of data.topics || []) {
+    const t = windowed(raw, since);
     if (!t.c) continue;
     for (const g of t.g || []) {
       if (!byGroup.has(g)) byGroup.set(g, []);
@@ -280,17 +329,31 @@ function groupView(data) {
       <p class="lede">他講的政策落在台股的哪一族。一則貼文碰到兩個主題時兩邊都算，
       所以同一族底下的次數加起來會比實際貼文多。</p>
       ${coverage(data)}
+      <div class="controls">
+        ${pills('days', DAYS, state.days)}
+        ${pills('gsort', GSORTS, state.gsort)}
+      </div>
     </section>`;
-  if (!byGroup.size) return `${intro}<p class="hint">目前還沒有任何貼文對得上台股族群。</p>`;
+  if (!byGroup.size) return `${intro}<p class="hint">${esc(dayLabel())}沒有任何貼文對得上台股族群，把天數放寬看看。</p>`;
+
+  const newer = (a, b) => String(b || '').localeCompare(String(a || ''));
+  const order = {
+    count: (a, b) => b.count - a.count || newer(a.last, b.last),
+    new: (a, b) => newer(a.last, b.last) || b.count - a.count,
+    old: (a, b) => newer(b.first, a.first) || b.count - a.count,
+  }[state.gsort] || ((a, b) => b.count - a.count);
 
   const groups = [...byGroup.entries()]
     .map(([name, topics]) => ({
       name,
-      topics: topics.sort((a, b) => b.hot - a.hot || b.c - a.c),
-      hot: topics.reduce((n, t) => n + t.hot, 0),
+      // 族群底下的主題跟著同一個排序走，不然外層照時間、裡面照次數，讀起來是亂的
+      topics: topics.sort((a, b) => order({ count: a.c, last: a.last, first: a.first },
+        { count: b.c, last: b.last, first: b.first })),
       count: topics.reduce((n, t) => n + t.c, 0),
+      last: topics.reduce((m, t) => (t.last > m ? t.last : m), ''),
+      first: topics.reduce((m, t) => (!m || t.first < m ? t.first : m), ''),
     }))
-    .sort((a, b) => b.hot - a.hot || b.count - a.count);
+    .sort(order);
 
   return `${intro}
     ${groups.map((g) => {
@@ -300,9 +363,10 @@ function groupView(data) {
           <span class="x-tick__sym">${open ? '▾' : '▸'} ${esc(g.name)}</span>
           <span class="x-tick__name">${esc(g.topics.map((t) => t.label).join('、'))}</span>
           <span class="x-tick__chips"></span>
-          <span class="x-tick__num">近 ${state.data.hotDays} 天 ${g.hot} 則 · 共 ${num(g.count)} 則</span>
+          <span class="x-tick__num">${esc(dayLabel())} ${num(g.count)} 則</span>
+          <span class="x-tick__ago">${esc(ago(state.gsort === 'old' ? g.first : g.last))}</span>
         </button>
-        ${open ? `<div class="x-tick__body">${g.topics.map(topicRow).join('')}</div>` : ''}
+        ${open ? `<div class="x-tick__body">${g.topics.map((t) => topicRow(t, since || '')).join('')}</div>` : ''}
       </article>`;
     }).join('')}`;
 }
@@ -353,6 +417,16 @@ function bind() {
     if (btn.dataset.view) {
       state.view = btn.dataset.view;
       save(KEYS.view, state.view);
+      return render();
+    }
+    if (btn.dataset.days) {
+      state.days = btn.dataset.days;
+      save(KEYS.days, state.days);
+      return render();
+    }
+    if (btn.dataset.gsort) {
+      state.gsort = btn.dataset.gsort;
+      save(KEYS.gsort, state.gsort);
       return render();
     }
     if (btn.dataset.kind) {
@@ -414,6 +488,10 @@ function restore() {
   try {
     const view = localStorage.getItem(KEYS.view);
     if (VIEWS.some((v) => v.value === view)) state.view = view;
+    const days = localStorage.getItem(KEYS.days);
+    if (DAYS.some((d) => d.value === days)) state.days = days;
+    const gsort = localStorage.getItem(KEYS.gsort);
+    if (GSORTS.some((g) => g.value === gsort)) state.gsort = gsort;
     const kind = localStorage.getItem(KEYS.kind);
     if (KINDS.some((k) => k.value === kind)) state.kind = kind;
   } catch (err) {
