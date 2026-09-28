@@ -2055,6 +2055,19 @@ button.ustag {
 
 .x-quote b { color: var(--text); font-weight: 600; }
 
+/*
+ * 這一頁的 pill 列直接放在 .card 裡，而 .card 本身沒有內距（它的內容通常是
+ * 自帶內距的 .row／.lede），所以 pill 會貼著卡片邊框。帳號列、軸、標的頁的
+ * 篩選列都是這種，在這裡統一補上跟 .lede 一樣的左右內距。
+ */
+body[data-view="x"] .card > .controls {
+  margin: 0;
+  padding: 10px 14px;
+}
+
+/* 帳號列本身就是 .card，只補內距 —— 不能動 margin，桌面版的置中與卡片間距靠它 */
+.x-accounts { padding: 10px 14px; }
+
 /* 帳號切換在最上面，跟下面那排軸同一種 pill，但要看得出是「換一個人」這一層 */
 .x-accounts .pill {
   display: inline-flex;
