@@ -2231,6 +2231,56 @@ button.ustag {
 .val-k--hold { color: var(--muted); }
 .val-k--sell { color: var(--star1); }
 
+/* 搜尋框：在 #view 外面，padding 沿用 .view，只把底下那段收掉，貼著下面的卡片 */
+.val-search { padding-bottom: 0; }
+
+.val-search input {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;            /* 小於 16px 的話 iOS 一點進去就會自動放大整頁 */
+}
+
+.val-search input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* 搜尋結果：一檔一張，把六個軸對它的判斷攤在一起 */
+.val-card { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.val-card:last-child { border-bottom: 0; }
+.val-card__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.val-card__head b { font-size: 16px; }
+.val-card__head small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.val-card__price { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+.val-card__band { max-width: 280px; margin: 8px 0 2px; }
+
+.val-card__dl {
+  display: grid;
+  grid-template-columns: 2.6em 1fr;
+  gap: 6px 10px;
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.val-card__dl dt { color: var(--muted); }
+.val-card__dl dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin: 0; }
+
+.val-card__theme {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.val-muted { color: var(--muted); }
+
 /* 題材列：點開是成分股 */
 .val-theme { border-bottom: 1px solid var(--line); }
 .val-theme:last-child { border-bottom: 0; }

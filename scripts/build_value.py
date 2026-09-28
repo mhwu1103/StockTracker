@@ -385,7 +385,7 @@ def main() -> int:
         rev = rev_stats(code)
         pe_lv = level(pe if pe and pe <= PE_MAX else None, pe_band)
         fwd = None
-        if (pe and rev and rev["yoy3"] is not None and GROWTH_MIN <= rev["yoy3"] <= GROWTH_MAX
+        if (pe and pe <= PE_MAX and rev and rev["yoy3"] is not None and GROWTH_MIN <= rev["yoy3"] <= GROWTH_MAX
                 and industry.get(code) != FIN_INDUSTRY):
             fwd = round(pe / (1 + rev["yoy3"] / 100), 1)
         div = round(yld * price / 100, 2) if yld and price else None
@@ -437,22 +437,42 @@ def main() -> int:
     score = lambda r: (("vol" in r["tags"]) + ("price" in r["tags"]) + ("high" in r["tags"]) + ("accel" in r["tags"]))
     theme_rows.sort(key=lambda r: (score(r), r["yoy"] if r["yoy"] is not None else -999), reverse=True)
 
-    # ---- KD 名單 ----
-    kd_rows = []
-    # 原型 ETF：債券（B）、槓桿（L）、反向（R）都不算
+    # ---- KD ----
+    # 訊號只給「不會歸零」的名單：原型 ETF（債券 B、槓桿 L、反向 R 都不算）與金融股。
+    # 其他個股也算 K、D 值，搜尋時看得到，但不給買賣訊號——那條規則的前提它們不符合。
     kd_codes = {c for c in ranked if c.startswith("00") and c[-1] not in "BLR"}
     kd_codes |= {c for c, ind in industry.items() if ind == FIN_INDUSTRY}
-    for code in sorted(kd_codes):
+
+    def kd_of(code):
         series = bars.get(code) or {}
         days = [d for d in dates if d in series]
         if not days or days[-1] != last:
-            continue
+            return None
         k, dd = kd([series[d] for d in days])
         wk, _ = kd(weekly(days, series))
-        sig = kd_signal(k, wk)
-        if sig:
+        if k is None:
+            return None
+        return {"k": k, "d": dd, "wk": wk,
+                "sig": kd_signal(k, wk) if code in kd_codes else None,
+                "price": series[last][2]}
+
+    for code, row in stocks.items():
+        row["kd"] = kd_of(code)
+
+    # 名單上、但不在個股表裡的 ETF：只有名稱、價格與 KD，給價差頁與搜尋用
+    etfs = {}
+    for code in sorted(kd_codes - set(stocks)):
+        got = kd_of(code)
+        if got:
+            etfs[code] = {"n": names.get(code), **got}
+
+    kd_rows = []
+    for code in sorted(kd_codes):
+        got = (stocks.get(code) or {}).get("kd") if code in stocks else etfs.get(code)
+        if got and got["sig"]:
             kd_rows.append({"c": code, "n": names.get(code), "etf": code.startswith("00"),
-                            "price": series[last][2], "k": k, "d": dd, "wk": wk, "sig": sig})
+                            "price": got["price"], "k": got["k"], "d": got["d"], "wk": got["wk"],
+                            "sig": got["sig"]})
     kd_rows.sort(key=lambda r: r["k"])
 
     mv = market_view(taiex, bars, dates)
@@ -465,11 +485,13 @@ def main() -> int:
         "market": mv,
         "themes": theme_rows,
         "stocks": stocks,
+        "etfs": etfs,
         "kd": kd_rows,
         "rules": {
             "volUp": VOL_UP, "volAccel": VOL_ACCEL, "highShare": HIGH_SHARE, "priceUp": PRICE_UP,
             "bandYears": BAND_YEARS, "minYears": MIN_YEARS, "growthMin": GROWTH_MIN,
             "growthMax": GROWTH_MAX,
+            "peMax": PE_MAX,
             "kdLow": KD_LOW, "kdPause": KD_PAUSE, "kdHigh": KD_HIGH, "yieldPrice": YIELD_PRICE,
         },
     })

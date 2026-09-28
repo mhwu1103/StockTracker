@@ -14,6 +14,10 @@
  *   價差   KD 20／80，只給 ETF 與金融股
  *   規則   上面每一條的門檻
  *
+ * 最上面的搜尋框跨過這六個軸：打代號、名稱或子族群名，列出符合的每一檔，並把這一頁對它的
+ * 所有判斷（本益比位階、營收、存股、KD、題材）攤在同一張卡上——從某一檔出發問「照這套
+ * 規則它現在算什麼」，不必在六個軸之間來回找。
+ *
  * 所有判斷都在 scripts/build_value.py 算好，門檻也從那裡帶過來（data.rules），這裡只畫。
  * 規則為什麼長這樣，完整版在那支的 docstring。
  */
@@ -69,7 +73,11 @@ const state = {
   lv: 'cheap',
   sort: 'pos',
   openT: new Set(),
+  q: '',
 };
+
+// 搜尋結果最多列幾檔。打一個字（「電」）就會命中上百檔，全畫出來既慢也不是在找東西
+const SEARCH_LIMIT = 30;
 
 const KEYS = {
   view: 'stocktracker.valueview',
@@ -377,11 +385,120 @@ function rulesView(d) {
 }
 
 // --------------------------------------------------------------------------
+// 搜尋
+// --------------------------------------------------------------------------
+
+/**
+ * 符合的代號，排序照「多像」：代號完全相同 > 代號開頭 > 名稱開頭 > 名稱包含 > 子族群名包含。
+ * 子族群那一層是讓「ABF」「CPO」這種題材詞也搜得到——使用者腦中的問題常常是一個題材。
+ */
+function searchHits(d, q) {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return [];
+  const pool = [
+    ...Object.entries(d.stocks).map(([c, s]) => [c, s, false]),
+    ...Object.entries(d.etfs || {}).map(([c, s]) => [c, s, true]),
+  ];
+  const scored = [];
+  for (const [code, s, etf] of pool) {
+    const lc = code.toLowerCase();
+    const name = (s.n || '').toLowerCase();
+    const subs = (s.subs || []).map(([g, sub]) => `${g} ${sub}`.toLowerCase());
+    let score = null;
+    if (lc === needle) score = 0;
+    else if (lc.startsWith(needle)) score = 1;
+    else if (name.startsWith(needle)) score = 2;
+    else if (name.includes(needle)) score = 3;
+    else if (subs.some((t) => t.includes(needle))) score = 4;
+    if (score !== null) scored.push({ code, s, etf, score });
+  }
+  scored.sort((a, b) => a.score - b.score || a.code.localeCompare(b.code));
+  return scored;
+}
+
+function kdLine(k, eligible) {
+  if (!k) return '<span class="val-muted">KD 資料不足</span>';
+  const vals = `<span>日 K ${fmt(k.k, 0)}・D ${fmt(k.d, 0)}・週 K ${k.wk === null ? '—' : fmt(k.wk, 0)}</span>`;
+  if (k.sig) return `${vals}<b class="val-k val-k--${KD_SIG[k.sig].tone}">${esc(KD_SIG[k.sig].label)}</b>`;
+  return `${vals}${eligible ? '<span class="val-muted">沒有訊號</span>'
+    : '<span class="val-muted">KD 價差只給原型 ETF 與金融股，這一檔只列數值</span>'}`;
+}
+
+/** 一檔的完整判斷卡：這一頁六個軸對它說了什麼，攤在同一張上。 */
+function searchCard({ code, s, etf }) {
+  const link = `<a class="linky" href="index.html#/stock/${esc(code)}">個股頁 ↗</a>`;
+  if (etf) {
+    return `<article class="val-card">
+      <header class="val-card__head"><b>${esc(s.n || code)}</b><small>${esc(code)} · ETF</small>
+        <span class="val-card__price">${fmt(s.price)}</span>${link}</header>
+      <dl class="val-card__dl">
+        <dt>價差</dt><dd>${kdLine(s, true)}</dd>
+        <dt>估值</dt><dd><span class="val-muted">ETF 不看本益比位階</span></dd>
+      </dl>
+    </article>`;
+  }
+
+  const fin = s.ind === '金融保險';
+  const b = s.peBand;
+  const rev = s.rev;
+  let note = '';
+  if (s.digest) note = `<b class="val-digest">成長消化得掉：粗估明年 ${fmt(s.fwd, 1)} 倍</b>`;
+  else if (s.trap) note = '<b class="val-trap">營收衰退，便宜可能是陷阱</b>';
+  else if (s.fwd) note = `<span class="val-muted">粗估明年 ${fmt(s.fwd, 1)} 倍</span>`;
+  const pe = s.pe === null
+    ? '<span class="val-muted">虧損或沒有本益比，不評價</span>'
+    : s.pe > state.data.rules.peMax
+      ? `<span>${fmt(s.pe, 1)} 倍</span><span class="val-muted">超過 ${state.data.rules.peMax} 倍：獲利接近零時的本益比沒有意義，不評價</span>`
+    : `<span>${fmt(s.pe, 1)} 倍 ${lvChip(s.peLv)}</span>${b
+      ? `<span class="val-muted">平均最低 ${fmt(b.lo, 1)}／平均 ${fmt(b.avg, 1)}／平均最高 ${fmt(b.hi, 1)}（${b.years} 年）</span>`
+      : '<span class="val-muted">歷史不滿三年，不評價</span>'}${note}`;
+  const growth = rev
+    ? `<span>${esc(state.data.revMonth)} 年增 <b class="${dir(rev.yoy)}">${pct(rev.yoy)}</b>（上月 ${pct(rev.yoyPrev)}、近三月平均 ${pct(rev.yoy3)}）</span>${
+      rev.high ? '<span class="val-good">營收創一年新高</span>' : ''}`
+    : '<span class="val-muted">沒有月營收</span>';
+  const under = s.yldPrice && s.price && s.price <= s.yldPrice;
+  const income = `<span>殖利率 ${s.yld ? `${fmt(s.yld, 2)}%` : '—'}・5% 殖利率價 ${s.yldPrice ? fmt(s.yldPrice, 2) : '—'}${
+    under ? ' <b class="val-good">股價在它下面</b>' : ''}</span>
+    <span>股淨比 ${fmt(s.pb, 2)} ${fin ? lvChip(s.pbLv) : '<span class="val-muted">（金融股才用這把尺）</span>'}</span>${
+    s.state ? '<span class="chip accent">官股</span>' : ''}`;
+  const themes = (s.subs || []).length
+    ? s.subs.map(([g, sub]) => `<button class="chip accent val-card__theme" data-goto="${esc(`${g}|${sub}`)}">${esc(sub)}</button>`).join('')
+    : `<span class="val-muted">${esc(s.ind || '不在題材族群表上')}</span>`;
+
+  return `<article class="val-card">
+    <header class="val-card__head"><b>${esc(s.n || code)}</b><small>${esc(code)}${s.ind ? ` · ${esc(s.ind)}` : ''}</small>
+      <span class="val-card__price">${fmt(s.price)}</span>${link}</header>
+    <div class="val-card__band">${bandBar(s.pe, b)}</div>
+    <dl class="val-card__dl">
+      <dt>估值</dt><dd>${pe}</dd>
+      <dt>營收</dt><dd>${growth}</dd>
+      <dt>存股</dt><dd>${income}</dd>
+      <dt>價差</dt><dd>${kdLine(s.kd, fin)}</dd>
+      <dt>題材</dt><dd>${themes}</dd>
+    </dl>
+  </article>`;
+}
+
+function searchView(d) {
+  const hits = searchHits(d, state.q);
+  const shown = hits.slice(0, SEARCH_LIMIT);
+  const head = hits.length
+    ? `找到 ${hits.length} 檔${hits.length > shown.length ? `，列出前 ${shown.length} 檔——再多打幾個字縮小範圍` : ''}。`
+    : '沒有符合的標的。這一頁只收題材族群的成分股、金融股，與成交熱絡的原型 ETF。';
+  return `<section class="card"><p class="lede">「${esc(state.q.trim())}」：${head}</p></section>
+    ${shown.length ? `<section class="card">${shown.map(searchCard).join('')}</section>` : ''}`;
+}
+
+// --------------------------------------------------------------------------
 
 function render() {
   const d = state.data;
   $('#meta').textContent = `收盤 ${d.asof} · 本益比 ${d.peAsof} · 營收 ${d.revMonth}`;
-  const view = { market: marketView, theme: themeView, stock: stockView, income: incomeView, kd: kdView, rules: rulesView }[state.view] || marketView;
+  if (state.q.trim()) {
+    $('#view').innerHTML = searchView(d);
+    return;
+  }
+  const view ={ market: marketView, theme: themeView, stock: stockView, income: incomeView, kd: kdView, rules: rulesView }[state.view] || marketView;
   $('#view').innerHTML = `
     <section class="card"><div class="controls val-views">${pills('view', VIEWS, state.view)}</div></section>
     ${view(d)}`;
@@ -401,6 +518,13 @@ function bind() {
     } else if (ds.sort) {
       state.sort = ds.sort;
       save(KEYS.sort, state.sort);
+    } else if (ds.goto) {
+      // 搜尋卡上的題材：清掉搜尋、切到題材軸、展開那一族
+      state.q = '';
+      $('#q').value = '';
+      state.view = 'theme';
+      save(KEYS.view, state.view);
+      state.openT.add(ds.goto);
     } else if (ds.t) {
       if (state.openT.has(ds.t)) state.openT.delete(ds.t);
       else state.openT.add(ds.t);
@@ -408,6 +532,23 @@ function bind() {
       return;
     }
     render();
+  });
+}
+
+function bindSearch() {
+  const input = $('#q');
+  if (!input) return;
+  input.addEventListener('input', () => {
+    state.q = input.value;
+    render();
+  });
+  // Esc 清空。手機上沒有這個鍵，但 type=search 的框本身有清除鈕
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && input.value) {
+      input.value = '';
+      state.q = '';
+      render();
+    }
   });
 }
 
@@ -447,6 +588,7 @@ async function main() {
     return;
   }
   bind();
+  bindSearch();
   render();
 }
 
