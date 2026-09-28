@@ -1380,7 +1380,16 @@ table.pair.cross tr.s .caret { color: var(--muted); margin-right: 6px; font-size
 /* hover 要用 --bg 不是 --surface：整張表鋪在 .scroller 的 --surface 上，
    列本身是透明的，hover 成 --surface 等於什麼都沒發生。 */
 table.pair.cross tr.s:hover > td { background: var(--bg); }
-table.pair.cross tr.s .cd { padding-left: 17px; }
+/* 各市場檔數跟名字**同一行**，跟它展開出來的個股列同一個作法。
+   原本 display: block 掉到第二行，那一行把子題材列撐成 52px，而它展開出來的個股列
+   是 35px——字級與字重都對齊之後，剩下這個高度差還在說「上面那一列比較大」。
+   併回同一行之後兩邊都是 35px，一塊展開的區域高度也少一截。 */
+table.pair.cross tr.s .cd {
+  display: inline;
+  margin-left: 8px;
+  padding-left: 0;
+  font-size: 12px;
+}
 /* 四個市場那四欄：等寬，數字才對得齊，掃的時候不會被欄寬變化誤導 */
 table.pair.cross thead th:not(:first-child):not(.on),
 table.pair.cross tbody td:not(:first-child):not(.gap) { width: 4.6rem; }
@@ -1430,16 +1439,17 @@ table.pair.cross .all {
  * 「它是誰的下一層」由縮排 30px、左側色條與字重 400 去講，不必從字級裡扣。
  *
  * **每一檔之間一條線**。這一塊一次十幾列、每列六欄，沒有線就是一整片等距的字，
- * 橫著看一列的四個數字要靠眼睛自己對——而橫著比正是這一頁在做的事。行距也從
- * 5px 給到 6px：線一畫上去，原本的 5px 會把字夾得沒有呼吸。
+ * 橫著看一列的四個數字要靠眼睛自己對——而橫著比正是這一頁在做的事。
+ *
+ * 上下間距不再自己寫（原本 5px，後來 6px），交還給 table.pair 的 7px／手機 6px：
+ * 這幾列的字級、字重都已經跟子題材那一列一樣，行距再自己壓小一截，整塊還是會被
+ * 讀成比較小的東西——量出來的差別在列高，不在字級。
  *
  * 色條的 class 用 .tw 不是並排表的 .t：那邊的 tr.t 還帶了 .nm 的縮排與 .cd 的
  * padding，沿用會把這裡的對齊一起繼承走，而兩張表的第一欄結構不一樣。
  */
 table.pair.cross tr.p > td {
   border-top: 1px solid var(--line);
-  padding-top: 6px;
-  padding-bottom: 6px;
   font-size: 14px;
 }
 /* 抬頭底下那一條不畫：抬頭自己上面已經有一條，兩條把它夾成表頭，而它是這一塊的
@@ -1479,10 +1489,11 @@ table.pair.cross tr.p .tag {
   color: var(--side);
 }
 table.pair.cross tr.p.tw .tag { color: var(--tw); }
-/* 400，不是並排表的 600、也不是第一版的 500：上一層的子題材名是 600，差一階分不出來。
-   名字在這一列本來就是最大最黑的東西（代號與收盤價 11.5px 而且是 --muted），
-   不必再靠字重去搶。 */
-table.pair.cross tr.p .nm { font-weight: 400; }
+/* 字重不覆寫，吃 table.pair .nm 的 600 —— 跟子題材那一列同一個粗細，也是並排表
+   （jp／kr）個股名一直以來的粗細。
+   中間試過 500、400：同樣 14px，600 的字看起來就是比 400 大一號，於是「一樣大」
+   在眼睛裡不成立。字級與字重都對齊之後，階層剩下縮排 30px、左側色條與區塊抬頭
+   在扛——那三樣講的是同一件事，而且不必動到字怎麼讀。 */
 table.pair.cross tr.p .cd {
   display: inline;
   margin-left: 8px;

@@ -6,7 +6,7 @@
  * 只有 CDN 上帶版號的第三方程式庫走 cache-first，因為同一個網址內容永不改變。
  */
 
-const VERSION = '60';                 // 前端版號。各頁都要一致，由 scripts/check_frontend_version.py 把關
+const VERSION = '62';                 // 前端版號。各頁都要一致，由 scripts/check_frontend_version.py 把關
 const CACHE = `stocktracker-v${VERSION}`;
 // theme.js 一定要在這裡：它是 <head> 裡的同步 script，離線時抓不到就會卡住整頁的解析，
 // 而且深色使用者會先看到一片白底——正好是它存在的理由。
