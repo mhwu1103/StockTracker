@@ -2231,8 +2231,8 @@ button.ustag {
 .val-k--hold { color: var(--muted); }
 .val-k--sell { color: var(--star1); }
 
-/* 搜尋框：在 #view 外面，padding 沿用 .view，只把底下那段收掉，貼著下面的卡片 */
-.val-search { padding-bottom: 0; }
+/* 搜尋框：與 #view 並排在同一個 .view 裡，下緣跟卡片之間留一張卡片的間距 */
+.val-search { margin-bottom: 14px; }
 
 .val-search input {
   width: 100%;
