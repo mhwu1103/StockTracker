@@ -2128,6 +2128,145 @@ button.ustag {
 }
 
 /* --------------------------------------------------------------------------
+ * 價值紀律（value.html）
+ *
+ * 位階（便宜／相對便宜／偏貴／昂貴）的顏色避開紅綠——紅綠是漲跌，同一列上就有營收年增
+ * 的漲跌數字，「便宜」塗綠會被讀成「在跌」。用星等那條藍→琥珀的色帶，而且每一顆都有字。
+ * 大盤、正 2 那幾張卡借用紀律頁的 .rule-level／.rule-ladder：兩頁是同一組的兩個派別，
+ * 「規則叫你做什麼」這種句子在兩頁長得一樣，才讀得出它們是同一種東西。
+ * -------------------------------------------------------------------------- */
+.val-views { padding: 12px 14px 0; }
+
+.val-lv {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+
+.val-lv--cheap { color: var(--star3); }
+.val-lv--below { color: var(--star2); }
+.val-lv--above { color: var(--muted); }
+.val-lv--pricey { color: var(--star1); }
+
+.val-good { color: var(--star3); font-weight: 600; }
+.val-digest { color: var(--star2); font-weight: 600; }
+.val-trap { color: var(--side); font-weight: 600; }
+.val-fwd { white-space: nowrap; }
+
+/* 一列：左邊是區間條（取代排行榜的名次欄），中間名稱，右邊本益比與營收 */
+.val-row { grid-template-columns: 4.6rem 1fr auto; color: inherit; text-decoration: none; }
+.val-row__band { display: flex; align-items: center; }
+
+/*
+ * 區間條：淡色的那一段是「平均最低 ~ 平均最高」，三道刻度，圓點是現在。
+ * 圓點落在淡色段左邊就是便宜，越過右端就是昂貴——三個數字不必讀也看得出位置。
+ */
+.val-band {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 14px;
+}
+
+.val-band::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 6px;
+  height: 2px;
+  background: var(--line);
+}
+
+.val-band__seg {
+  position: absolute;
+  top: 5px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.val-band__tick {
+  position: absolute;
+  top: 3px;
+  width: 1px;
+  height: 8px;
+  background: var(--muted);
+}
+
+.val-band__tick--avg { top: 1px; height: 12px; background: var(--text); }
+
+.val-band__dot {
+  position: absolute;
+  top: 3px;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: var(--star1);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+.val-band--none {
+  width: auto;
+  height: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.val-band--none::before { display: none; }
+
+.val-k {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.val-k--buy { color: var(--star3); }
+.val-k--hold { color: var(--muted); }
+.val-k--sell { color: var(--star1); }
+
+/* 題材列：點開是成分股 */
+.val-theme { border-bottom: 1px solid var(--line); }
+.val-theme:last-child { border-bottom: 0; }
+.val-theme.is-hot { box-shadow: inset 4px 0 0 var(--star3); }
+
+.val-theme__head {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 11px 14px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.val-theme__name { font-weight: 600; font-size: 14px; }
+.val-theme__name small { margin-left: 6px; font-weight: 400; color: var(--muted); }
+.val-theme__tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.val-theme__tags:empty { display: none; }
+.val-theme__tags .chip { margin: 0; }
+.val-hot { color: var(--star3); font-weight: 700; }
+
+.val-theme__nums,
+.val-theme__lv {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.val-theme__nums b { font-weight: 600; }
+.val-theme__body { background: var(--bg); border-top: 1px solid var(--line); }
+
+/* --------------------------------------------------------------------------
  * 操盤紀律（rule.html）
  *
  * 這一頁的顏色有第三種意思：「規則叫你做什麼」。紅綠已經被漲跌佔滿了（持股列裡

@@ -54,7 +54,12 @@ window.StockNav = (function () {
       { v: 'stock', label: '個股' }, { v: 'compare', label: '對照' }] },
     // 紀律不回答「市場上發生了什麼」，回答「照規則我今天該做什麼」—— 跟上面六組都不是
     // 同一種問題，所以自成一組，而不是塞進技術或資金裡當第五個分頁。
-    { key: 'rule', label: '紀律', views: [{ v: 'rule', label: '紀律', href: 'rule.html' }] },
+    //
+    // 底下是兩個相反的派別：「紀律」是趨勢派（跌破均線就走），「價值」是價值派（跌下來、
+    // 本益比回到自己的低檔就撿）。擺在同一組，是要人先決定一筆錢屬於哪一派再照那一派做。
+    { key: 'rule', label: '紀律', views: [
+      { v: 'rule', label: '紀律', href: 'rule.html' },
+      { v: 'value', label: '價值', href: 'value.html' }] },
   ];
 
   /*

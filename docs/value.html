@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>價值紀律</title>
+<meta name="description" content="逢低、看本益比位階的價值派規則：大盤該不該撿、哪個題材量價齊揚、哪幾檔在自己的歷史區間裡算便宜">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0f1216">
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+<!-- ?v= 是前端版號，各頁與 sw.js 要一致，見 index.html 的說明 -->
+<link rel="stylesheet" href="style.css?v=67">
+<!-- 亮／暗切換。這一支刻意不用 defer：要在 HTML 畫出來之前就把 data-theme 掛上去，
+     否則深色使用者每次開頁都會先被白底閃一下。理由完整版在 theme.js 的開頭。 -->
+<script src="theme.js?v=67"></script>
+</head>
+<!-- data-view 告訴 nav.js：這是獨立頁面，而且停在「紀律」群組的「價值」那一項 -->
+<body data-view="value">
+
+<header class="app-bar">
+  <div class="app-bar__top">
+    <h1>價值紀律</h1>
+  </div>
+  <p class="app-bar__meta" id="meta">載入中…</p>
+</header>
+
+<!-- 與排行榜同一套兩層導覽，由 nav.js 從同一份 NAV 畫出來。 -->
+<nav class="tabs"></nav>
+<nav class="subtabs"></nav>
+
+<main id="view" class="view">
+  <p class="hint">載入中…</p>
+</main>
+
+<footer class="foot">
+  逢低、看本益比位階的價值派做法，照每天的收盤、證交所與櫃買的本益比，以及公開資訊觀測站的月營收
+  機械式地套規則。本益比是近四季的，不是法人預估；這一頁不是投資建議。
+</footer>
+
+<script src="nav.js?v=67" defer></script>
+<script src="value.js?v=67" defer></script>
+</body>
+</html>

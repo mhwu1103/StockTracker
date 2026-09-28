@@ -50,6 +50,12 @@ jobs:
         continue-on-error: true
         run: python scripts/fetch_taiex.py
 
+      # 價值頁的本益比／殖利率／股淨比（當月那一檔每天覆寫）與最近兩個月的月營收。
+      # 只影響價值頁，掛掉不該連帶讓當日行情更新失敗。
+      - name: 抓本益比與月營收
+        continue-on-error: true
+        run: python scripts/fetch_value.py
+
       # 產業別幾乎不會變，但它只是輔助資訊：證交所這支 API 掛掉時
       # 不該連帶讓當日行情更新失敗，所以允許這一步出錯。
       - name: 更新產業別對照
@@ -176,6 +182,12 @@ jobs:
       - name: 重算四市題材
         continue-on-error: true
         run: python scripts/build_cross.py
+
+      # 價值頁。吃 close/、taiex.json、value/（上面 fetch_value 寫的）與報價頁的
+      # quotes/index.json，所以排在 build_quotes.py 之後。
+      - name: 重算價值頁
+        continue-on-error: true
+        run: python scripts/build_value.py
 
       - name: 提交資料變更
         run: |

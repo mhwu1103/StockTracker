@@ -1,7 +1,7 @@
 """檢查前端版號是否一致。
 
 `docs/sw.js` 的 VERSION，與 `docs/index.html`、`docs/us.html`、`docs/jp.html`、`docs/kr.html`、
-`docs/cross.html`、`docs/x.html`、`docs/rule.html` 裡每一個 `?v=` 都必須
+`docs/cross.html`、`docs/x.html`、`docs/rule.html`、`docs/value.html` 裡每一個 `?v=` 都必須
 是同一個數字。這是靠人記得同步的約定，而它已經漏過一次：us.html 卡在 ?v=25 的時候
 index.html 已經到 35，中間十個版本裡 us.html 一直載的是另一份 style.css 快取——
 畫面看起來正常，所以沒人發現。
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 DOCS = Path(__file__).resolve().parent.parent / "docs"
-PAGES = ("index.html", "us.html", "jp.html", "kr.html", "cross.html", "x.html", "rule.html")
+PAGES = ("index.html", "us.html", "jp.html", "kr.html", "cross.html", "x.html", "rule.html", "value.html")
 
 SW_RE = re.compile(r"(const VERSION = ')(\d+)(')")
 QS_RE = re.compile(r"(\?v=)(\d+)")
