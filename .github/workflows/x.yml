@@ -39,7 +39,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      # 這一條流程只用標準函式庫與 curl，不必裝 requirements.txt。
+      # fetch_x.py 本身只用標準函式庫與 curl，但它和 build_x.py 都經由 serenity.py
+      # 匯入 twse.py（路徑、寫檔、時區都在那裡），而 twse.py 一開頭就 import requests。
+      # 不裝的話兩支都會在 import 那一行就死掉 —— fetch 那一步是 continue-on-error，
+      # 錯誤會被吞掉，看起來像是「X 沒抓到東西」。
+      - name: 安裝相依套件
+        run: pip install -r requirements.txt
 
       # 抓不到不該讓流程紅掉 —— X 改版、暫時擋住、或 runner 的 IP 被限流都有可能，
       # 下一次排程（三小時後）會再試。但要留得下痕跡：fetch_x.py 解析不出東西時
