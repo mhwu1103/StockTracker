@@ -67,8 +67,18 @@ def main() -> int:
             if not rows:
                 print(f"  ! {market} {month}：往回找了 15 天都沒有資料")
                 continue
+            # 月初收盤前（或月初連假）跑，當月還沒有交易日，往回找會找到上個月底。
+            # 那一份照它自己的日期歸到上個月的檔 —— 寫進當月的話，同一個月底會在
+            # 兩個月檔各出現一次，band() 與回測都會把它算成兩個樣本。
+            # 上個月的檔若因為月底那天排程漏跑而停在更早的日子，這裡順便補上。
+            # 用另一個變數：month 是外層迴圈的，改掉它的話下一個市場會拿到上個月、
+            # 然後被上面「過去月份已存在就略過」那一條擋掉。
+            belongs = f"{day:%Y-%m}"
+            if belongs != month:
+                path = valuation.pe_path(market, belongs)
+                print(f"  本益比 {market}：{month} 還沒有交易日，找到的 {day} 歸到 {belongs}")
             changed = twse.write_if_changed(path, {"d": day.isoformat(), "c": rows})
-            print(f"  本益比 {market} {month}（{day}）：{len(rows)} 檔{'' if changed else '，無變化'}")
+            print(f"  本益比 {market} {belongs}（{day}）：{len(rows)} 檔{'' if changed else '，無變化'}")
 
     # ---- 月營收 ----
     last_month = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
