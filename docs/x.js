@@ -356,12 +356,13 @@ function sourceNote(data) {
   return `<section class="card note">
     <h2>這份資料怎麼來的</h2>
     <p>來源是 X 上 <a class="linky" href="https://x.com/aleabitoreddit" target="_blank"
-      rel="noopener noreferrer">@aleabitoreddit</a> 的公開貼文，每 3 小時抓一次首屏。
+      rel="noopener noreferrer">@aleabitoreddit</a> 的公開貼文，不定期手動抓首屏。
       內容原樣保存，沒有翻譯也沒有改寫。</p>
     <p>2025-07 到 2026-09-17 的 6592 則是從社群維護的公開存檔一次灌進來的（標記為
       <code>archive</code>），那一段沒辦法逐則回頭核對；之後的是這裡自己抓的。
-      首屏一次只有 5 則而他日均約 15 則，所以排程頻率就是資料完整性本身 ——
-      漏掉的貼文沒有第二個地方拿得到。</p>
+      首屏一次只有 5 則而他日均約 15 則，所以抓的間隔就是資料完整性本身 ——
+      漏掉的貼文沒有第二個地方拿得到。X 擋掉了雲端主機，沒辦法排程自動抓，
+      所以兩次手動更新之間的貼文會有缺口。</p>
     <p>他的貼文是一個人的判斷，而且多半是還沒被市場確認的推論。這一頁只負責讓你
       查得到他說過什麼、什麼時候說的，不對內容做任何背書。</p>
   </section>`;
