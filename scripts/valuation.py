@@ -25,12 +25,14 @@
 一個月，要看「成長有沒有在加速」「是不是一年來新高」就得有前面幾個月，所以走這條。
 結尾的 `_0` 是國內公司，`_1` 是 KY 等外國公司，兩頁都要。
 
-存成 `value/rev/YYYY-MM.json`：{代號: [當月營收（千元）, 年增率 %]}。
+存成 `value/rev/YYYY-MM.json`：{代號: [當月營收（千元）, 年增率 %]}。回測要五年，所以回補的
+長度跟本益比一樣是 61 個月以上（再多三個月，才算得出第一個月的「近三月平均」）。
 """
 
 from __future__ import annotations
 
 import re
+import time
 from datetime import date, timedelta
 
 import requests
@@ -74,28 +76,38 @@ def _check_fields(fields: list, want: dict, source: str) -> dict:
 
 
 def fetch_pe(market: str, day: date):
-    """那一天全市場的 {代號: [本益比, 殖利率, 股淨比]}；不是交易日回 None。"""
+    """那一天全市場的 {代號: [本益比, 殖利率, 股淨比, 收盤價]}；不是交易日回 None。
+
+    收盤價是給回測用的（build_value_backtest.py）：那一天的位階之後漲了多少，要有那一天的價。
+    上市的 BWIBBU 本來就帶收盤價；上櫃的 peQryDate 沒有，另外抓同一天的 dailyQuotes 併進來
+    ——同一個日期、同一個交易日曆，不會有「本益比是這天、價格是那天」的錯位。
+    """
     if market == "twse":
         raw = twse.fetch_json(TWSE_PE_URL, {"date": day.strftime("%Y%m%d"),
                                             "selectType": "ALL", "response": "json"})
         if raw.get("stat") != "OK":
             return None
         fields, rows = raw.get("fields") or [], raw.get("data") or []
+        want = {"code": "代號", "pe": "本益比", "yld": "殖利率", "pb": "淨值比", "close": "收盤"}
+        closes = None
     else:
         raw = twse.fetch_json(TPEX_PE_URL, {"date": day.strftime("%Y/%m/%d"), "response": "json"})
         tables = raw.get("tables") or []
         if not tables or not tables[0].get("data"):
             return None
         fields, rows = tables[0].get("fields") or [], tables[0]["data"]
+        want = {"code": "代號", "pe": "本益比", "yld": "殖利率", "pb": "淨值比"}
+        daily = twse.fetch_tpex_daily(day)
+        closes = {r["code"]: r["close"] for r in daily[1]} if daily else {}
 
-    col = _check_fields(fields, {"code": "代號", "pe": "本益比", "yld": "殖利率", "pb": "淨值比"},
-                        market)
+    col = _check_fields(fields, want, market)
     out = {}
     for row in rows:
         code = str(row[col["code"]]).strip()
         if not twse.is_tracked_code(code):
             continue
-        out[code] = [_num(row[col["pe"]]), _num(row[col["yld"]]), _num(row[col["pb"]])]
+        close = _num(row[col["close"]]) if closes is None else closes.get(code)
+        out[code] = [_num(row[col["pe"]]), _num(row[col["yld"]]), _num(row[col["pb"]]), close]
     return out or None
 
 
@@ -110,6 +122,30 @@ def fetch_pe_on_or_before(market: str, day: date, *, tries: int = 15):
         if got:
             return d, got
     return None, None
+
+
+def _get_mops(url: str, *, retries: int = 4, backoff: float = 5.0):
+    """抓一頁月營收彙總表；404（那個月還沒公布、或那一類公司沒有）回 None。
+
+    觀測站偶爾會回 502／503，回補五年時一次一百多頁，幾乎一定碰得到一次。第一版沒有重試，
+    一個 502 就讓整支停在 2023-05——所以 5xx 與連線錯誤都等一下再試，404 則是正常的「沒有」。
+    """
+    last = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(url, headers=twse.HEADERS, timeout=40)
+            if resp.status_code == 404:
+                return None
+            if resp.status_code < 500:
+                resp.raise_for_status()
+                return resp
+            last = f"HTTP {resp.status_code}"
+        except requests.RequestException as err:
+            last = err
+        if attempt < retries:
+            print(f"  ! {last} — {backoff * attempt:.0f} 秒後重試（{attempt}/{retries}）：{url}")
+            time.sleep(backoff * attempt)
+    raise RuntimeError(f"抓不到 {url}：{last}")
 
 
 ROW_RE = re.compile(
@@ -130,13 +166,9 @@ def fetch_revenue(market: str, year: int, month: int):
     checked = bad = 0
     for kind in ("0", "1"):
         url = MOPS_REV_URL.format(board=BOARDS[market], roc=year - 1911, month=month, kind=kind)
-        try:
-            resp = requests.get(url, headers=twse.HEADERS, timeout=40)
-        except requests.RequestException as err:
-            raise RuntimeError(f"抓不到 {url}：{err}") from err
-        if resp.status_code == 404:
+        resp = _get_mops(url)
+        if resp is None:
             continue
-        resp.raise_for_status()
         html = resp.content.decode("big5-hkscs", errors="replace")
         for code, cells in ROW_RE.findall(html):
             vals = [twse.clean_number(c) for c in CELL_RE.findall(cells)]

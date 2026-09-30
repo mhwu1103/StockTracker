@@ -237,7 +237,12 @@ def band(samples: list):
     vals = [v for _, v in samples]
     years = []
     for k in range(BAND_YEARS):
-        chunk = [v for v in vals[max(0, len(vals) - 12 * (k + 1)):len(vals) - 12 * k] if v is not None]
+        end = len(vals) - 12 * k
+        # 序列不夠長時 end 會變成負數，而 vals[0:-6] 在 Python 裡是「去掉最後六個」——
+        # 那會憑空多出一年，而且跟前一年重疊。短歷史的股票就這樣被評了價
+        if end <= 0:
+            break
+        chunk = [v for v in vals[max(0, end - 12):end] if v is not None]
         if len(chunk) >= MIN_SAMPLES:
             years.append((min(chunk), statistics.mean(chunk), max(chunk)))
     if len(years) < MIN_YEARS:
@@ -332,7 +337,7 @@ def main() -> int:
     pe_asof = None
     for market, rows in pe_hist.items():
         for month, day, table in rows:
-            for code, (pe, yld, pb) in table.items():
+            for code, (pe, yld, pb, *_) in table.items():   # 第四欄是收盤價，回測才用
                 pe_series[code].append((month, pe if pe and 0 < pe <= PE_MAX else None))
                 pb_series[code].append((month, pb if pb and pb > 0 else None))
         if rows:
@@ -377,7 +382,7 @@ def main() -> int:
     universe = set(sub_of) | {c for c, ind in industry.items() if ind == FIN_INDUSTRY}
     stocks = {}
     for code in sorted(universe):
-        pe, yld, pb = now.get(code) or (None, None, None)
+        pe, yld, pb = (now.get(code) or (None, None, None))[:3]
         series = bars.get(code) or {}
         price = series.get(last, (None, None, None))[2]
         pe_band = band(pe_series.get(code, []))

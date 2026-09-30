@@ -12,6 +12,7 @@
  *   估值   每一檔的本益比落在它自己近五年區間的哪一格
  *   存股   金融股的殖利率、5% 殖利率價、股淨比位階
  *   價差   KD 20／80，只給 ETF 與金融股
+ *   回測   過去每個月底照同一套規則判的位階，之後 3／6／12 個月真的比較會漲嗎
  *   規則   上面每一條的門檻
  *
  * 最上面的搜尋框跨過這六個軸：打代號、名稱或子族群名，列出符合的每一檔，並把這一頁對它的
@@ -30,6 +31,7 @@ const VIEWS = [
   { value: 'stock', label: '估值' },
   { value: 'income', label: '存股' },
   { value: 'kd', label: '價差' },
+  { value: 'backtest', label: '回測' },
   { value: 'rules', label: '規則' },
 ];
 
@@ -74,6 +76,8 @@ const state = {
   sort: 'pos',
   openT: new Set(),
   q: '',
+  h: '12',
+  bt: undefined,       // 回測資料：undefined 還沒載、null 載不到
 };
 
 // 搜尋結果最多列幾檔。打一個字（「電」）就會命中上百檔，全畫出來既慢也不是在找東西
@@ -83,6 +87,7 @@ const KEYS = {
   view: 'stocktracker.valueview',
   lv: 'stocktracker.valuelv',
   sort: 'stocktracker.valuesort',
+  h: 'stocktracker.valueh',
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -351,6 +356,130 @@ function kdView(d) {
 // 6. 規則
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// 7. 回測
+// --------------------------------------------------------------------------
+
+const HORIZONS = [
+  { value: '3', label: '持有 3 個月' },
+  { value: '6', label: '持有 6 個月' },
+  { value: '12', label: '持有 12 個月' },
+];
+
+// 回測的組。後三組是把前兩格再依業績切開，或把偏貴那兩格挑出成長夠的——
+// 驗證的是頁面上那兩條補充規則，所以跟四格並列、但用縮排標出它們是子集合。
+const BT_GROUPS = [
+  { key: 'cheap', label: '便宜' },
+  { key: 'below', label: '相對便宜' },
+  { key: 'above', label: '偏貴' },
+  { key: 'pricey', label: '昂貴' },
+  { key: 'solid', label: '便宜＋營收沒衰退', sub: true },
+  { key: 'trap', label: '便宜＋營收衰退（陷阱）', sub: true },
+  { key: 'digest', label: '偏貴＋成長消化得掉', sub: true },
+];
+
+async function loadBacktest() {
+  if (state.bt !== undefined) return;
+  state.bt = null;
+  try {
+    const res = await fetch(`${DATA}/value_backtest.json`);
+    if (!res.ok) throw new Error(res.status);
+    state.bt = await res.json();
+  } catch (err) {
+    console.warn('載不到回測', err);
+    state.bt = false;
+  }
+  render();
+}
+
+/** 一句話的結論：只講資料說了什麼，並且把「說不了什麼」接在後面。 */
+function btVerdict(g) {
+  const c = g.cheap;
+  const p = g.pricey;
+  if (!c || !p || !c.n || !p.n) return '樣本不足，下不了結論。';
+  const gap = c.medEx - p.medEx;
+  const lead = gap >= 1
+    ? `便宜那一格的超額中位數比昂貴那一格多 <b>${gap.toFixed(1)}</b> 個百分點，這把尺在這段期間<b>有用</b>。`
+    : gap <= -1
+      ? `便宜那一格反而比昂貴那一格少 <b>${(-gap).toFixed(1)}</b> 個百分點，這把尺在這段期間<b>不管用</b>——多頭裡漲最多的常常本來就貴。`
+      : '便宜與昂貴兩格的差距不到 1 個百分點，這段期間<b>看不出差別</b>。';
+  const s = g.solid;
+  const t = g.trap;
+  const trap = s && t && s.n && t.n
+    ? (s.medEx - t.medEx >= 1
+      ? `便宜而營收沒衰退的，比營收衰退的多 ${(s.medEx - t.medEx).toFixed(1)} 個百分點：「便宜的前提是業績沒問題」站得住。`
+      : `便宜而營收沒衰退的，沒有比營收衰退的好（差 ${(s.medEx - t.medEx).toFixed(1)} 個百分點）：陷阱這條在這段期間沒有幫上忙。`)
+    : '';
+  return `${lead}${trap}`;
+}
+
+function backtestView() {
+  if (state.bt === undefined || state.bt === null) {
+    loadBacktest();
+    return '<p class="hint">載入回測中…</p>';
+  }
+  if (state.bt === false) {
+    return `<p class="hint">回測資料載不到。要先跑 <code>scripts/build_value_backtest.py</code>。</p>`;
+  }
+  const bt = state.bt;
+  const g = bt.groups[state.h];
+  const per = bt.periods[state.h];
+  const cell = (v) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`);
+  const cls = (v) => (v > 0 ? 'up' : v < 0 ? 'down' : '');
+  const rows = BT_GROUPS.map(({ key, label, sub }) => {
+    const x = g[key] || { n: 0 };
+    return `<tr class="${sub ? 'val-bt-sub' : ''}">
+      <th>${sub ? '└ ' : ''}${esc(label)}</th>
+      <td><b>${x.n ? x.n.toLocaleString('zh-TW') : '—'}</b></td>
+      <td><b class="${cls(x.med)}">${cell(x.med)}</b></td>
+      <td><b class="${cls(x.medEx)}">${cell(x.medEx)}</b></td>
+      <td><b>${x.n ? `${x.up}%` : '—'}</b></td>
+      <td><b>${x.n ? `${x.beat}%` : '—'}</b></td>
+    </tr>`;
+  }).join('');
+
+  const years = [...new Set(Object.values(bt.byYear[state.h] || {}).flatMap((y) => Object.keys(y)))].sort();
+  const yearRows = BT_GROUPS.filter(({ key }) => (bt.byYear[state.h] || {})[key]).map(({ key, label, sub }) => `<tr class="${sub ? 'val-bt-sub' : ''}">
+      <th>${sub ? '└ ' : ''}${esc(label)}</th>
+      ${years.map((y) => {
+        const v = bt.byYear[state.h][key][y];
+        return `<td><b class="${cls(v)}">${cell(v)}</b></td>`;
+      }).join('')}
+    </tr>`).join('');
+
+  return `<section class="card">
+      <p class="lede">把「今天」換成過去的每一個月底：用<b>那時候</b>看得到的本益比區間與營收，照這一頁同一套規則判位階，
+      再看之後的報酬。報酬含當時殖利率換算的現金股利；<b>超額</b>是減掉同一個月底全市場普通股的報酬中位數（等權）。
+      範圍是全市場，不是題材清單——題材清單是今天挑的，拿它回測等於先挑了贏家。</p>
+      <div class="controls">${pills('h', HORIZONS, state.h)}</div>
+      <p class="rule-level rule-level--${(g.cheap && g.pricey && g.cheap.medEx - g.pricey.medEx >= 1) ? 'ok' : 'warn'}">
+        <span>${btVerdict(g)}</span></p>
+      <div class="tbl-wrap"><table class="tbl val-bt">
+        <thead><tr><th>當時的位階</th><th>樣本（檔×月）</th><th>報酬中位數</th><th>超額中位數</th><th>上漲比例</th><th>贏市場比例</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <p class="note">起點是 ${esc(per.from || '—')} 到 ${esc(per.to || '—')} 的 ${per.n} 個月底。本益比資料從 ${esc(bt.dataFrom)} 開始，
+        區間要滿三年才評價，所以最早只能從 ${esc(bt.firstRated || '—')} 起算。</p>
+    </section>
+    <section class="card">
+      <h2>逐年的超額中位數 <small>一年贏、一年輸的話，平均起來的數字不可信</small></h2>
+      <div class="tbl-wrap"><table class="tbl val-bt">
+        <thead><tr><th>起點年份</th>${years.map((y) => `<th>${esc(y)}</th>`).join('')}</tr></thead>
+        <tbody>${yearRows}</tbody>
+      </table></div>
+    </section>
+    <section class="card note">
+      <h2>這組數字不能說明的</h2>
+      <p><b>整段幾乎都是 AI 多頭。</b>多頭裡漲最多的常常本來就貴，「便宜」輸很正常；便宜真正的價值是空頭裡跌得少，
+        這一段資料回答不了。</p>
+      <p><b>樣本數看起來比實際可靠。</b>每個月重判一次、持有期又重疊，同一檔會連續好幾個月被算進同一組，樣本是「檔 × 月」，
+        不是獨立的次數。</p>
+      <p><b>股票股利與分割補不回來。</b>收盤價沒有還原權息，現金股利用殖利率補了，配股與分割沒有；配股多的金融股、營建股
+        會被低估。只看中位數，就是為了不讓幾檔分割把數字拉走。</p>
+      <p><b>存活者偏誤。</b>下市、合併的公司在期末沒有價格，被排除在外，每一組都偏高一點。</p>
+    </section>`;
+}
+
 function rulesView(d) {
   const r = d.rules;
   const m = d.market.rules;
@@ -498,7 +627,7 @@ function render() {
     $('#view').innerHTML = searchView(d);
     return;
   }
-  const view ={ market: marketView, theme: themeView, stock: stockView, income: incomeView, kd: kdView, rules: rulesView }[state.view] || marketView;
+  const view = { market: marketView, theme: themeView, stock: stockView, income: incomeView, kd: kdView, backtest: backtestView, rules: rulesView }[state.view] || marketView;
   $('#view').innerHTML = `
     <section class="card"><div class="controls val-views">${pills('view', VIEWS, state.view)}</div></section>
     ${view(d)}`;
@@ -515,6 +644,9 @@ function bind() {
     } else if (ds.lv) {
       state.lv = ds.lv;
       save(KEYS.lv, state.lv);
+    } else if (ds.h) {
+      state.h = ds.h;
+      save(KEYS.h, state.h);
     } else if (ds.sort) {
       state.sort = ds.sort;
       save(KEYS.sort, state.sort);
@@ -569,6 +701,7 @@ function restore() {
     state.view = pick(KEYS.view, VIEWS) || state.view;
     state.lv = pick(KEYS.lv, LEVEL_FILTERS) || state.lv;
     state.sort = pick(KEYS.sort, STOCK_SORTS) || state.sort;
+    state.h = pick(KEYS.h, HORIZONS) || state.h;
   } catch (err) {
     /* 讀不到就用預設 */
   }

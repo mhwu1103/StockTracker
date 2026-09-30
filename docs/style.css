@@ -2281,6 +2281,10 @@ button.ustag {
 
 .val-muted { color: var(--muted); }
 
+/* 回測表：子集合那三列縮小一級、字色淡一階，看得出它們是上面兩格再切開的 */
+.val-bt tbody tr.val-bt-sub th { font-weight: 400; color: var(--muted); padding-left: 14px; }
+.val-bt tbody tr.val-bt-sub td b { font-size: 13px; }
+
 /* 題材列：點開是成分股 */
 .val-theme { border-bottom: 1px solid var(--line); }
 .val-theme:last-child { border-bottom: 0; }

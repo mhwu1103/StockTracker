@@ -189,6 +189,12 @@ jobs:
         continue-on-error: true
         run: python scripts/build_value.py
 
+      # 價值頁的回測：同一套規則放回過去每個月底。只讀 value/pe/ 與 value/rev/，
+      # 月底的資料一個月才變一次，每天跑是因為它只要兩秒，不必另外排一個月排程。
+      - name: 重算價值頁回測
+        continue-on-error: true
+        run: python scripts/build_value_backtest.py
+
       - name: 提交資料變更
         run: |
           git config user.name "github-actions[bot]"
