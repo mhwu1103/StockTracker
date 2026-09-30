@@ -57,7 +57,21 @@ jobs:
         id: fetch
         continue-on-error: true
         timeout-minutes: 5
+        env:
+          X_DUMP: ${{ runner.temp }}/x_profile.html
         run: python scripts/fetch_x.py
+
+      # 解析不出貼文時 fetch_x.py 會把 X 回的原始頁面寫到 X_DUMP。runner 拿到的
+      # 頁面本機重現不了（IP 不同），所以把它留下來下載看 —— log 裡那幾行特徵
+      # 分不出原因時，就打開這一份。curl 本身失敗時沒有頁面，這一步會找不到檔而略過。
+      - name: 留下 X 回的原始頁面
+        if: steps.fetch.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: x-profile-${{ github.run_id }}
+          path: ${{ runner.temp }}/x_profile.html
+          if-no-files-found: ignore
+          retention-days: 7
 
       # 就算這次沒抓到新的也要重建：互動數會變，而「最近 30 天熱度」是滑動窗，
       # 不重算的話它會停在上一次真的抓到東西的那一天。

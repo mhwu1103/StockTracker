@@ -35,9 +35,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 
 import serenity
 import twse
@@ -206,15 +208,24 @@ def main() -> int:
         return seed(dry_run=args.dry_run)
 
     try:
-        rows = serenity.fetch_latest()
+        html = serenity.fetch_text(serenity.PROFILE_URL)
     except Exception as err:  # noqa: BLE001
         print(f"! 抓不到 profile：{type(err).__name__}: {err}")
         return 1
 
+    rows = serenity.fetch_latest(html)
     if not rows:
-        # 解析不出東西，多半是 X 換了首屏那份 blob 的長相。把它跟「這次沒有
-        # 新貼文」分開報 —— 後者是常態，前者要有人去改 parse_profile。
-        print("! profile 抓到了，但一則貼文都解析不出來 —— X 的頁面結構可能變了")
+        # 解析不出東西有兩種：X 換了首屏那份 blob 的長相（要改 parse_profile），
+        # 或是 runner 的 IP 被丟到登入牆的空殼（改程式沒用）。把它跟「這次沒有
+        # 新貼文」分開報 —— 後者是常態 —— 並把頁面的特徵印出來分辨前兩者。
+        print("! profile 抓到了，但一則貼文都解析不出來 —— 被擋或頁面結構變了：")
+        for line in serenity.describe_page(html):
+            print(f"    {line}")
+        # x.yml 會設這個變數，並把這一份上傳成 artifact。本機跑不設就不寫。
+        dump = os.environ.get("X_DUMP")
+        if dump:
+            Path(dump).write_text(html, encoding="utf-8")
+            print(f"  原始頁面存到 {dump}")
         return 1
 
     print(f"首屏 {len(rows)} 則（{rows[-1]['ts'][:16]} ~ {rows[0]['ts'][:16]}）")

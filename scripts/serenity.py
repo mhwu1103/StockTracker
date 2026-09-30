@@ -234,11 +234,45 @@ def parse_profile(html: str, user: str = USER) -> list:
     return rows
 
 
-def fetch_latest() -> list:
-    """抓 profile 首屏的那幾則。時間新的在前。"""
-    rows = parse_profile(fetch_text(PROFILE_URL))
+def fetch_latest(html: str | None = None) -> list:
+    """抓 profile 首屏的那幾則。時間新的在前。
+
+    可以傳入已經抓好的 HTML —— fetch_x.py 解析失敗時要回頭看那一份頁面。
+    """
+    rows = parse_profile(fetch_text(PROFILE_URL) if html is None else html)
     rows.sort(key=lambda r: int(r["id"]), reverse=True)
     return rows
+
+
+# 解析不出貼文時，頁面裡這些字樣出現幾次。對照組是 2026-10-01 從台灣 IP 抓到的
+# 正常頁：約 160 KB、title 是「Serenity (@aleabitoreddit) / X」、entry_id 5 個、
+# __typename:"User" 7 個、full_text 4 個、「Log in」4 個 —— 所以「Log in」
+# 出現**不代表**被擋，正常頁也有那顆按鈕；要看的是 entry_id 與 User 是不是歸零。
+PAGE_MARKERS = [
+    'entry_id:"tweet-',
+    '__typename:"User"',
+    "full_text",
+    "Log in",
+    "JavaScript is not available",
+    "Something went wrong",
+    "rate limit",
+]
+
+
+def describe_page(html: str) -> list:
+    """把一份抓回來的頁面濃縮成幾行，印在 Actions 的 log 裡。
+
+    runner 走 Azure 的 IP，X 回給它的可能跟回給開發機的不一樣，而本機重現
+    不了。這幾行要讓人只看 log 就分得出「被擋在登入牆外」（User 與 entry_id
+    都歸零、頁面變小）與「結構改了」（User 還在、entry_id 沒了）。
+    """
+    title = re.search(r"<title[^>]*>(.*?)</title>", html, re.S)
+    lines = [
+        f"大小 {len(html.encode('utf-8')) / 1024:.1f} KB",
+        f"title：{title.group(1).strip()[:120] if title else '（沒有）'}",
+    ]
+    lines += [f"{k}：{html.count(k)}" for k in PAGE_MARKERS]
+    return lines
 
 
 def month_of(row: dict) -> str:
