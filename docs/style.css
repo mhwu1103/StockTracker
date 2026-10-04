@@ -2633,3 +2633,30 @@ button.ustag {
   .cyc-row { grid-template-columns: 3.2rem 1fr auto; }
   .cyc-row .spark { display: none; }
 }
+
+/* 景氣頁的「月曆」 */
+.cyc-tabs { padding: 10px 14px 0; margin-bottom: 10px; }
+.ssn-row { grid-template-columns: 1fr auto auto; color: inherit; text-decoration: none; }
+/* 每一年一根小長條：中線以上紅（贏）、以下綠（輸），高度是超額的大小 */
+.ssn-years { display: flex; align-items: center; gap: 2px; height: 28px; }
+.ssn-bar { position: relative; display: block; width: 6px; height: 100%; }
+.ssn-bar::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: calc(var(--h) / 2);
+  background: currentColor;
+  border-radius: 1px;
+}
+.ssn-bar.up::before { bottom: 50%; }
+.ssn-bar.down::before { top: 50%; }
+.ssn-bar--none::before { top: 50%; height: 1px; background: var(--line); }
+.ssn-inds { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border-top: 1px solid var(--line); }
+.ssn-ind { background: var(--surface); padding: 10px 14px; min-width: 0; }
+.ssn-ind h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.ssn-ind ol { margin: 0; padding: 0; list-style: none; }
+.ssn-ind li { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; padding: 3px 0; font-size: 13px; }
+.ssn-ind li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ssn-ind li em { font-style: normal; font-variant-numeric: tabular-nums; }
+.ssn-ind li small { color: var(--muted); font-variant-numeric: tabular-nums; }

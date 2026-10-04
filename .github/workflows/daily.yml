@@ -56,6 +56,11 @@ jobs:
         continue-on-error: true
         run: python scripts/fetch_value.py
 
+      # 除權息計算結果（今年與去年），景氣頁的月曆拿來還原股價。
+      - name: 抓除權息
+        continue-on-error: true
+        run: python scripts/fetch_exright.py
+
       # 產業別幾乎不會變，但它只是輔助資訊：證交所這支 API 掛掉時
       # 不該連帶讓當日行情更新失敗，所以允許這一步出錯。
       - name: 更新產業別對照
@@ -205,6 +210,11 @@ jobs:
       - name: 重算景氣頁
         continue-on-error: true
         run: python scripts/build_cycle.py
+
+      # 景氣頁的月曆：1～12 月清單與它的 walk-forward。讀 value/pe/ 與 exright/。
+      - name: 重算景氣頁月曆
+        continue-on-error: true
+        run: python scripts/build_season.py
 
       - name: 提交資料變更
         run: |
