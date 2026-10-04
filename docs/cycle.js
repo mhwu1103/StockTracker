@@ -1,0 +1,392 @@
+/*
+ * 景氣（cycle.html）：哪些股票的營收跟著景氣循環，它們現在走到循環的哪一段。
+ *
+ * 回答的問題：**景氣走到哪了？哪些產業、哪幾檔是循環股？各自在谷底、復甦、高峰還是退潮？**
+ *
+ *   景氣   所有公司近 3 個月營收年增的中位數，2019 年起的整條線
+ *   產業   哪些產業循環、前後兩半是不是都成立、現在年增多少
+ *   位置   循環股落在四格裡的哪一格，每一格是檔數也是篩選鈕
+ *   清單   每一檔的 beta、年增、距高峰；點開看它的營收年增疊在景氣線上
+ *   新跟上 前半段不跟景氣、後半段才同步的（這一輪的主角，不是傳統循環股）
+ *
+ * 判斷全在 scripts/build_cycle.py 算好，門檻也從那裡帶過來（data.rules），這裡只畫。
+ * 這是營收的循環，股價有沒有跟著走還沒有回測——頁面上不能長得像買賣訊號。
+ */
+
+const DATA = 'data';
+
+const PHASE = {
+  trough: { label: '谷底', hint: '離高峰遠，年增還是負的' },
+  recover: { label: '復甦', hint: '離高峰遠，年增已經轉正' },
+  peak: { label: '高峰', hint: '接近高峰，年增仍是正的' },
+  ebb: { label: '退潮', hint: '接近高峰，年增已經轉負' },
+};
+
+const VERS = [
+  { value: 'strict', label: '嚴格：前後兩半都成立' },
+  { value: 'loose', label: '寬鬆：只看全期' },
+];
+const SIZES = [
+  { value: '0', label: '不限' },
+  { value: '20', label: '營收 ≥ 20 億' },
+  { value: '100', label: '≥ 100 億' },
+];
+const SORTS = [
+  { value: 'beta', label: '振幅大到小' },
+  { value: 'vp', label: '離高峰遠到近' },
+  { value: 'yoy', label: '年增高到低' },
+];
+
+const PAGE = 40;          // 清單一次列幾檔
+
+const state = {
+  data: null,
+  ver: 'strict',
+  size: '20',
+  sort: 'beta',
+  phase: null,
+  ind: null,
+  open: new Set(),
+  more: 1,
+  freshMore: 1,
+};
+
+const KEYS = {
+  ver: 'stocktracker.cyclever',
+  size: 'stocktracker.cyclesize',
+  sort: 'stocktracker.cyclesort',
+};
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmt = (v, digits = 2) => (v === null || v === undefined ? '—'
+  : Number(v).toLocaleString('zh-TW', { maximumFractionDigits: digits }));
+const pct = (v, digits = 0) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(digits)}%`);
+const dir = (v) => (v > 0 ? 'up' : v < 0 ? 'down' : 'flat');
+
+function pills(name, options, current) {
+  return `<div class="pills">${options
+    .map((o) => `<button class="pill ${o.value === current ? 'active' : ''}" data-${name}="${o.value}">${esc(o.label)}</button>`)
+    .join('')}</div>`;
+}
+
+// --------------------------------------------------------------------------
+// 折線圖。SVG 直接畫，這一頁不值得為兩張圖載一個圖表庫。
+// --------------------------------------------------------------------------
+
+/**
+ * series：[{ v: [...], cls }]，與 months 等長、可有 null。負的那一段（景氣在收縮）上底色。
+ * shade：拿哪一條判斷收縮期；年份標在圖下面（SVG 是拉伸的，字放在裡面會變形）。
+ */
+function lineChart(months, series, { shade = null, height = 160, label = '' } = {}) {
+  const W = 600;
+  const H = 180;
+  const pad = 6;
+  const all = series.flatMap((s) => s.v).filter((v) => v !== null && v !== undefined);
+  const lo = Math.min(0, ...all);
+  const hi = Math.max(0, ...all);
+  const n = months.length;
+  const x = (k) => pad + (k / Math.max(1, n - 1)) * (W - pad * 2);
+  const y = (v) => pad + (1 - (v - lo) / (hi - lo || 1)) * (H - pad * 2);
+  const path = (v) => v.map((p, k) => (p === null || p === undefined ? null : `${x(k).toFixed(1)},${y(p).toFixed(1)}`))
+    .filter(Boolean).join(' ');
+
+  let bands = '';
+  if (shade) {
+    const step = (W - pad * 2) / Math.max(1, n - 1);
+    shade.forEach((v, k) => {
+      if (v !== null && v < 0) {
+        bands += `<rect class="cyc-chart__neg" x="${(x(k) - step / 2).toFixed(1)}" y="0" width="${step.toFixed(1)}" height="${H}"/>`;
+      }
+    });
+  }
+  const years = [];
+  months.forEach((m, k) => {
+    if (m.endsWith('-01')) years.push(`<span style="left:${(x(k) / W) * 100}%">${m.slice(0, 4)}</span>`);
+  });
+
+  return `<figure class="cyc-chart">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(label)}" style="height:${height}px">
+      ${bands}
+      <line class="cyc-chart__zero" x1="0" x2="${W}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>
+      ${series.map((s) => `<polyline class="cyc-line ${s.cls}" points="${path(s.v)}"/>`).join('')}
+    </svg>
+    <div class="cyc-chart__years">${years.join('')}</div>
+    <div class="cyc-chart__range">上 ${pct(hi)}　下 ${pct(lo)}</div>
+  </figure>`;
+}
+
+/** 近 12 個月營收的迷你走勢，以它自己的高點 = 100。 */
+function spark(values) {
+  const pts = values.filter((v) => v !== null);
+  const w = 68;
+  const h = 24;
+  if (pts.length < 2) return `<svg class="spark" viewBox="0 0 ${w} ${h}" aria-hidden="true"></svg>`;
+  const min = Math.min(...pts);
+  const span = 100 - min || 1;
+  const line = pts.map((v, i) => `${(1 + (i / (pts.length - 1)) * (w - 2)).toFixed(1)},${(h - 1 - ((v - min) / span) * (h - 2)).toFixed(1)}`).join(' ');
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${line}"/></svg>`;
+}
+
+// --------------------------------------------------------------------------
+// 1. 景氣
+// --------------------------------------------------------------------------
+
+function indexCard(d) {
+  const v = d.index[d.index.length - 1];
+  const prev = d.index[d.index.length - 2];
+  const share = d.share[d.share.length - 1];
+  const run = d.run;
+  const runText = run > 0 ? `連 ${run} 個月走高` : run < 0 ? `連 ${-run} 個月走低` : '持平';
+  let lo = Infinity;
+  let loAt = '';
+  let hi = -Infinity;
+  let hiAt = '';
+  d.index.forEach((x, k) => {
+    if (x === null) return;
+    if (x < lo) { lo = x; loAt = d.months[k]; }
+    if (x > hi) { hi = x; hiAt = d.months[k]; }
+  });
+  return `<section class="card">
+    <h2>景氣 <small>所有公司近 3 個月營收年增的中位數</small></h2>
+    <div class="stat-grid">
+      <div class="stat"><b class="${dir(v)}">${pct(v, 1)}</b><span>${esc(d.revMonth)}（上月 ${pct(prev, 1)}）</span></div>
+      <div class="stat"><b class="sm">${runText}</b><span>方向</span></div>
+      <div class="stat"><b>${share ?? '—'}%</b><span>年增為正的公司</span></div>
+    </div>
+    ${lineChart(d.months, [{ v: d.index, cls: 'cyc-line--mkt' }], { shade: d.index, label: '景氣指標：近 3 個月營收年增中位數' })}
+    <p class="note">底色是收縮期（中位數年增 &lt; 0）。這段期間的高點是 ${esc(hiAt)} 的 ${pct(hi, 1)}、
+      低點是 ${esc(loAt)} 的 ${pct(lo, 1)}。用中位數而不是加總，是因為加總會被台積電一家帶著走。
+      樣本 ${d.sample} 檔：非金融、資料滿 ${d.months.length - 8} 個月以上、月營收平均 ${fmt(d.rules.minRevWan, 0)} 萬以上。</p>
+  </section>`;
+}
+
+// --------------------------------------------------------------------------
+// 2. 產業
+// --------------------------------------------------------------------------
+
+const dots = (n) => `<span class="cyc-dots" title="前後兩半有幾段成立">${'<i class="on"></i>'.repeat(n)}${'<i></i>'.repeat(2 - n)}</span>`;
+
+function indRow(r) {
+  const on = state.ind === r.ind;
+  return `<button class="row cyc-ind ${on ? 'is-on' : ''}" data-ind="${esc(r.ind)}">
+    <span class="cyc-ind__beta"><b>${fmt(r.beta, 1)}</b><small>beta</small></span>
+    <span class="ident">
+      <span class="name">${esc(r.ind)}</span>
+      <span class="code">${dots(r.halves)} 前 ${r.b1.toFixed(1)}／後 ${r.b2.toFixed(1)} · ${r.cyc}／${r.n} 檔入選</span>
+    </span>
+    <span class="figures"><span class="value ${dir(r.yoy)}">${pct(r.yoy, 1)}</span><span class="price">現在年增</span></span>
+  </button>`;
+}
+
+function industryCard(d) {
+  const r = d.rules;
+  const isCyc = (x) => x.halves > 0 && x.beta >= r.beta;
+  const cyc = d.industries.filter(isCyc);
+  const rest = d.industries.filter((x) => !isCyc(x)).sort((a, b) => b.beta - a.beta);
+  const pass = (b, c) => b >= r.beta && c >= r.corr;
+  const early = cyc.filter((x) => pass(x.b1, x.c1) && !pass(x.b2, x.c2)).map((x) => x.ind);
+  return `<section class="card">
+    <h2>哪些產業是循環的 <small>成分股的中位數，點一下篩下面的清單</small></h2>
+    ${cyc.map(indRow).join('')}
+    <details class="cyc-more">
+      <summary>不太跟景氣的 ${rest.length} 個產業</summary>
+      ${rest.map(indRow).join('')}
+    </details>
+    <p class="note">beta：景氣（中位數年增）動 1%，這個產業的營收年增動幾 %。「前／後」是前後兩半（以 ${esc(d.split)} 為界）各自的 beta，圓點是那一半是否 beta ≥ ${r.beta} 且相關 ≥ ${r.corr}。${early.length ? `只有前半成立的是${early.map(esc).join('、')}：
+      後半段大家營收回升時它們沒跟上，這也是一種訊息。` : ''}</p>
+  </section>`;
+}
+
+// --------------------------------------------------------------------------
+// 3. 位置與 4. 清單
+// --------------------------------------------------------------------------
+
+function pool(d) {
+  const min = Number(state.size);
+  return d.stocks.filter((s) => s[state.ver] && s.rev >= min && (!state.ind || s.ind === state.ind));
+}
+
+function quadCard(d, list) {
+  const count = (p) => list.filter((s) => s.phase === p).length;
+  const cell = (p) => `<button class="cyc-quad__cell cyc-quad__cell--${p} ${state.phase === p ? 'is-on' : ''}" data-phase="${p}">
+      <b>${count(p)}</b><span>${PHASE[p].label}</span><small>${PHASE[p].hint}</small>
+    </button>`;
+  return `<section class="card">
+    <h2>循環位置 <small>${list.length} 檔各在哪一格，點一格篩清單</small></h2>
+    <div class="cyc-quad">
+      <span class="cyc-quad__y">年增為正</span>
+      ${cell('recover')}${cell('peak')}
+      <span class="cyc-quad__y cyc-quad__y--neg">年增為負</span>
+      ${cell('trough')}${cell('ebb')}
+      <span></span>
+      <span class="cyc-quad__x">離高峰遠（&lt; ${d.rules.nearPeak}%）</span>
+      <span class="cyc-quad__x">接近高峰</span>
+    </div>
+    <p class="note">橫軸是近 12 個月營收距離它自己歷史最高的位置，縱軸是近 3 個月營收年增率。
+      循環照理是 谷底 → 復甦 → 高峰 → 退潮 → 谷底 轉一圈。</p>
+  </section>`;
+}
+
+function stockRow(s, d) {
+  const open = state.open.has(s.c);
+  const ph = s.phase ? PHASE[s.phase] : null;
+  const detail = open ? `<div class="cyc-detail">
+      ${lineChart(d.months, [{ v: d.index, cls: 'cyc-line--mkt' }, { v: s.y, cls: 'cyc-line--stk' }],
+        { shade: d.index, height: 140, label: `${s.n || s.c} 的營收年增與景氣` })}
+      <div class="cyc-detail__keys"><span class="cyc-key cyc-line--stk">${esc(s.n || s.c)} 近 3 個月營收年增</span>
+        <span class="cyc-key cyc-line--mkt">景氣（中位數）</span></div>
+      <dl class="cyc-detail__dl">
+        <dt>振幅</dt><dd>beta 全期 ${fmt(s.beta, 1)}・前半 ${fmt(s.b1, 1)}・後半 ${fmt(s.b2, 1)}</dd>
+        <dt>同步</dt><dd>相關 全期 ${fmt(s.corr)}・前半 ${fmt(s.c1)}・後半 ${fmt(s.c2)}</dd>
+        <dt>衰退</dt><dd>近 12 個月營收最深回落 ${pct(s.dd)}，現在距高峰 ${pct(s.vp)}</dd>
+        <dt>規模</dt><dd>近 12 個月營收 ${fmt(s.rev, 0)} 億</dd>
+      </dl>
+      <a class="cyc-detail__link" href="index.html#/stock/${esc(s.c)}">看個股 K 線與法人 →</a>
+    </div>` : '';
+  return `<div class="cyc-item ${open ? 'is-open' : ''}">
+    <button class="row cyc-row" data-open="${esc(s.c)}">
+      <span class="cyc-tag cyc-tag--${s.phase || 'none'}">${ph ? ph.label : '—'}<small>β ${fmt(s.beta, 1)}</small></span>
+      <span class="ident">
+        <span class="name">${esc(s.n || s.c)}</span>
+        <span class="code">${esc(s.c)} · ${esc(s.ind)}</span>
+      </span>
+      ${spark(s.t)}
+      <span class="figures"><span class="value ${dir(s.yoy)}">${pct(s.yoy)}</span><span class="price">距高峰 ${pct(s.vp)}</span></span>
+    </button>
+    ${detail}
+  </div>`;
+}
+
+const SORT_FN = {
+  beta: (a, b) => b.beta - a.beta,
+  vp: (a, b) => (a.vp ?? 0) - (b.vp ?? 0),
+  yoy: (a, b) => (b.yoy ?? -1e9) - (a.yoy ?? -1e9),
+};
+
+function listCard(d, list) {
+  const rows = list.filter((s) => !state.phase || s.phase === state.phase).sort(SORT_FN[state.sort]);
+  const shown = rows.slice(0, PAGE * state.more);
+  const chips = [
+    state.phase ? `<button class="cyc-chip" data-phase="${state.phase}">${PHASE[state.phase].label} ✕</button>` : '',
+    state.ind ? `<button class="cyc-chip" data-ind="${esc(state.ind)}">${esc(state.ind)} ✕</button>` : '',
+  ].join('');
+  return `<section class="card" id="list">
+    <h2>循環股 <small>${rows.length} 檔，點一列展開</small></h2>
+    <div class="controls cyc-controls">
+      ${pills('ver', VERS, state.ver)}
+      ${pills('size', SIZES, state.size)}
+      ${pills('sort', SORTS, state.sort)}
+      ${chips ? `<div class="pills">${chips}</div>` : ''}
+    </div>
+    ${shown.length ? shown.map((s) => stockRow(s, d)).join('') : '<p class="hint">這個條件下沒有股票。</p>'}
+    ${rows.length > shown.length ? `<button class="cyc-morebtn" data-more="list">再列 ${Math.min(PAGE, rows.length - shown.length)} 檔（還有 ${rows.length - shown.length}）</button>` : ''}
+    <p class="note">右邊的數字是近 3 個月營收年增，下面一行是近 12 個月營收距它自己的高峰；迷你線是近 12 個月營收的走勢。
+      「嚴格」要前後兩半各自 beta ≥ ${d.rules.beta}、相關 ≥ ${d.rules.corr}，而且近 12 個月營收曾經回落 ${Math.abs(d.rules.drawdown)}% 以上。</p>
+  </section>`;
+}
+
+function freshCard(d) {
+  const min = Number(state.size);
+  const rows = d.stocks.filter((s) => s.fresh && s.rev >= min && (!state.ind || s.ind === state.ind))
+    .sort((a, b) => b.rev - a.rev);
+  if (!rows.length) return '';
+  const shown = rows.slice(0, 10 * state.freshMore);
+  return `<section class="card">
+    <h2>這一輪新跟上的 <small>${rows.length} 檔，依營收規模</small></h2>
+    <p class="lede">前半段營收<b>不跟</b>景氣（相關 &lt; ${d.rules.fresh1}）、後半段才高度同步的。
+      這比較像是<b>這一輪行情的主角</b>（AI、先進製程）把景氣線帶著走，不是傳統的循環股，所以不放進上面的名單。</p>
+    ${shown.map((s) => stockRow(s, d)).join('')}
+    ${rows.length > shown.length ? `<button class="cyc-morebtn" data-more="fresh">再列 10 檔（還有 ${rows.length - shown.length}）</button>` : ''}
+  </section>`;
+}
+
+// --------------------------------------------------------------------------
+
+function render() {
+  const d = state.data;
+  $('#meta').textContent = `營收 ${d.revMonth} · 樣本 ${d.sample} 檔 · 前後兩半以 ${d.split} 為界`;
+  const list = pool(d);
+  $('#view').innerHTML = indexCard(d) + industryCard(d) + quadCard(d, list) + listCard(d, list) + freshCard(d);
+}
+
+function bind() {
+  $('#view').addEventListener('click', (ev) => {
+    const el = ev.target.closest('button');
+    if (!el) return;
+    const ds = el.dataset;
+    let scroll = false;
+    if (ds.open) {
+      if (state.open.has(ds.open)) state.open.delete(ds.open);
+      else state.open.add(ds.open);
+    } else if (ds.phase) {
+      state.phase = state.phase === ds.phase ? null : ds.phase;
+      state.more = 1;
+    } else if (ds.ind !== undefined) {
+      const was = state.ind === ds.ind;
+      state.ind = was ? null : ds.ind;
+      state.more = 1;
+      scroll = !was && !el.classList.contains('cyc-chip');
+    } else if (ds.ver) {
+      state.ver = ds.ver;
+      save(KEYS.ver, ds.ver);
+    } else if (ds.size) {
+      state.size = ds.size;
+      save(KEYS.size, ds.size);
+    } else if (ds.sort) {
+      state.sort = ds.sort;
+      save(KEYS.sort, ds.sort);
+    } else if (ds.more === 'list') {
+      state.more += 1;
+    } else if (ds.more === 'fresh') {
+      state.freshMore += 1;
+    } else {
+      return;
+    }
+    // 重畫會把 <details> 收起來；產業的展開狀態要留著，不然點了下面那一群會整段闔上
+    const opened = $('.cyc-more')?.open;
+    render();
+    if (opened) $('.cyc-more').open = true;
+    if (scroll) $('#list')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
+function save(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (err) {
+    /* 記不住就算了，下次回到預設 */
+  }
+}
+
+function restore() {
+  try {
+    const pick = (key, list) => {
+      const v = localStorage.getItem(key);
+      return list.some((o) => o.value === v) ? v : null;
+    };
+    state.ver = pick(KEYS.ver, VERS) || state.ver;
+    state.size = pick(KEYS.size, SIZES) || state.size;
+    state.sort = pick(KEYS.sort, SORTS) || state.sort;
+  } catch (err) {
+    /* 讀不到就用預設 */
+  }
+}
+
+async function main() {
+  restore();
+  try {
+    const res = await fetch(`${DATA}/cycle.json`);
+    if (!res.ok) throw new Error(`cycle.json ${res.status}`);
+    state.data = await res.json();
+  } catch (err) {
+    console.error(err);
+    $('#meta').textContent = '載入失敗';
+    $('#view').innerHTML = `<p class="hint">資料載不到。這一頁要等 <code>scripts/build_cycle.py</code> 跑過一次才有東西。</p>`;
+    return;
+  }
+  bind();
+  render();
+}
+
+main();

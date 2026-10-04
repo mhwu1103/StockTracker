@@ -200,6 +200,12 @@ jobs:
         continue-on-error: true
         run: python scripts/build_value_backtest.py
 
+      # 景氣頁：只讀 value/rev/ 與 industry.json。月營收每月 10 日前才報齊，
+      # 還沒報齊的那個月 build_cycle.py 自己會跳過，所以每天跑也只有月初會變。
+      - name: 重算景氣頁
+        continue-on-error: true
+        run: python scripts/build_cycle.py
+
       - name: 提交資料變更
         run: |
           git config user.name "github-actions[bot]"
