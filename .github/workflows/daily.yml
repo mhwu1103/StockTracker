@@ -122,6 +122,11 @@ jobs:
         timeout-minutes: 7
         run: python scripts/fetch_pair.py kr
 
+      # 網站只留最近兩年的每日原始檔（Pages 上限 1 GB，每日資料一年約長 130 MB）。
+      # 要排在所有 build 前面：衍生檔照現存的原始檔重建，過期的由各支 build 自己清掉。
+      - name: 修剪兩年以前的每日原始檔
+        run: python scripts/prune_data.py
+
       - name: 重建索引與歷史序列
         run: python scripts/build_history.py
 

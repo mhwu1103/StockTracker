@@ -10,7 +10,8 @@
 網站（`docs/`，GitHub Pages 上限 1 GB）只留最近兩年的每日原始檔，`scripts/prune_data.py`
 每天在排程裡修剪。下面 5 年版的數字需要 2021-10 起的資料，那一包不放在網站上：
 
-- **`stocktracker-raw-2021-10_2026-10-02.zip`**（125 MB，GitHub Release 附件）：排行 `daily/`、
+- **[`stocktracker-raw-2021-10_2026-10-02.zip`](https://github.com/mhwu1103/StockTracker/releases/tag/data-archive-2026-10)**
+  （125 MB，GitHub Release `data-archive-2026-10` 的附件）：排行 `daily/`、
   四價 `close/`、法人 `insti/daily/`、本益比與月營收 `value/` 的原始檔，共 7567 個
 - 本益比與月營收很小，2019 起的整段本來就留在網站上（價值頁回測要用）
 
