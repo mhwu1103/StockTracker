@@ -9,6 +9,9 @@
  *   清單   每一檔的 beta、年增、距高峰；點開看它的營收年增疊在景氣線上
  *   新跟上 前半段不跟景氣、後半段才同步的（這一輪的主角，不是傳統循環股）
  *
+ * 另一個分頁「月曆」是使用者要的固定 1～12 月買進／賣出清單（scripts/build_season.py）。
+ * 它沒通過 walk-forward，所以最上面先放檢驗結果與「純靠運氣預期幾檔」，結論照數字寫。
+ *
  * 判斷全在 scripts/build_cycle.py 算好，門檻也從那裡帶過來（data.rules），這裡只畫。
  * 這是營收的循環，股價有沒有跟著走還沒有回測——頁面上不能長得像買賣訊號。
  */
@@ -49,12 +52,26 @@ const state = {
   open: new Set(),
   more: 1,
   freshMore: 1,
+  tab: 'cycle',
+  month: new Date().getMonth() + 1,
+  side: 'buy',
+  season: undefined,   // 月曆資料：undefined 還沒載、null 載不到
 };
+
+const TABS = [
+  { value: 'cycle', label: '循環' },
+  { value: 'season', label: '月曆' },
+];
+const SIDES = [
+  { value: 'buy', label: '買進清單' },
+  { value: 'sell', label: '賣出清單' },
+];
 
 const KEYS = {
   ver: 'stocktracker.cyclever',
   size: 'stocktracker.cyclesize',
   sort: 'stocktracker.cyclesort',
+  tab: 'stocktracker.cycletab',
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -303,11 +320,117 @@ function freshCard(d) {
 
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// 月曆：1～12 月的買進與賣出清單
+// --------------------------------------------------------------------------
+
+async function loadSeason() {
+  try {
+    const res = await fetch(`${DATA}/season.json`);
+    if (!res.ok) throw new Error(`season.json ${res.status}`);
+    state.season = await res.json();
+  } catch (err) {
+    console.error(err);
+    state.season = null;
+  }
+  render();
+}
+
+/** walk-forward 的結論。照數字寫，不寫死：哪天真的變顯著了，這一段自己會改口。 */
+function verdictCard(z) {
+  const w = z.walk;
+  const works = w.t >= 2 && w.spread > 0;
+  return `<section class="card">
+    <h2>先看這個 <small>這份清單過去有沒有用</small></h2>
+    <p class="rule-level rule-level--${works ? 'ok' : 'warn'}">
+      <b>${works ? '過去的月份規律有延續到下一年' : '過去的月份規律延續不到下一年'}</b>
+      <span>把「今天」換成 ${esc(w.from)} 以後的每一年，只用那一年以前的資料照同一條規則挑前 ${z.rules.wfN} 檔，
+        看那一年同一個月：買進清單減賣出清單平均 ${pct(w.spread, 2)}／月，t 值 ${fmt(w.t)}，${w.n} 個月裡贏 ${w.win}%。
+        ${works ? '' : 't 值不到 2，跟擲硬幣分不開。'}</span>
+    </p>
+    <p class="note">另一個對照：一千多檔股票、每檔 7、8 年，就算股價完全隨機，「贏的年份 ≥ ${Math.round(z.rules.hit * 100)}%」
+      每個月份也會有上百檔。下面每個月都寫了「純靠運氣預期幾檔」——實際檔數跟它差不多，就代表那個月沒有規律。</p>
+  </section>`;
+}
+
+function yearBars(y, years) {
+  return `<span class="ssn-years">${years.map((yr) => {
+    const v = y[yr];
+    if (v === undefined) return '<i class="ssn-bar ssn-bar--none"></i>';
+    const h = Math.min(100, Math.abs(v) * 4);
+    return `<i class="ssn-bar ${v > 0 ? 'up' : 'down'}" style="--h:${Math.max(10, h)}%" title="${yr}：${pct(v, 1)}"></i>`;
+  }).join('')}</span>`;
+}
+
+function seasonRow(r, years) {
+  return `<a class="row ssn-row" href="index.html#/stock/${esc(r.c)}">
+    <span class="ident">
+      <span class="name">${esc(r.n || r.c)}</span>
+      <span class="code">${esc(r.c)} · ${esc(r.ind)}${r.rev ? ` · 營收 ${fmt(r.rev, 0)} 億` : ''}</span>
+    </span>
+    ${yearBars(r.y, years)}
+    <span class="figures"><span class="value ${dir(r.med)}">${pct(r.med, 1)}</span><span class="price">${state.side === 'buy' ? '贏' : '輸'} ${state.side === 'buy' ? r.win : r.yrs - r.win}／${r.yrs} 年</span></span>
+  </a>`;
+}
+
+function indList(rows, title) {
+  return `<div class="ssn-ind"><h3>${title}</h3><ol>${rows.map((r) =>
+    `<li><span>${esc(r.ind)}</span><em class="${dir(r.avg)}">${pct(r.avg, 1)}</em><small>${r.win}／${r.yrs}</small></li>`).join('')}</ol></div>`;
+}
+
+function seasonView() {
+  const z = state.season;
+  if (z === undefined) return '<p class="hint">載入中…</p>';
+  if (z === null) return '<p class="hint">月曆資料載不到。要先跑 <code>scripts/build_season.py</code>。</p>';
+  const mo = z.months.find((r) => r.m === state.month) || z.months[0];
+  const min = Number(state.size);
+  const all = mo[state.side];
+  const rows = all.filter((r) => (r.rev ?? 0) >= min);
+  const wfm = z.walk.byMonth[mo.m];
+  const months = Array.from({ length: 12 }, (_, k) => ({ value: String(k + 1), label: `${k + 1} 月` }));
+  const sideN = mo[`${state.side}N`];
+  return `${verdictCard(z)}
+    <section class="card">
+      <div class="controls cyc-controls">${pills('month', months, String(mo.m))}</div>
+      <div class="stat-grid">
+        <div class="stat"><b>${mo.buyN}</b><span>符合買進（運氣 ${mo.luck}）</span></div>
+        <div class="stat"><b>${mo.sellN}</b><span>符合賣出（運氣 ${mo.luck}）</span></div>
+        <div class="stat"><b class="${dir(wfm)}">${wfm === null || wfm === undefined ? '—' : pct(wfm, 1)}</b><span>這個月的 walk-forward（${z.walk.byMonthN[mo.m]} 年）</span></div>
+      </div>
+      <div class="ssn-inds">
+        ${indList(mo.indUp, `${mo.m} 月偏強的產業`)}
+        ${indList(mo.indDown, `${mo.m} 月偏弱的產業`)}
+      </div>
+      <p class="note">產業是成分股超額的中位數，再對 ${mo.years[0]}～${mo.years[mo.years.length - 1]} 年取平均；右邊是贏的年數。
+        ${mo.m} 月全市場中位數平均 ${pct(mo.med, 1)}。</p>
+    </section>
+    <section class="card">
+      <h2>${mo.m} 月${state.side === 'buy' ? '買進' : '賣出'}清單 <small>${sideN} 檔符合，列出前 ${all.length} 檔中的 ${rows.length} 檔</small></h2>
+      <div class="controls cyc-controls">
+        ${pills('side', SIDES, state.side)}
+        ${pills('size', SIZES, state.size)}
+      </div>
+      ${rows.length ? rows.map((r) => seasonRow(r, mo.years)).join('') : '<p class="hint">這個條件下沒有股票。</p>'}
+      <p class="note">${state.side === 'buy' ? '買進' : '賣出'}：過去至少 ${z.rules.minYears} 年的 ${mo.m} 月裡，
+        ${state.side === 'buy' ? '贏' : '輸'}全市場中位數的年份 ≥ ${Math.round(z.rules.hit * 100)}%，依超額的中位數排。
+        小長條是每一年 ${mo.m} 月的超額（${mo.years[0]} → ${mo.years[mo.years.length - 1]}，紅贏綠輸）。
+        股價已還原除權息；資料 ${esc(z.from)} ～ ${esc(z.to)}。</p>
+    </section>`;
+}
+
 function render() {
   const d = state.data;
+  const head = `<section class="card"><div class="controls cyc-tabs">${pills('tab', TABS, state.tab)}</div></section>`;
+  if (state.tab === 'season') {
+    const z = state.season;
+    $('#meta').textContent = z ? `股價 ${z.from} ～ ${z.to} · ${z.sample} 檔 · 已還原除權息` : '月曆';
+    $('#view').innerHTML = head + seasonView();
+    if (z === undefined) loadSeason();
+    return;
+  }
   $('#meta').textContent = `營收 ${d.revMonth} · 樣本 ${d.sample} 檔 · 前後兩半以 ${d.split} 為界`;
   const list = pool(d);
-  $('#view').innerHTML = indexCard(d) + industryCard(d) + quadCard(d, list) + listCard(d, list) + freshCard(d);
+  $('#view').innerHTML = head + indexCard(d) + industryCard(d) + quadCard(d, list) + listCard(d, list) + freshCard(d);
 }
 
 function bind() {
@@ -336,6 +459,13 @@ function bind() {
     } else if (ds.sort) {
       state.sort = ds.sort;
       save(KEYS.sort, ds.sort);
+    } else if (ds.tab) {
+      state.tab = ds.tab;
+      save(KEYS.tab, ds.tab);
+    } else if (ds.month) {
+      state.month = Number(ds.month);
+    } else if (ds.side) {
+      state.side = ds.side;
     } else if (ds.more === 'list') {
       state.more += 1;
     } else if (ds.more === 'fresh') {
@@ -368,6 +498,7 @@ function restore() {
     state.ver = pick(KEYS.ver, VERS) || state.ver;
     state.size = pick(KEYS.size, SIZES) || state.size;
     state.sort = pick(KEYS.sort, SORTS) || state.sort;
+    state.tab = pick(KEYS.tab, TABS) || state.tab;
   } catch (err) {
     /* 讀不到就用預設 */
   }
