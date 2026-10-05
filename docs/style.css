@@ -2722,8 +2722,19 @@ button.ustag {
 .cyc-grp__b { text-align: right; line-height: 1.2; }
 .cyc-grp__b b { display: block; font-size: 20px; color: var(--up); font-variant-numeric: tabular-nums; }
 .cyc-grp__b small { font-size: 11px; color: var(--muted); }
-.cyc-grp__yoy { margin: 6px 0 8px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.cyc-grp__yoy b { font-weight: 600; }
+.cyc-grp__dl {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr;
+  gap: 2px 6px;
+  margin: 6px 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.cyc-grp__dl dd { margin: 0; }
+.cyc-grp__dl b { font-weight: 600; color: var(--text); }
+.cyc-grp__dl b.up { color: var(--up); }
+.cyc-grp__dl b.down { color: var(--down); }
 .cyc-gchips { display: flex; flex-wrap: wrap; gap: 6px; }
 .cyc-gchip {
   display: inline-flex;

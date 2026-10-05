@@ -62,6 +62,7 @@ const state = {
   freshMore: 1,
   bm: 'all',
   grp: 'ind',
+  gsort: 'combo',
   tab: 'cycle',
   month: new Date().getMonth() + 1,
   side: 'buy',
@@ -72,6 +73,10 @@ const state = {
 const GRPS = [
   { value: 'ind', label: '官方產業' },
   { value: 'theme', label: '題材族群' },
+];
+const GSORTS = [
+  { value: 'combo', label: '綜合：營收＋股價' },
+  { value: 'rev', label: '只看營收' },
 ];
 const GRP_SHOW = 6;       // 最上面那一張列幾個族群
 const GRP_CHIPS = 8;      // 每個族群列幾檔剛轉正的
@@ -96,13 +101,19 @@ const KEYS = {
   tab: 'stocktracker.cycletab',
   basis: 'stocktracker.cyclebasis',
   grp: 'stocktracker.cyclegrp',
+  gsort: 'stocktracker.cyclegsort',
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmt = (v, digits = 2) => (v === null || v === undefined ? '—'
   : Number(v).toLocaleString('zh-TW', { maximumFractionDigits: digits }));
-const pct = (v, digits = 0) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(digits)}%`);
+// 四捨五入後是 0 的就寫 0%，不要出現「-0%」
+const pct = (v, digits = 0) => {
+  if (v === null || v === undefined) return '—';
+  const t = v.toFixed(digits);
+  return Number(t) === 0 ? `${(0).toFixed(digits)}%` : `${v > 0 ? '+' : ''}${t}%`;
+};
 const dir = (v) => (v > 0 ? 'up' : v < 0 ? 'down' : 'flat');
 
 function pills(name, options, current) {
@@ -174,46 +185,68 @@ function spark(values) {
 // --------------------------------------------------------------------------
 
 /**
- * 轉正廣度：族群裡近 3 個月營收年增「剛由負轉正」的比例。廣度最高的族群，就是新一輪循環
- * 正在那裡起頭的地方。過去有沒有用照 groupWalk 寫，不寫死——題材族群那一份就沒過。
+ * 族群排名有兩種：
+ *   combo  營收轉正廣度的名次 ＋ 股價近 3 個月漲幅的名次（預設；做波段，股價要確認）
+ *   rev    只看轉正廣度
+ * 轉正廣度＝族群裡近 3 個月營收年增「剛由負轉正」的比例。過去有沒有用照 groupWalk 寫，不寫死。
  */
-function groupVerdict(w, key) {
-  if (!w || !w.n) return '';
-  const works = w.t >= 2 && w.spread > 0 && w.h1 > 0 && w.h2 > 0;
-  const how = `過去每個月（${esc(w.from)} 起，只用當時已公布的營收）買廣度前 ${w.k} 名、避開後 ${w.k} 名，
-    之後 ${w.h} 個月平均多 ${pct(w.spread, 1)}（t ${fmt(w.t)}，${w.n} 個月裡贏 ${w.win}%；前後兩半 ${pct(w.h1, 1)}／${pct(w.h2, 1)}）。`;
+function groupVerdict(walk, key) {
+  const w1 = walk && walk[`${state.gsort}1`];
+  const w3 = walk && walk[`${state.gsort}3`];
+  if (!w1 || !w3) return '';
+  const ok = (w) => w.t >= 2 && w.spread > 0 && w.h1 > 0 && w.h2 > 0;
+  const works = ok(w1) || ok(w3);
+  const one = (w) => `${w.h} 個月 <b>${pct(w.spread, 1)}</b>（t ${fmt(w.t)}，贏 ${w.win}%，前後兩半 ${pct(w.h1, 1)}／${pct(w.h2, 1)}）`;
   return `<p class="rule-level rule-level--${works ? 'ok' : 'warn'}">
     <b>${works ? '這個排名過去有用' : '這個排名過去不穩，只當參考'}</b>
-    <span>${how}${key === 'theme' ? '題材族群的名單是今天挑的（只收進過成交值前 200 大的），回測會高估。' : ''}</span>
+    <span>過去每個月（${esc(w1.from)} 起，只用當時看得到的營收與股價）買前 ${w1.k} 名族群、避開後 ${w1.k} 名，
+      之後 ${one(w1)}；${one(w3)}。
+      ${key === 'theme' ? '題材族群的名單是今天挑的（只收進過成交值前 200 大的），回測會高估。' : ''}</span>
   </p>`;
 }
 
 function groupCard(d) {
-  const all = (d.groups || {})[state.grp] || [];
-  if (!all.length) return '';
+  const src = (d.groups || {})[state.grp] || [];
+  if (!src.length) return '';
+  const combo = state.gsort === 'combo';
+  const all = combo ? src : [...src].sort((a, b) => b.b - a.b || b.k - a.k);
   const rows = all.slice(0, GRP_SHOW).map((r, k) => {
     const chips = r.hit.slice(0, GRP_CHIPS).map((h) =>
-      `<a class="cyc-gchip" href="index.html#/stock/${esc(h.c)}">${esc(h.n || h.c)}<em class="up">${pct(h.yoy)}</em></a>`).join('');
+      `<a class="cyc-gchip" href="index.html#/stock/${esc(h.c)}">${esc(h.n || h.c)}<em class="up">營 ${pct(h.yoy)}</em>${
+        h.d20 === null || h.d20 === undefined ? '' : `<em class="${dir(h.d20)}">價 ${pct(h.d20)}</em>`}</a>`).join('');
     const more = r.hit.length > GRP_CHIPS ? `<span class="cyc-gmore">還有 ${r.hit.length - GRP_CHIPS} 檔</span>` : '';
+    const big = combo
+      ? `<b>${r.score ?? '—'}</b><small>綜合分數</small>`
+      : `<b>${r.b}%</b><small>${r.k}／${r.n} 檔剛轉正</small>`;
     return `<div class="cyc-grp">
       <div class="cyc-grp__head">
         <span class="cyc-grp__no">${k + 1}</span>
         <span class="cyc-grp__name">${esc(r.g)}</span>
-        <span class="cyc-grp__b"><b>${r.b}%</b><small>${r.k}／${r.n} 檔剛轉正</small></span>
+        <span class="cyc-grp__b">${big}</span>
       </div>
-      <p class="cyc-grp__yoy">族群營收年增中位數 ${pct(r.yoy3, 1)} → <b class="${dir(r.yoy)}">${pct(r.yoy, 1)}</b>（3 個月前 → 現在）·
-        年增為正的 ${r.up}%</p>
+      <dl class="cyc-grp__dl">
+        <dt>營收</dt>
+        <dd>轉正 <b>${r.b}%</b>（${r.k}／${r.n} 檔）· 年增中位數 ${pct(r.yoy3, 1)} → <b class="${dir(r.yoy)}">${pct(r.yoy, 1)}</b></dd>
+        <dt>股價</dt>
+        <dd>3 個月 <b class="${dir(r.m3)}">${pct(r.m3, 1)}</b> · 20 日 <b class="${dir(r.d20)}">${pct(r.d20, 1)}</b> ·
+          5 日 <b class="${dir(r.d5)}">${pct(r.d5, 1)}</b> · 站上月線 <b>${r.ma20 ?? '—'}%</b></dd>
+      </dl>
       <div class="cyc-gchips">${chips}${more}</div>
     </div>`;
   }).join('');
   return `<section class="card cyc-top">
-    <h2>新循環從哪一族開始 <small>營收 ${esc(d.revMonth)}，每月 10 日後更新</small></h2>
-    <div class="controls cyc-controls">${pills('grp', GRPS, state.grp)}</div>
+    <h2>新循環從哪一族開始 <small>營收 ${esc(d.revMonth)}・股價 ${esc(d.priceDay || '')}</small></h2>
+    <div class="controls cyc-controls">
+      ${pills('grp', GRPS, state.grp)}
+      ${pills('gsort', GSORTS, state.gsort)}
+    </div>
     ${rows}
     ${groupVerdict((d.groupWalk || {})[state.grp], state.grp)}
-    <p class="note">排名依<b>轉正廣度</b>：族群裡近 3 個月營收年增剛由負轉正（現在 &gt; 0、前三個月最低 ≤ 0）的比例。
-      底下是那幾檔剛轉正的，括號是它們現在的年增。廣度是族群在動，不是哪一檔一定會漲——要買就買一籃子。
-      「年增還是負的、但在回升」（即將轉正）也試過，沒有用，所以不列。</p>
+    <p class="note"><b>綜合分數</b>（0～100）＝營收轉正廣度在所有族群裡的名次，加上族群股價近 3 個月含息漲幅的名次，
+      各佔一半。<b>轉正廣度</b>是族群裡近 3 個月營收年增剛由負轉正（現在 &gt; 0、前三個月最低 ≤ 0）的比例。
+      單看股價動能過去沒有用，跟營收合在一起才有：營收轉好、股價也開始確認的族群。
+      股價都是族群成分股的平均、已還原除權息；20／5 日與站上月線給波段看進出點，沒有另外回測。
+      底下是剛轉正的個股：「營」是營收年增，「價」是近 20 日漲跌。要買就買一籃子。</p>
   </section>`;
 }
 
@@ -597,6 +630,9 @@ function bind() {
       state.ind = was ? null : ds.ind;
       state.more = 1;
       scroll = !was && !el.classList.contains('cyc-chip');
+    } else if (ds.gsort) {
+      state.gsort = ds.gsort;
+      save(KEYS.gsort, ds.gsort);
     } else if (ds.grp) {
       state.grp = ds.grp;
       save(KEYS.grp, ds.grp);
@@ -657,6 +693,7 @@ function restore() {
     state.tab = pick(KEYS.tab, TABS) || state.tab;
     state.basis = pick(KEYS.basis, BASES) || state.basis;
     state.grp = pick(KEYS.grp, GRPS) || state.grp;
+    state.gsort = pick(KEYS.gsort, GSORTS) || state.gsort;
   } catch (err) {
     /* 讀不到就用預設 */
   }

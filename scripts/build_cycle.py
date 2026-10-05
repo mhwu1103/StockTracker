@@ -32,6 +32,12 @@
 減後 3 名，之後 3 個月 +3.2%（t 2.5），前後兩半 +3.2%／+3.1%（2026-10）。這個檢驗每次重算都會重跑，
 結果在 `groupWalk`，前端照它寫。
 
+**股價**：做波段，股價比營收早。單看族群股價動能（月頻）沒有用——近 3 個月漲最多的 3 個官方產業
+減最少的 3 個，之後 3 個月 +1.0%（t 0.6）；站上季線的比例也一樣。但跟營收合在一起有用：轉正廣度的
+名次加上股價近 3 個月漲幅的名次，之後 1 個月 +1.4%（t 2.6），比只看營收的 +0.8%（t 1.9）好，前後兩半
+都是正的。所以頁面的排名用這個綜合分數，另外補近 5／20 日漲跌與站上月線的比例給波段看。測了九種組合
+挑最好的，有一點選擇偏誤；但「營收轉好、股價開始確認」是先想好的組合，不是翻出來的。
+
 族群有兩種：官方產業（檢驗用這個，沒有偏誤）與題材子族群（`themes.json`，比較貼近「族群」的說法，
 但名單是今天挑的、只收進過成交值前 200 大的，回測會高估，所以只當參考）。
 
@@ -81,7 +87,7 @@ MIN_IND = 5           # 產業至少 5 檔才列
 MONTH_YEARS = 6       # 適合買進的月份：那個月至少要有 6 年的紀錄
 GROUP_MIN = 5         # 族群至少幾檔有年增率才排（題材子族群 4 檔）
 GROUP_TOP = 3         # 檢驗：每個月前 3 名減後 3 名
-GROUP_H = 3           # 檢驗：持有 3 個月
+PRICE_DAYS = 63       # 股價的「近 3 個月」＝ 63 個交易日
 GROUP_SHOW = 6        # 頁面上列前幾個族群
 
 
@@ -246,49 +252,139 @@ def group_turns(groups: dict, yoy: dict, months: list, names: dict, min_n: int) 
     return rows
 
 
+def rank_pct(vals: list) -> list:
+    """每個值在這一群裡的百分位（0～1，同值取平均名次）。"""
+    order = sorted(range(len(vals)), key=lambda k: vals[k])
+    out = [0.0] * len(vals)
+    k = 0
+    while k < len(order):
+        j = k
+        while j + 1 < len(order) and vals[order[j + 1]] == vals[order[k]]:
+            j += 1
+        for q in range(k, j + 1):
+            out[order[q]] = ((k + j) / 2 + 1) / len(vals)
+        k = j + 1
+    return out
+
+
 def group_backtest(groups: dict, yoy: dict, months: list, ret: dict, rm: list, min_n: int) -> dict:
-    """每個月底（只用上個月以前的營收）取轉正廣度前 GROUP_TOP 名減後 GROUP_TOP 名，
-    成分股之後 GROUP_H 個月的含息報酬（減全體平均）。"""
+    """每個月底（營收用到上個月、股價用到當月底）把族群排名，取前 GROUP_TOP 名減後 GROUP_TOP 名，
+    看成分股之後 1／3 個月的含息報酬（減全體平均）。兩種排名各算一次：
+      rev    只看營收轉正廣度
+      combo  轉正廣度的名次 ＋ 股價近 3 個月漲幅的名次（各自是百分位，相加）
+    """
     idx = {m: k for k, m in enumerate(months)}
-    spreads = []
+    out = {}
+    rows_by_t = []
     for j, t in enumerate(rm):
         y, mo = int(t[:4]), int(t[5:])
         prev = f"{y - (mo == 1)}-{(mo - 2) % 12 + 1:02d}"       # t 月底看得到的是 t-1 月的營收
-        if prev not in idx or j + GROUP_H >= len(rm):
+        if prev not in idx or j < 2 or j + 1 >= len(rm):
             continue
         i = idx[prev]
-        ahead = rm[j + 1:j + 1 + GROUP_H]
+        back = rm[j - 2:j + 1]                                  # 到 t 月底為止的 3 個月
         fwd = {}
-        for c, r in ret.items():
-            if all(m in r for m in ahead):
-                fwd[c] = math.prod(1 + r[m] for m in ahead) - 1
-        if not fwd:
-            continue
-        mean = statistics.fmean(fwd.values())
-        scored = []
+        for h in (1, 3):
+            ahead = rm[j + 1:j + 1 + h]
+            if len(ahead) < h:
+                continue
+            got = {c: math.prod(1 + r[m] for m in ahead) - 1 for c, r in ret.items() if all(m in r for m in ahead)}
+            if got:
+                mean = statistics.fmean(got.values())
+                fwd[h] = {c: v - mean for c, v in got.items()}
+        rows = []
         for g, codes in groups.items():
             b = breadth(codes, yoy, i, min_n)
-            got = [fwd[c] - mean for c in codes if c in fwd]
-            if b and len(got) >= min_n:
-                scored.append((b[0], statistics.fmean(got)))
-        if len(scored) < 2 * GROUP_TOP:
+            past = [math.prod(1 + ret[c][m] for m in back) - 1 for c in codes if c in ret and all(m in ret[c] for m in back)]
+            if not b or len(past) < min_n:
+                continue
+            f = {h: [fv[c] for c in codes if c in fv] for h, fv in fwd.items()}
+            rows.append({"rb": b[0], "m3": statistics.fmean(past),
+                         **{f"f{h}": statistics.fmean(v) for h, v in f.items() if len(v) >= min_n}})
+        if len(rows) < 2 * GROUP_TOP:
             continue
-        scored.sort(key=lambda r: r[0])
-        top = statistics.fmean(x for _, x in scored[-GROUP_TOP:])
-        bot = statistics.fmean(x for _, x in scored[:GROUP_TOP])
-        spreads.append((t, top - bot))
-    if len(spreads) < 12:
-        return {}
-    xs = [s for _, s in spreads]
-    mu, sd = statistics.fmean(xs), statistics.stdev(xs)
-    half = len(xs) // 2
-    return {
-        "n": len(xs), "from": spreads[0][0], "to": spreads[-1][0], "h": GROUP_H, "k": GROUP_TOP,
-        "spread": round(mu * 100, 2),
-        "t": round(mu / (sd / math.sqrt(len(xs))) / math.sqrt(GROUP_H), 2),   # 持有期重疊，粗略除以 √h
-        "win": round(sum(x > 0 for x in xs) / len(xs) * 100),
-        "h1": round(statistics.fmean(xs[:half]) * 100, 2), "h2": round(statistics.fmean(xs[half:]) * 100, 2),
-    }
+        r1, r2 = rank_pct([r["rb"] for r in rows]), rank_pct([r["m3"] for r in rows])
+        for r, a1, a2 in zip(rows, r1, r2):
+            r["combo"] = a1 + a2
+            r["rev"] = r["rb"]
+        rows_by_t.append((t, rows))
+
+    for key in ("rev", "combo"):
+        for h in (1, 3):
+            sp = []
+            for t, rows in rows_by_t:
+                rr = sorted((r for r in rows if f"f{h}" in r), key=lambda r: r[key])
+                if len(rr) < 2 * GROUP_TOP:
+                    continue
+                top = statistics.fmean(r[f"f{h}"] for r in rr[-GROUP_TOP:])
+                bot = statistics.fmean(r[f"f{h}"] for r in rr[:GROUP_TOP])
+                sp.append((t, top - bot))
+            if len(sp) < 12:
+                continue
+            xs = [v for _, v in sp]
+            mu, sd = statistics.fmean(xs), statistics.stdev(xs)
+            half = len(xs) // 2
+            out[f"{key}{h}"] = {
+                "n": len(xs), "from": sp[0][0], "to": sp[-1][0], "h": h, "k": GROUP_TOP,
+                "spread": round(mu * 100, 2),
+                "t": round(mu / (sd / math.sqrt(len(xs))) / math.sqrt(h), 2),   # 持有期重疊，粗略除以 √h
+                "win": round(sum(x > 0 for x in xs) / len(xs) * 100),
+                "h1": round(statistics.fmean(xs[:half]) * 100, 2), "h2": round(statistics.fmean(xs[half:]) * 100, 2),
+            }
+    return out
+
+
+def daily_prices(n: int):
+    """最近 n 個交易日的收盤 {代號: {日: 收盤}}，與除權息事件 {代號: [(日, 因子)]}。"""
+    dates = sorted(set(twse.existing_close_dates("twse")) | set(twse.existing_close_dates("tpex")))[-n:]
+    px = {}
+    for d in dates:
+        for mk in ("twse", "tpex"):
+            for c, v in ((twse.read_json(twse.close_path(d, mk)) or {}).get("c") or {}).items():
+                if v:
+                    px.setdefault(c, {})[d] = v
+    ev = {}
+    for p in sorted(build_season.EX_DIR.glob("*.json")):
+        for c, events in (twse.read_json(p) or {}).items():
+            ev.setdefault(c, []).extend((d, f) for d, f in events if d > dates[0])
+    return dates, px, ev
+
+
+def adj_change(c: str, d0: str, d1: str, px: dict, ev: dict):
+    """d0 收盤到 d1 收盤的含息漲跌（除以中間的除權息因子）。"""
+    p = px.get(c, {})
+    if d0 not in p or d1 not in p:
+        return None
+    f = math.prod(x for d, x in ev.get(c, []) if d0 < d <= d1)
+    return p[d1] / p[d0] / f - 1
+
+
+def group_prices(groups: dict, rows: list, names: dict) -> None:
+    """把股價那幾欄補進 group_turns 的每一列，並照「營收廣度名次 ＋ 股價 3 個月名次」重排。
+    3 個月 = 63 個交易日，跟檢驗用的月底 3 個月是同一件事，只是用到最新一天。"""
+    dates, px, ev = daily_prices(PRICE_DAYS + 1)
+    last = dates[-1]
+    at = lambda k: dates[-1 - k] if len(dates) > k else None  # noqa: E731
+    for r in rows:
+        codes = groups[r["g"]]
+        for key, k in (("m3", PRICE_DAYS), ("d20", 20), ("d5", 5)):
+            vals = [v for c in codes if (v := adj_change(c, at(k), last, px, ev)) is not None]
+            r[key] = round(statistics.fmean(vals) * 100, 1) if len(vals) >= 3 else None
+        above = []
+        for c in codes:
+            p = px.get(c, {})
+            closes = [p[d] for d in dates[-20:] if d in p]
+            if len(closes) == 20:
+                above.append(closes[-1] > statistics.fmean(closes))
+        r["ma20"] = round(sum(above) / len(above) * 100) if above else None
+        for h in r["hit"]:
+            v = adj_change(h["c"], at(20), last, px, ev)
+            h["d20"] = None if v is None else round(v * 100, 1)
+    ok = [r for r in rows if r["m3"] is not None]
+    for r, a1, a2 in zip(ok, rank_pct([r["b"] for r in ok]), rank_pct([r["m3"] for r in ok])):
+        r["score"] = round((a1 + a2) * 50)                       # 0～100
+    rows.sort(key=lambda r: (-(r.get("score") or 0), -r["b"]))
+    return last
 
 
 def main():
@@ -403,6 +499,9 @@ def main():
     best_walk = add_buy_months(out, ret, rm)
     groups = {"ind": official_groups(industry), "theme": theme_groups()}
     turns = {k: group_turns(g, yoy, months, names, GROUP_MIN if k == "ind" else GROUP_MIN - 1) for k, g in groups.items()}
+    price_day = None
+    for k, g in groups.items():
+        price_day = group_prices(g, turns[k], names)
     group_walk = {k: group_backtest(g, yoy, months, ret, rm, GROUP_MIN if k == "ind" else GROUP_MIN - 1)
                   for k, g in groups.items()}
 
@@ -423,6 +522,7 @@ def main():
         "bestWalk": best_walk,
         "groups": turns,
         "groupWalk": group_walk,
+        "priceDay": price_day,
     }
     twse.write_json(OUT_PATH, payload)
     strict = sum(s["strict"] for s in out)
