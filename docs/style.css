@@ -2660,3 +2660,17 @@ button.ustag {
 .ssn-ind li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ssn-ind li em { font-style: normal; font-variant-numeric: tabular-nums; }
 .ssn-ind li small { color: var(--muted); font-variant-numeric: tabular-nums; }
+/* 過往勝率另起一行、跨滿整列：擠在右欄的話，股名會被壓到只剩三四個字 */
+.ssn-rate {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin-top: -4px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.ssn-rate b { font-weight: 600; color: var(--text); }
+.ssn-rate b.up { color: var(--up); }
+.ssn-rate b.down { color: var(--down); }

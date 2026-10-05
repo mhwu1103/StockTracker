@@ -91,6 +91,11 @@ def binom_tail(n: int, k: int) -> float:
     return sum(math.comb(n, i) for i in range(k, n + 1)) / 2 ** n
 
 
+def raw_stats(r: dict, mm: int, years: list) -> dict:
+    xs = [r[f"{y}-{mm:02d}"] for y in years if f"{y}-{mm:02d}" in r]
+    return {"up": sum(x > 0 for x in xs), "avg": round(statistics.fmean(xs) * 100, 1) if xs else None}
+
+
 def pick(stats: dict, side: str, min_years: int):
     """stats: {代號: [超額...]}。回傳依強度排好的 [(代號, 中位數, 贏, 年數)]。"""
     out = []
@@ -164,6 +169,8 @@ def main():
             row[side] = [{
                 "c": c, "n": names.get(c), "ind": industry[c], "rev": size.get(c),
                 "med": round(m_ * 100, 1), "win": w, "yrs": n,
+                # 絕對報酬：這個月份它自己漲的年數與平均漲跌（含息，不扣大盤）
+                **raw_stats(ret[c], mm, row["years"]),
                 "y": {y: round(exc[c][f"{y}-{mm:02d}"] * 100, 1) for y in row["years"] if f"{y}-{mm:02d}" in exc[c]},
             } for c, m_, w, n in got[:TOP]]
         ist = {k: [s[f"{y}-{mm:02d}"] for y in years if f"{y}-{mm:02d}" in s] for k, s in ind_exc.items()}
