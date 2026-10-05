@@ -63,6 +63,11 @@ const state = {
   bm: 'all',
   grp: 'ind',
   gsort: 'combo',
+  sgrp: 'ind',
+  smode: 'raw',
+  ssort: 'soon',
+  sall: false,
+  sopen: new Set(),
   tab: 'cycle',
   month: new Date().getMonth() + 1,
   side: 'buy',
@@ -102,6 +107,9 @@ const KEYS = {
   basis: 'stocktracker.cyclebasis',
   grp: 'stocktracker.cyclegrp',
   gsort: 'stocktracker.cyclegsort',
+  sgrp: 'stocktracker.cyclesgrp',
+  smode: 'stocktracker.cyclesmode',
+  ssort: 'stocktracker.cyclessort',
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -253,6 +261,112 @@ function groupCard(d) {
 // --------------------------------------------------------------------------
 // 1. 景氣
 // --------------------------------------------------------------------------
+
+// --------------------------------------------------------------------------
+// 旺季與淡季：12 個月的時間軸
+// --------------------------------------------------------------------------
+
+const SMODES = [
+  { value: 'raw', label: '原始' },
+  { value: 'rel', label: '扣掉全市場' },
+];
+const SSORTS = [
+  { value: 'soon', label: '即將進入旺季' },
+  { value: 'amp', label: '季節性最強' },
+];
+
+/** 連續的月份接成區間，跨年也算（11、12、1 → 11～1 月）。 */
+function monthRanges(ms) {
+  if (!ms.length) return '';
+  if (ms.length === 12) return '全年';
+  const set = new Set(ms);
+  const starts = ms.filter((m) => !set.has(m === 1 ? 12 : m - 1));
+  return starts.map((a) => {
+    let b = a;
+    while (set.has(b === 12 ? 1 : b + 1)) b = b === 12 ? 1 : b + 1;
+    return a === b ? `${a}` : `${a}～${b}`;
+  }).join('、') + ' 月';
+}
+
+/** 從下個月起算，幾個月後進入旺季（那個月是旺季、前一個月不是）。現在就在旺季的算 0。 */
+function monthsToPeak(tags) {
+  if (tags[NOW_M - 1] === 1) return 0;
+  for (let k = 1; k <= 12; k += 1) {
+    const m = ((NOW_M - 1 + k) % 12) + 1;
+    if (tags[m - 1] === 1) return k;
+  }
+  return 99;
+}
+
+function seasonRowHtml(r, mode) {
+  const f = mode === 'rel' ? r.rel : r.raw;
+  const tags = mode === 'rel' ? r.tl : r.tr;
+  const cons = mode === 'rel' ? r.cl : r.cr;
+  const hi = [];
+  const lo = [];
+  tags.forEach((t, k) => { if (t === 1) hi.push(k + 1); if (t === -1) lo.push(k + 1); });
+  const open = state.sopen.has(r.g);
+  const cells = f.map((v, k) => {
+    const t = tags[k];
+    const cls = t === 1 ? 'is-hi' : t === -1 ? 'is-lo' : v > 0 ? 'is-up' : 'is-down';
+    return `<span class="ssn-cell ${cls} ${k + 1 === NOW_M ? 'is-now' : ''}"
+      title="${k + 1} 月：${pct(v, 1)}，${cons[k] ?? '—'}% 的年份高於${mode === 'rel' ? '全市場' : '平均'}"></span>`;
+  }).join('');
+  const lead = monthsToPeak(tags);
+  const soon = lead === 0 ? '<em class="ssn-soon">旺季中</em>'
+    : lead === 1 ? '<em class="ssn-soon">下個月旺季</em>' : lead === 2 ? '<em class="ssn-soon">2 個月後旺季</em>' : '';
+  const detail = open ? `<div class="ssn-detail">${f.map((v, k) => `<span class="${tags[k] === 1 ? 'up' : tags[k] === -1 ? 'down' : ''}">
+      <b>${k + 1} 月</b><i>${pct(v, 0)}</i><small>${cons[k] ?? '—'}%</small></span>`).join('')}
+      <p>上面是季節因子，下面是那個月高於${mode === 'rel' ? '全市場' : '平均'}的年份比例（共 ${r.yrs} 年）。</p></div>` : '';
+  return `<div class="ssn-line ${open ? 'is-open' : ''}">
+    <button class="ssn-head" data-sopen="${esc(r.g)}">
+      <span class="ssn-name"><b>${esc(r.g)}</b>${soon}
+        <small>${hi.length ? `<span class="up">旺 ${monthRanges(hi)}</span>` : ''}${hi.length && lo.length ? ' · ' : ''}${lo.length ? `<span class="down">淡 ${monthRanges(lo)}</span>` : ''}${!hi.length && !lo.length ? '沒有明顯的旺淡季' : ''}</small>
+      </span>
+      <span class="ssn-cells">${cells}</span>
+    </button>
+    ${detail}
+  </div>`;
+}
+
+function seasonCard(d) {
+  const S = (d.seasons || {})[state.sgrp];
+  if (!S || !S.rows.length) return '';
+  const mode = state.smode;
+  const tagsOf = (r) => (mode === 'rel' ? r.tl : r.tr);
+  const amp = (r) => { const f = mode === 'rel' ? r.rel : r.raw; return Math.max(...f) - Math.min(...f); };
+  const rows = [...S.rows].sort(state.ssort === 'soon'
+    ? (a, b) => monthsToPeak(tagsOf(a)) - monthsToPeak(tagsOf(b)) || amp(b) - amp(a)
+    : (a, b) => amp(b) - amp(a));
+  const shown = state.sall ? rows : rows.slice(0, 12);
+  const head = Array.from({ length: 12 }, (_, k) => `<span class="${k + 1 === NOW_M ? 'is-now' : ''}">${k + 1}</span>`).join('');
+  const w = d.seasonWalk;
+  const R = d.seasonRules;
+  const verdict = w && w.n ? `<p class="rule-level rule-level--${w.t >= 2 && w.h1 > 0 && w.h2 > 0 ? 'ok' : 'warn'}">
+      <b>${w.t >= 2 && w.h1 > 0 && w.h2 > 0 ? '旺季前布局過去有用' : '旺季前布局過去沒有用'}</b>
+      <span>${esc(w.from)} 起，每年只用以前的資料算季節，每個月底買「下個月最旺」的 3 個產業、避開最淡的 3 個，
+        之後 1 個月 ${pct(w.spread, 2)}（t ${fmt(w.t)}，前後兩半 ${pct(w.h1, 1)}／${pct(w.h2, 1)}）。
+        旺淡季每年都一樣、大家都知道，股價早就反映——這張表是拿來讀營收的：旺季的成長要打折、淡季的衰退不必緊張。</span>
+    </p>` : '';
+  return `<section class="card">
+    <h2>旺季與淡季 <small>月營收的季節，${esc(d.revMonth)} 為止</small></h2>
+    <div class="controls cyc-controls">
+      ${pills('sgrp', GRPS, state.sgrp)}
+      ${pills('smode', SMODES, state.smode)}
+      ${pills('ssort', SSORTS, state.ssort)}
+    </div>
+    <div class="ssn-axis"><span class="ssn-name"></span><span class="ssn-cells ssn-cells--head">${head}</span></div>
+    ${shown.map((r) => seasonRowHtml(r, mode)).join('')}
+    ${rows.length > shown.length ? `<button class="cyc-morebtn" data-sall="1">列出全部 ${rows.length} 個</button>` : ''}
+    ${verdict}
+    <p class="note"><span class="ssn-key is-hi"></span>旺季 <span class="ssn-key is-lo"></span>淡季
+      <span class="ssn-key is-up"></span>略高 <span class="ssn-key is-down"></span>略低，框起來的是本月。
+      季節因子＝月營收 ÷ 以那個月為中心的 12 個月平均，各年取中位數；≥ +${R.hi}% 而且 ${R.cons}% 以上的年份都偏高才算旺季，
+      淡季反過來。${mode === 'raw' ? '2 月幾乎每一族都是淡季（農曆年工作天少），切「扣掉全市場」看各族自己的季節。'
+        : `扣掉的是全市場同一個月的季節因子（2 月 ${pct(S.market[1], 0)}、12 月 ${pct(S.market[11], 0)}）。`}
+      點一列看 12 個月的數字。</p>
+  </section>`;
+}
 
 function indexCard(d) {
   const v = d.index[d.index.length - 1];
@@ -610,7 +724,7 @@ function render() {
   }
   $('#meta').textContent = `營收 ${d.revMonth} · 樣本 ${d.sample} 檔 · 前後兩半以 ${d.split} 為界`;
   const list = pool(d);
-  $('#view').innerHTML = head + indexCard(d) + industryCard(d) + quadCard(d, list) + listCard(d, list) + freshCard(d);
+  $('#view').innerHTML = head + seasonCard(d) + indexCard(d) + industryCard(d) + quadCard(d, list) + listCard(d, list) + freshCard(d);
 }
 
 function bind() {
@@ -630,6 +744,20 @@ function bind() {
       state.ind = was ? null : ds.ind;
       state.more = 1;
       scroll = !was && !el.classList.contains('cyc-chip');
+    } else if (ds.sopen) {
+      if (state.sopen.has(ds.sopen)) state.sopen.delete(ds.sopen);
+      else state.sopen.add(ds.sopen);
+    } else if (ds.sgrp) {
+      state.sgrp = ds.sgrp;
+      save(KEYS.sgrp, ds.sgrp);
+    } else if (ds.smode) {
+      state.smode = ds.smode;
+      save(KEYS.smode, ds.smode);
+    } else if (ds.ssort) {
+      state.ssort = ds.ssort;
+      save(KEYS.ssort, ds.ssort);
+    } else if (ds.sall) {
+      state.sall = true;
     } else if (ds.gsort) {
       state.gsort = ds.gsort;
       save(KEYS.gsort, ds.gsort);
@@ -694,6 +822,9 @@ function restore() {
     state.basis = pick(KEYS.basis, BASES) || state.basis;
     state.grp = pick(KEYS.grp, GRPS) || state.grp;
     state.gsort = pick(KEYS.gsort, GSORTS) || state.gsort;
+    state.sgrp = pick(KEYS.sgrp, GRPS) || state.sgrp;
+    state.smode = pick(KEYS.smode, SMODES) || state.smode;
+    state.ssort = pick(KEYS.ssort, SSORTS) || state.ssort;
   } catch (err) {
     /* 讀不到就用預設 */
   }
