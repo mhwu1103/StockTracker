@@ -35,6 +35,7 @@ import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -113,10 +114,12 @@ def read_episode(ep: int) -> tuple[dict, str]:
     return meta, body
 
 
-def extract_one(ep: int, model: str) -> str:
+def extract_one(ep: int, model: str, until: datetime | None) -> str:
     out = EPISODES / f"EP{ep:04d}.json"
     if out.exists():
         return f"EP{ep:04d} 已有，跳過"
+    if until and datetime.now() >= until:
+        return f"EP{ep:04d} 過了截止時間，留給下一批"
     meta, body = read_episode(ep)
     prompt = f"以下是 EP{ep}（{meta.get('episode_date', '')}）〈{meta.get('title', '')}〉的逐字稿：\n\n{body}"
     cmd = ["claude", "-p", "--model", model, "--output-format", "json",
@@ -137,10 +140,17 @@ def extract_one(ep: int, model: str) -> str:
 def cmd_extract(args) -> int:
     EPISODES.mkdir(parents=True, exist_ok=True)
     eps = parse_eps(args.eps)
-    print(f"{len(eps)} 集，model={args.model}，workers={args.workers}", flush=True)
+    until = None
+    if args.until:
+        # 例如 01:22：今天這個時刻已經過了就是明天的
+        h, m = map(int, args.until.split(":"))
+        until = datetime.now().replace(hour=h, minute=m, second=0, microsecond=0)
+        if until <= datetime.now():
+            until += timedelta(days=1)
+    print(f"{len(eps)} 集，model={args.model}，workers={args.workers}，截止 {until or '無'}", flush=True)
     failed = 0
     with ThreadPoolExecutor(args.workers) as pool:
-        futs = [pool.submit(extract_one, ep, args.model) for ep in eps]
+        futs = [pool.submit(extract_one, ep, args.model, until) for ep in eps]
         for f in as_completed(futs):
             try:
                 msg = f.result()
@@ -231,6 +241,7 @@ def main() -> int:
     ex.add_argument("--eps", default="1-693", help="集數，例如 1-693 或 100,300,500")
     ex.add_argument("--model", default="sonnet")
     ex.add_argument("--workers", type=int, default=4)
+    ex.add_argument("--until", help="HH:MM 之後不再開新的一集（跑到一半的會跑完），例如要關機前")
     bd = sub.add_parser("build", help="彙整")
     bd.add_argument("--top", type=int, default=40, help="BRAIN.md 每一類列幾條")
     args = ap.parse_args()
