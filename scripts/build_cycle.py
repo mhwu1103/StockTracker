@@ -41,6 +41,19 @@
 族群有兩種：官方產業（檢驗用這個，沒有偏誤）與題材子族群（`themes.json`，比較貼近「族群」的說法，
 但名單是今天挑的、只收進過成交值前 200 大的，回測會高估，所以只當參考）。
 
+## 旺季與淡季
+
+每一檔：月營收 ÷ 以那個月為中心的 2×12 移動平均（拿掉趨勢與景氣循環，剩下季節），同一個曆月份
+取各年的中位數＝季節因子。族群＝成分股季節因子的中位數。**一致性**＝每一年族群成分股比值的中位數
+> 1 的年份比例。季節因子 ≥ +5% 而且一致性 ≥ 70% 標成旺季，≤ −5% 而且一致性 ≤ 30% 標成淡季。
+
+2 月幾乎每一族都是淡季（農曆年工作天少），所以另外給一份「扣掉全市場同月」的版本，看得出各族自己的季節。
+
+旺季前布局沒有用：每一年只用以前的資料算季節因子（扣掉全市場），每個月底買下個月季節因子最高的 3 族、
+避開最低的 3 族，之後 1 個月 −0.06%（t −0.1），前後兩半 −1.3%／+1.1%（2026-10，2023 起）。季節大家都知道，股價早就反映。
+這張時間軸是拿來讀營收的——旺季的營收成長要打折、淡季的衰退不必緊張——不是進場訊號。檢驗結果在
+`seasonWalk`，每次重算都會更新。
+
 ## 循環位置
 
 每一檔用兩個軸放進四格：
@@ -88,6 +101,9 @@ MONTH_YEARS = 6       # 適合買進的月份：那個月至少要有 6 年的�
 GROUP_MIN = 5         # 族群至少幾檔有年增率才排（題材子族群 4 檔）
 GROUP_TOP = 3         # 檢驗：每個月前 3 名減後 3 名
 PRICE_DAYS = 63       # 股價的「近 3 個月」＝ 63 個交易日
+SEASON_HI = 0.05      # 季節因子 ≥ +5% 算旺季
+SEASON_CONS = 0.7     # 而且 ≥ 7 成的年份那個月高於平均（淡季反過來：≤ 3 成）
+SEASON_MIN_YEARS = 3  # 每一檔每一個曆月份至少要有 3 年的比值
 GROUP_SHOW = 6        # 頁面上列前幾個族群
 
 
@@ -197,6 +213,133 @@ def _best_short(r: dict, train: list):
             if key is None or k > key:
                 best, key = mm, k
     return best, None
+
+
+def season_ratios(rev: dict, months: list, codes: list) -> dict:
+    """{代號: {月: 營收 ÷ 中心 2×12 移動平均}}。前後各 6 個月不夠的月份沒有比值。"""
+    n = len(months)
+    out = {}
+    for c in codes:
+        r = rev[c]
+        vals = [r.get(m) for m in months]
+        got = {}
+        for i in range(6, n - 6):
+            win = vals[i - 6:i + 7]
+            if vals[i] is None or any(v is None for v in win):
+                continue
+            cma = (sum(win[:12]) / 12 + sum(win[1:]) / 12) / 2
+            got[months[i]] = vals[i] / cma
+        out[c] = got
+    return out
+
+
+def season_factors(ratios: dict, codes: list, years: set | None = None) -> dict:
+    """{代號: [12 個曆月份的季節因子或 None]}。years 給的話只用那幾年（walk-forward）。"""
+    out = {}
+    for c in codes:
+        by = {}
+        for m, v in ratios.get(c, {}).items():
+            if years is None or m[:4] in years:
+                by.setdefault(int(m[5:]), []).append(v)
+        f = [statistics.median(by[mm]) if len(by.get(mm, [])) >= SEASON_MIN_YEARS else None for mm in range(1, 13)]
+        if sum(v is not None for v in f) == 12:
+            out[c] = f
+    return out
+
+
+def season_groups(groups: dict, ratios: dict, fac: dict, min_n: int) -> dict:
+    """每一族 12 個月的季節因子（原始與扣掉全市場）、一致性與旺淡季。"""
+    market = [statistics.median(f[mm] for f in fac.values()) for mm in range(12)]
+    # 每一年每一月：全市場比值的中位數（扣掉全市場的一致性要用）
+    mk_year = {}
+    for c, r in ratios.items():
+        if c in fac:
+            for m, v in r.items():
+                mk_year.setdefault(m, []).append(v)
+    mk_year = {m: statistics.median(v) for m, v in mk_year.items()}
+    rows = []
+    for g, codes in groups.items():
+        cs = [c for c in codes if c in fac]
+        if len(cs) < min_n:
+            continue
+        raw = [statistics.median(fac[c][mm] for c in cs) for mm in range(12)]
+        per = {}
+        for c in cs:
+            for m, v in ratios[c].items():
+                per.setdefault(m, []).append(v)
+        cons_raw, cons_rel = [], []
+        for mm in range(1, 13):
+            ms = [m for m in per if int(m[5:]) == mm and len(per[m]) >= min_n]
+            meds = [(statistics.median(per[m]), mk_year[m]) for m in ms]
+            cons_raw.append(round(sum(a > 1 for a, _ in meds) / len(meds) * 100) if meds else None)
+            cons_rel.append(round(sum(a > b for a, b in meds) / len(meds) * 100) if meds else None)
+        rel = [raw[k] - market[k] + 1 for k in range(12)]
+
+        def tag(f, cons):
+            out = []
+            for k in range(12):
+                if cons[k] is None:
+                    out.append(0)
+                elif f[k] - 1 >= SEASON_HI and cons[k] >= SEASON_CONS * 100:
+                    out.append(1)
+                elif f[k] - 1 <= -SEASON_HI and cons[k] <= (1 - SEASON_CONS) * 100:
+                    out.append(-1)
+                else:
+                    out.append(0)
+            return out
+
+        rows.append({
+            "g": g, "n": len(cs),
+            "raw": [round((v - 1) * 100, 1) for v in raw], "rel": [round((v - 1) * 100, 1) for v in rel],
+            "cr": cons_raw, "cl": cons_rel,
+            "tr": tag(raw, cons_raw), "tl": tag(rel, cons_rel),
+            "yrs": min(sum(1 for m in per if int(m[5:]) == mm) for mm in range(1, 13)),
+        })
+    return {"market": [round((v - 1) * 100, 1) for v in market], "rows": rows}
+
+
+def season_walk(groups: dict, ratios: dict, codes: list, ret: dict, rm: list, min_n: int) -> dict:
+    """旺季前布局：t 月底，只用 t 年以前的比值算各族的季節因子（扣掉全市場），
+    買下個月因子最高的 GROUP_TOP 族、避開最低的，之後 1 個月含息報酬（減全體平均）。"""
+    years = sorted({m[:4] for r in ratios.values() for m in r})
+    sp = []
+    for Y in years:
+        train = {y for y in years if y < Y}
+        if len(train) < 2:
+            continue
+        fac = season_factors(ratios, codes, train)
+        if len(fac) < 50:
+            continue
+        market = [statistics.median(f[mm] for f in fac.values()) for mm in range(12)]
+        gf = {}
+        for g, cs in groups.items():
+            cs = [c for c in cs if c in fac]
+            if len(cs) >= min_n:
+                gf[g] = [statistics.median(fac[c][mm] for c in cs) - market[mm] for mm in range(12)]
+        for j, t in enumerate(rm):
+            if t[:4] != Y or j + 1 >= len(rm):
+                continue
+            nxt = int(t[5:]) % 12                       # 下個月的 index（0～11）
+            ahead = rm[j + 1]
+            got = {c: r[ahead] for c, r in ret.items() if ahead in r}
+            mean = statistics.fmean(got.values())
+            sc = []
+            for g, f in gf.items():
+                xs = [got[c] - mean for c in groups[g] if c in got]
+                if len(xs) >= min_n:
+                    sc.append((f[nxt], statistics.fmean(xs)))
+            if len(sc) < 2 * GROUP_TOP:
+                continue
+            sc.sort(key=lambda r: r[0])
+            sp.append((t, statistics.fmean(x for _, x in sc[-GROUP_TOP:]) - statistics.fmean(x for _, x in sc[:GROUP_TOP])))
+    if len(sp) < 12:
+        return {}
+    xs = [v for _, v in sp]
+    mu, sd = statistics.fmean(xs), statistics.stdev(xs)
+    half = len(xs) // 2
+    return {"n": len(xs), "from": sp[0][0], "spread": round(mu * 100, 2),
+            "t": round(mu / (sd / math.sqrt(len(xs))), 2), "win": round(sum(x > 0 for x in xs) / len(xs) * 100),
+            "h1": round(statistics.fmean(xs[:half]) * 100, 2), "h2": round(statistics.fmean(xs[half:]) * 100, 2)}
 
 
 def official_groups(industry: dict) -> dict:
@@ -502,6 +645,10 @@ def main():
     price_day = None
     for k, g in groups.items():
         price_day = group_prices(g, turns[k], names)
+    ratios = season_ratios(rev, months, ok)
+    sfac = season_factors(ratios, ok)
+    seasons = {k: season_groups(g, ratios, sfac, GROUP_MIN if k == "ind" else GROUP_MIN - 1) for k, g in groups.items()}
+    season_wf = season_walk(groups["ind"], ratios, ok, ret, rm, GROUP_MIN)
     group_walk = {k: group_backtest(g, yoy, months, ret, rm, GROUP_MIN if k == "ind" else GROUP_MIN - 1)
                   for k, g in groups.items()}
 
@@ -523,6 +670,9 @@ def main():
         "groups": turns,
         "groupWalk": group_walk,
         "priceDay": price_day,
+        "seasons": seasons,
+        "seasonWalk": season_wf,
+        "seasonRules": {"hi": round(SEASON_HI * 100), "cons": round(SEASON_CONS * 100)},
     }
     twse.write_json(OUT_PATH, payload)
     strict = sum(s["strict"] for s in out)

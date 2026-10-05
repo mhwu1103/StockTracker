@@ -2750,3 +2750,70 @@ button.ustag {
 .cyc-gchip em { font-style: normal; font-size: 11px; font-variant-numeric: tabular-nums; }
 .cyc-gmore { align-self: center; font-size: 12px; color: var(--muted); }
 .cyc-top .rule-level { margin: 0; }
+
+/* 旺季與淡季：左邊族群名、右邊 12 格 */
+.ssn-axis,
+.ssn-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 13.5rem;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 14px;
+}
+.ssn-axis { padding-top: 10px; padding-bottom: 2px; }
+.ssn-head {
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ssn-line.is-open > .ssn-head { background: var(--bg); }
+.ssn-name { min-width: 0; line-height: 1.35; }
+.ssn-name b { font-size: 14px; }
+.ssn-name small { display: block; font-size: 11px; color: var(--muted); }
+.ssn-soon {
+  display: inline-block;
+  white-space: nowrap;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--up);
+  color: #fff;
+  font-size: 10px;
+  font-style: normal;
+  vertical-align: 2px;
+}
+.ssn-cells { display: grid; grid-template-columns: repeat(12, 1fr); gap: 2px; }
+.ssn-cells--head span { text-align: center; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ssn-cells--head span.is-now { color: var(--accent); font-weight: 700; }
+.ssn-cell { height: 18px; border-radius: 3px; background: var(--line); }
+.ssn-cell.is-hi, .ssn-key.is-hi { background: var(--up); }
+.ssn-cell.is-lo, .ssn-key.is-lo { background: var(--down); }
+.ssn-cell.is-up, .ssn-key.is-up { background: color-mix(in srgb, var(--up) 22%, transparent); }
+.ssn-cell.is-down, .ssn-key.is-down { background: color-mix(in srgb, var(--down) 22%, transparent); }
+.ssn-cell.is-now { box-shadow: 0 0 0 2px var(--accent); }
+.ssn-key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin: 0 2px 0 6px; }
+.ssn-key:first-child { margin-left: 0; }
+.ssn-detail {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  padding: 4px 14px 12px;
+  background: var(--bg);
+  font-variant-numeric: tabular-nums;
+}
+.ssn-detail span { display: flex; flex-direction: column; align-items: center; padding: 4px 0; border-radius: 6px; background: var(--surface); }
+.ssn-detail b { font-size: 11px; color: var(--muted); font-weight: 400; }
+.ssn-detail i { font-style: normal; font-size: 13px; font-weight: 600; color: var(--text); }
+.ssn-detail .up i { color: var(--up); }
+.ssn-detail .down i { color: var(--down); }
+.ssn-detail small { font-size: 10px; color: var(--muted); }
+.ssn-detail p { grid-column: 1 / -1; margin: 4px 0 0; font-size: 11px; color: var(--muted); }
+@media (max-width: 380px) {
+  .ssn-axis, .ssn-head { grid-template-columns: minmax(0, 1fr) 11.5rem; }
+}
