@@ -134,6 +134,8 @@ BT_FROM=2022-01-01 BT_TO=2022-10-31 python scripts/backtest_signals.py
 
 ### 族群的新循環：看「轉正廣度」，不看中位數
 
+（2026-10-06：景氣頁上的「新循環從哪一族開始」區塊已依使用者要求移除，這兩段只留做紀錄。）
+
 t 月底只用 t−1 月以前的營收。族群成分股之後的含息報酬減全體平均（`scratchpad` 的 group.py／breadth.py，
 正式版在 `build_cycle.py` 的 `group_backtest()`）：
 

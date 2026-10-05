@@ -2703,54 +2703,6 @@ button.ustag {
 .cyc-mon__m small { font-size: 9px; color: var(--muted); }
 .cyc-mon__m.is-best { box-shadow: inset 0 0 0 2px var(--accent); }
 
-/* 景氣頁最上面：新循環從哪一族開始 */
-.cyc-top { border-color: var(--accent); }
-.cyc-grp { padding: 12px 14px; border-bottom: 1px solid var(--line); }
-.cyc-grp__head { display: grid; grid-template-columns: 1.6rem 1fr auto; align-items: center; gap: 8px; }
-.cyc-grp__no {
-  display: grid;
-  place-items: center;
-  width: 1.4rem;
-  height: 1.4rem;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-}
-.cyc-grp__name { font-weight: 600; min-width: 0; }
-.cyc-grp__b { text-align: right; line-height: 1.2; }
-.cyc-grp__b b { display: block; font-size: 20px; color: var(--up); font-variant-numeric: tabular-nums; }
-.cyc-grp__b small { font-size: 11px; color: var(--muted); }
-.cyc-grp__dl {
-  display: grid;
-  grid-template-columns: 2.2rem 1fr;
-  gap: 2px 6px;
-  margin: 6px 0 8px;
-  font-size: 12px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-.cyc-grp__dl dd { margin: 0; }
-.cyc-grp__dl b { font-weight: 600; color: var(--text); }
-.cyc-grp__dl b.up { color: var(--up); }
-.cyc-grp__dl b.down { color: var(--down); }
-.cyc-gchips { display: flex; flex-wrap: wrap; gap: 6px; }
-.cyc-gchip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  padding: 4px 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--text);
-  text-decoration: none;
-  font-size: 13px;
-}
-.cyc-gchip em { font-style: normal; font-size: 11px; font-variant-numeric: tabular-nums; }
-.cyc-gmore { align-self: center; font-size: 12px; color: var(--muted); }
-.cyc-top .rule-level { margin: 0; }
-
 /* 旺季與淡季：左邊族群名、右邊 12 格 */
 .ssn-axis,
 .ssn-head {

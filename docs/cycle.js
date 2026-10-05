@@ -61,8 +61,6 @@ const state = {
   more: 1,
   freshMore: 1,
   bm: 'all',
-  grp: 'ind',
-  gsort: 'combo',
   sgrp: 'ind',
   smode: 'raw',
   ssort: 'soon',
@@ -79,13 +77,6 @@ const GRPS = [
   { value: 'ind', label: '官方產業' },
   { value: 'theme', label: '題材族群' },
 ];
-const GSORTS = [
-  { value: 'combo', label: '綜合：營收＋股價' },
-  { value: 'rev', label: '只看營收' },
-];
-const GRP_SHOW = 6;       // 最上面那一張列幾個族群
-const GRP_CHIPS = 8;      // 每個族群列幾檔剛轉正的
-
 const TABS = [
   { value: 'cycle', label: '循環' },
   { value: 'season', label: '月曆' },
@@ -105,8 +96,6 @@ const KEYS = {
   sort: 'stocktracker.cyclesort',
   tab: 'stocktracker.cycletab',
   basis: 'stocktracker.cyclebasis',
-  grp: 'stocktracker.cyclegrp',
-  gsort: 'stocktracker.cyclegsort',
   sgrp: 'stocktracker.cyclesgrp',
   smode: 'stocktracker.cyclesmode',
   ssort: 'stocktracker.cyclessort',
@@ -187,80 +176,6 @@ function spark(values) {
   const line = pts.map((v, i) => `${(1 + (i / (pts.length - 1)) * (w - 2)).toFixed(1)},${(h - 1 - ((v - min) / span) * (h - 2)).toFixed(1)}`).join(' ');
   return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${line}"/></svg>`;
 }
-
-// --------------------------------------------------------------------------
-// 0. 新循環從哪一族開始（頁面最上面，兩個分頁都看得到）
-// --------------------------------------------------------------------------
-
-/**
- * 族群排名有兩種：
- *   combo  營收轉正廣度的名次 ＋ 股價近 3 個月漲幅的名次（預設；做波段，股價要確認）
- *   rev    只看轉正廣度
- * 轉正廣度＝族群裡近 3 個月營收年增「剛由負轉正」的比例。過去有沒有用照 groupWalk 寫，不寫死。
- */
-function groupVerdict(walk, key) {
-  const w1 = walk && walk[`${state.gsort}1`];
-  const w3 = walk && walk[`${state.gsort}3`];
-  if (!w1 || !w3) return '';
-  const ok = (w) => w.t >= 2 && w.spread > 0 && w.h1 > 0 && w.h2 > 0;
-  const works = ok(w1) || ok(w3);
-  const one = (w) => `${w.h} 個月 <b>${pct(w.spread, 1)}</b>（t ${fmt(w.t)}，贏 ${w.win}%，前後兩半 ${pct(w.h1, 1)}／${pct(w.h2, 1)}）`;
-  return `<p class="rule-level rule-level--${works ? 'ok' : 'warn'}">
-    <b>${works ? '這個排名過去有用' : '這個排名過去不穩，只當參考'}</b>
-    <span>過去每個月（${esc(w1.from)} 起，只用當時看得到的營收與股價）買前 ${w1.k} 名族群、避開後 ${w1.k} 名，
-      之後 ${one(w1)}；${one(w3)}。
-      ${key === 'theme' ? '題材族群的名單是今天挑的（只收進過成交值前 200 大的），回測會高估。' : ''}</span>
-  </p>`;
-}
-
-function groupCard(d) {
-  const src = (d.groups || {})[state.grp] || [];
-  if (!src.length) return '';
-  const combo = state.gsort === 'combo';
-  const all = combo ? src : [...src].sort((a, b) => b.b - a.b || b.k - a.k);
-  const rows = all.slice(0, GRP_SHOW).map((r, k) => {
-    const chips = r.hit.slice(0, GRP_CHIPS).map((h) =>
-      `<a class="cyc-gchip" href="index.html#/stock/${esc(h.c)}">${esc(h.n || h.c)}<em class="up">營 ${pct(h.yoy)}</em>${
-        h.d20 === null || h.d20 === undefined ? '' : `<em class="${dir(h.d20)}">價 ${pct(h.d20)}</em>`}</a>`).join('');
-    const more = r.hit.length > GRP_CHIPS ? `<span class="cyc-gmore">還有 ${r.hit.length - GRP_CHIPS} 檔</span>` : '';
-    const big = combo
-      ? `<b>${r.score ?? '—'}</b><small>綜合分數</small>`
-      : `<b>${r.b}%</b><small>${r.k}／${r.n} 檔剛轉正</small>`;
-    return `<div class="cyc-grp">
-      <div class="cyc-grp__head">
-        <span class="cyc-grp__no">${k + 1}</span>
-        <span class="cyc-grp__name">${esc(r.g)}</span>
-        <span class="cyc-grp__b">${big}</span>
-      </div>
-      <dl class="cyc-grp__dl">
-        <dt>營收</dt>
-        <dd>轉正 <b>${r.b}%</b>（${r.k}／${r.n} 檔）· 年增中位數 ${pct(r.yoy3, 1)} → <b class="${dir(r.yoy)}">${pct(r.yoy, 1)}</b></dd>
-        <dt>股價</dt>
-        <dd>3 個月 <b class="${dir(r.m3)}">${pct(r.m3, 1)}</b> · 20 日 <b class="${dir(r.d20)}">${pct(r.d20, 1)}</b> ·
-          5 日 <b class="${dir(r.d5)}">${pct(r.d5, 1)}</b> · 站上月線 <b>${r.ma20 ?? '—'}%</b></dd>
-      </dl>
-      <div class="cyc-gchips">${chips}${more}</div>
-    </div>`;
-  }).join('');
-  return `<section class="card cyc-top">
-    <h2>新循環從哪一族開始 <small>營收 ${esc(d.revMonth)}・股價 ${esc(d.priceDay || '')}</small></h2>
-    <div class="controls cyc-controls">
-      ${pills('grp', GRPS, state.grp)}
-      ${pills('gsort', GSORTS, state.gsort)}
-    </div>
-    ${rows}
-    ${groupVerdict((d.groupWalk || {})[state.grp], state.grp)}
-    <p class="note"><b>綜合分數</b>（0～100）＝營收轉正廣度在所有族群裡的名次，加上族群股價近 3 個月含息漲幅的名次，
-      各佔一半。<b>轉正廣度</b>是族群裡近 3 個月營收年增剛由負轉正（現在 &gt; 0、前三個月最低 ≤ 0）的比例。
-      單看股價動能過去沒有用，跟營收合在一起才有：營收轉好、股價也開始確認的族群。
-      股價都是族群成分股的平均、已還原除權息；20／5 日與站上月線給波段看進出點，沒有另外回測。
-      底下是剛轉正的個股：「營」是營收年增，「價」是近 20 日漲跌。要買就買一籃子。</p>
-  </section>`;
-}
-
-// --------------------------------------------------------------------------
-// 1. 景氣
-// --------------------------------------------------------------------------
 
 // --------------------------------------------------------------------------
 // 旺季與淡季：12 個月的時間軸
@@ -714,7 +629,7 @@ function seasonView() {
 
 function render() {
   const d = state.data;
-  const head = `${groupCard(d)}<section class="card"><div class="controls cyc-tabs">${pills('tab', TABS, state.tab)}</div></section>`;
+  const head = `<section class="card"><div class="controls cyc-tabs">${pills('tab', TABS, state.tab)}</div></section>`;
   if (state.tab === 'season') {
     const z = state.season;
     $('#meta').textContent = z ? `股價 ${z.from} ～ ${z.to} · ${z.sample} 檔 · 已還原除權息` : '月曆';
@@ -758,12 +673,6 @@ function bind() {
       save(KEYS.ssort, ds.ssort);
     } else if (ds.sall) {
       state.sall = true;
-    } else if (ds.gsort) {
-      state.gsort = ds.gsort;
-      save(KEYS.gsort, ds.gsort);
-    } else if (ds.grp) {
-      state.grp = ds.grp;
-      save(KEYS.grp, ds.grp);
     } else if (ds.bm) {
       state.bm = ds.bm;
       state.more = 1;
@@ -820,8 +729,6 @@ function restore() {
     state.sort = pick(KEYS.sort, SORTS) || state.sort;
     state.tab = pick(KEYS.tab, TABS) || state.tab;
     state.basis = pick(KEYS.basis, BASES) || state.basis;
-    state.grp = pick(KEYS.grp, GRPS) || state.grp;
-    state.gsort = pick(KEYS.gsort, GSORTS) || state.gsort;
     state.sgrp = pick(KEYS.sgrp, GRPS) || state.sgrp;
     state.smode = pick(KEYS.smode, SMODES) || state.smode;
     state.ssort = pick(KEYS.ssort, SSORTS) || state.ssort;
