@@ -40,6 +40,14 @@ const SORTS = [
   { value: 'yoy', label: '年增高到低' },
 ];
 
+const NOW_M = new Date().getMonth() + 1;
+const NEXT_M = (NOW_M % 12) + 1;
+const BMS = [
+  { value: 'all', label: '不限月份' },
+  { value: String(NOW_M), label: `${NOW_M} 月適合買進` },
+  { value: String(NEXT_M), label: `${NEXT_M} 月適合買進` },
+];
+
 const PAGE = 40;          // 清單一次列幾檔
 
 const state = {
@@ -52,6 +60,7 @@ const state = {
   open: new Set(),
   more: 1,
   freshMore: 1,
+  bm: 'all',
   tab: 'cycle',
   month: new Date().getMonth() + 1,
   side: 'buy',
@@ -227,7 +236,8 @@ function industryCard(d) {
 
 function pool(d) {
   const min = Number(state.size);
-  return d.stocks.filter((s) => s[state.ver] && s.rev >= min && (!state.ind || s.ind === state.ind));
+  return d.stocks.filter((s) => s[state.ver] && s.rev >= min && (!state.ind || s.ind === state.ind)
+    && (state.bm === 'all' || s.bm === Number(state.bm)));
 }
 
 function quadCard(d, list) {
@@ -251,6 +261,21 @@ function quadCard(d, list) {
   </section>`;
 }
 
+/**
+ * 12 個月各自「自己含息上漲」的勝率。一格一個月，顏色越深勝率越高，框起來的是適合買進的那個月。
+ * 數字是漲的年數／年數：樣本只有七、八年，百分比會讓人以為比實際準。
+ */
+function monthStrip(s) {
+  if (!s.mon) return '';
+  return `<div class="cyc-mon">${s.mon.map(([up, n, avg], k) => {
+    const r = n ? up / n : 0;
+    const tone = r >= 0.5 ? 'up' : 'down';
+    const a = n ? Math.abs(r - 0.5) * 2 : 0;
+    return `<span class="cyc-mon__m ${tone} ${s.bm === k + 1 ? 'is-best' : ''}" style="--a:${a.toFixed(2)}"
+      title="${k + 1} 月：漲 ${up}／${n} 年，平均 ${pct(avg, 1)}"><b>${k + 1}</b><small>${up}/${n}</small></span>`;
+  }).join('')}</div>`;
+}
+
 function stockRow(s, d) {
   const open = state.open.has(s.c);
   const ph = s.phase ? PHASE[s.phase] : null;
@@ -264,7 +289,9 @@ function stockRow(s, d) {
         <dt>同步</dt><dd>相關 全期 ${fmt(s.corr)}・前半 ${fmt(s.c1)}・後半 ${fmt(s.c2)}</dd>
         <dt>衰退</dt><dd>近 12 個月營收最深回落 ${pct(s.dd)}，現在距高峰 ${pct(s.vp)}</dd>
         <dt>規模</dt><dd>近 12 個月營收 ${fmt(s.rev, 0)} 億</dd>
+        <dt>月份</dt><dd>${s.bm ? `過去 <b>${s.bm} 月</b>最常漲：${s.mon[s.bm - 1][0]}／${s.mon[s.bm - 1][1]} 年，平均 ${pct(s.mon[s.bm - 1][2], 1)}` : '紀錄不滿 6 年，不標'}</dd>
       </dl>
+      ${monthStrip(s)}
       <a class="cyc-detail__link" href="index.html#/stock/${esc(s.c)}">看個股 K 線與法人 →</a>
     </div>` : '';
   return `<div class="cyc-item ${open ? 'is-open' : ''}">
@@ -272,7 +299,7 @@ function stockRow(s, d) {
       <span class="cyc-tag cyc-tag--${s.phase || 'none'}">${ph ? ph.label : '—'}<small>β ${fmt(s.beta, 1)}</small></span>
       <span class="ident">
         <span class="name">${esc(s.n || s.c)}</span>
-        <span class="code">${esc(s.c)} · ${esc(s.ind)}</span>
+        <span class="code">${esc(s.c)} · ${esc(s.ind)}${s.bm ? ` · <em class="cyc-bm">宜 ${s.bm} 月</em>` : ''}</span>
       </span>
       ${spark(s.t)}
       <span class="figures"><span class="value ${dir(s.yoy)}">${pct(s.yoy)}</span><span class="price">距高峰 ${pct(s.vp)}</span></span>
@@ -287,6 +314,17 @@ const SORT_FN = {
   yoy: (a, b) => (b.yoy ?? -1e9) - (a.yoy ?? -1e9),
 };
 
+/** 「宜 X 月」是怎麼來的，以及它過去準不準。數字照 bestWalk 寫，不寫死。 */
+function bmNote(d) {
+  const w = d.bestWalk;
+  if (!w || !w.n) return '';
+  const works = w.t >= 2 && w.hit > 50;
+  return `<p class="note"><b>宜 X 月</b>：過去每年同一個月它<b>自己</b>含息上漲的勝率最高的月份（同勝率比平均漲幅），
+    點開一列看 12 個月各自的勝率。${works ? '' : '<b>這個月份延續不到下一年</b>：'}只用那一年以前的資料挑月份，
+    那一年它在那個月比其餘月份平均${w.diff >= 0 ? '多' : '少'} ${Math.abs(w.diff)}%，t 值 ${fmt(w.t)}，${w.n} 次裡只有 ${w.hit}% 真的比較好。
+    很多檔都落在 2 月，是因為過去 8 年的 2 月有 7 年連一般股票都在漲——那是整個市場的季節性，不是這一檔的。</p>`;
+}
+
 function listCard(d, list) {
   const rows = list.filter((s) => !state.phase || s.phase === state.phase).sort(SORT_FN[state.sort]);
   const shown = rows.slice(0, PAGE * state.more);
@@ -300,12 +338,14 @@ function listCard(d, list) {
       ${pills('ver', VERS, state.ver)}
       ${pills('size', SIZES, state.size)}
       ${pills('sort', SORTS, state.sort)}
+      ${pills('bm', BMS, state.bm)}
       ${chips ? `<div class="pills">${chips}</div>` : ''}
     </div>
     ${shown.length ? shown.map((s) => stockRow(s, d)).join('') : '<p class="hint">這個條件下沒有股票。</p>'}
     ${rows.length > shown.length ? `<button class="cyc-morebtn" data-more="list">再列 ${Math.min(PAGE, rows.length - shown.length)} 檔（還有 ${rows.length - shown.length}）</button>` : ''}
     <p class="note">右邊的數字是近 3 個月營收年增，下面一行是近 12 個月營收距它自己的高峰；迷你線是近 12 個月營收的走勢。
       「嚴格」要前後兩半各自 beta ≥ ${d.rules.beta}、相關 ≥ ${d.rules.corr}，而且近 12 個月營收曾經回落 ${Math.abs(d.rules.drawdown)}% 以上。</p>
+    ${bmNote(d)}
   </section>`;
 }
 
@@ -500,6 +540,9 @@ function bind() {
       state.ind = was ? null : ds.ind;
       state.more = 1;
       scroll = !was && !el.classList.contains('cyc-chip');
+    } else if (ds.bm) {
+      state.bm = ds.bm;
+      state.more = 1;
     } else if (ds.ver) {
       state.ver = ds.ver;
       save(KEYS.ver, ds.ver);
