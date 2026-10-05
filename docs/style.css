@@ -2675,3 +2675,4 @@ button.ustag {
 .ssn-rate b.up { color: var(--up); }
 .ssn-rate b.down { color: var(--down); }
 .ssn-win .value { font-size: 20px; }
+.ssn-label { font-size: 12px; color: var(--muted); }

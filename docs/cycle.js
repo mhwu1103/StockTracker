@@ -55,12 +55,17 @@ const state = {
   tab: 'cycle',
   month: new Date().getMonth() + 1,
   side: 'buy',
+  basis: 'abs',
   season: undefined,   // 月曆資料：undefined 還沒載、null 載不到
 };
 
 const TABS = [
   { value: 'cycle', label: '循環' },
   { value: 'season', label: '月曆' },
+];
+const BASES = [
+  { value: 'abs', label: '自己漲跌' },
+  { value: 'rel', label: '贏大盤' },
 ];
 const SIDES = [
   { value: 'buy', label: '買進清單' },
@@ -72,6 +77,7 @@ const KEYS = {
   size: 'stocktracker.cyclesize',
   sort: 'stocktracker.cyclesort',
   tab: 'stocktracker.cycletab',
+  basis: 'stocktracker.cyclebasis',
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -336,19 +342,31 @@ async function loadSeason() {
   render();
 }
 
+/** 兩種勝率基準的用詞。rel 跟一般股票比；abs 只看它自己有沒有漲。 */
+const BASIS = {
+  rel: { win: '贏', lose: '輸', what: '贏大盤', yearly: '超額', def: '這個月它的含息漲跌贏過<b>全市場普通股漲跌的中位數</b>（一般股票），不是加權指數' },
+  abs: { win: '漲', lose: '跌', what: '自己漲跌', yearly: '含息漲跌', def: '這個月它<b>自己</b>含息是漲還是跌，不跟任何人比' },
+};
+
 /** walk-forward 的結論。照數字寫，不寫死：哪天真的變顯著了，這一段自己會改口。 */
 function verdictCard(z) {
-  const w = z.walk;
+  const B = BASIS[state.basis];
+  const w = z.bases[state.basis].walk;
   const works = w.t >= 2 && w.spread > 0;
   return `<section class="card">
-    <h2>先看這個 <small>這份清單過去有沒有用</small></h2>
+    <h2>先看這個 <small>過去的勝率，下一年還準嗎</small></h2>
+    <div class="stat-grid">
+      <div class="stat"><b class="${w.buyHit > w.allHit + 2 ? 'up' : ''}">${w.buyHit}%</b><span>買進清單下一年真的${B.win}</span></div>
+      <div class="stat"><b>${w.allHit}%</b><span>全市場同一個月${B.win}的比例</span></div>
+      <div class="stat"><b class="${w.sellHit > 100 - w.allHit + 2 ? 'down' : ''}">${w.sellHit}%</b><span>賣出清單下一年真的${B.lose}</span></div>
+    </div>
     <p class="rule-level rule-level--${works ? 'ok' : 'warn'}">
-      <b>${works ? '過去的月份規律有延續到下一年' : '過去的月份規律延續不到下一年'}</b>
+      <b>${works ? '過去的月份規律有延續到下一年' : '過去的勝率延續不到下一年'}</b>
       <span>把「今天」換成 ${esc(w.from)} 以後的每一年，只用那一年以前的資料照同一條規則挑前 ${z.rules.wfN} 檔，
-        看那一年同一個月：買進清單減賣出清單平均 ${pct(w.spread, 2)}／月，t 值 ${fmt(w.t)}，${w.n} 個月裡贏 ${w.win}%。
-        ${works ? '' : 't 值不到 2，跟擲硬幣分不開。'}</span>
+        看那一年同一個月它們是不是真的${B.win}：買進清單 ${w.buyHit}%，跟全市場的 ${w.allHit}% ${Math.abs(w.buyHit - w.allHit) <= 2 ? '差不多' : '有差'}。
+        換成報酬：買進減賣出平均 ${pct(w.spread, 2)}／月，t 值 ${fmt(w.t)}${works ? '' : '，不到 2，跟擲硬幣分不開'}。</span>
     </p>
-    <p class="note">另一個對照：一千多檔股票、每檔 7、8 年，就算股價完全隨機，「贏的年份 ≥ ${Math.round(z.rules.hit * 100)}%」
+    <p class="note">為什麼會這樣：一千多檔股票、每檔只有 7、8 年，就算股價完全隨機，「${B.win}的年份 ≥ ${Math.round(z.rules.hit * 100)}%」
       每個月份也會有上百檔。下面每個月都寫了「純靠運氣預期幾檔」——實際檔數跟它差不多，就代表那個月沒有規律。</p>
   </section>`;
 }
@@ -365,10 +383,16 @@ function yearBars(y, years) {
 /** 過往勝率：「86%（6／7）」。百分比好比，括號裡的年數提醒樣本只有這幾年。 */
 const rate = (k, n) => (n ? `${Math.round((k / n) * 100)}%（${k}／${n}）` : '—');
 
-/** 買進清單看贏的年數、賣出清單看輸的年數。 */
+/** 買進清單看贏（漲）的年數、賣出清單看輸（跌）的年數。 */
 const wins = (r) => (state.side === 'buy' ? r.win : r.yrs - r.win);
 
 function seasonRow(r, years) {
+  const B = BASIS[state.basis];
+  const buy = state.side === 'buy';
+  // 底下一行補另一種基準，兩種勝率都看得到
+  const other = state.basis === 'rel'
+    ? `<span>自己上漲 <b>${rate(r.up, r.yrs)}</b></span>`
+    : `<span>贏大盤 <b>${rate(r.rw, r.yrs)}</b></span>`;
   return `<a class="row ssn-row" href="index.html#/stock/${esc(r.c)}">
     <span class="ident">
       <span class="name">${esc(r.n || r.c)}</span>
@@ -376,13 +400,13 @@ function seasonRow(r, years) {
     </span>
     ${yearBars(r.y, years)}
     <span class="figures ssn-win">
-      <span class="value ${state.side === 'buy' ? 'up' : 'down'}">${Math.round((wins(r) / r.yrs) * 100)}%</span>
-      <span class="price">${state.side === 'buy' ? '勝率' : '敗率'} ${wins(r)}／${r.yrs} 年</span>
+      <span class="value ${buy ? 'up' : 'down'}">${Math.round((wins(r) / r.yrs) * 100)}%</span>
+      <span class="price">${buy ? B.win : B.lose} ${wins(r)}／${r.yrs} 年</span>
     </span>
     <span class="ssn-rate">
-      <span>超額中位數 <b class="${dir(r.med)}">${pct(r.med, 1)}</b></span>
-      <span>自己上漲 <b>${rate(r.up, r.yrs)}</b></span>
-      <span>平均 <b class="${dir(r.avg)}">${pct(r.avg, 1)}</b></span>
+      ${other}
+      <span>平均漲跌 <b class="${dir(r.avg)}">${pct(r.avg, 1)}</b></span>
+      <span>${B.yearly}中位數 <b class="${dir(r.med)}">${pct(r.med, 1)}</b></span>
     </span>
   </a>`;
 }
@@ -396,29 +420,38 @@ function seasonView() {
   const z = state.season;
   if (z === undefined) return '<p class="hint">載入中…</p>';
   if (z === null) return '<p class="hint">月曆資料載不到。要先跑 <code>scripts/build_season.py</code>。</p>';
-  const mo = z.months.find((r) => r.m === state.month) || z.months[0];
+  const B = BASIS[state.basis];
+  const base = z.bases[state.basis];
+  const mo = base.months.find((r) => r.m === state.month) || base.months[0];
   const min = Number(state.size);
   const all = mo[state.side];
-  // 勝率高的排前面，同勝率再比超額中位數
+  // 勝率高的排前面，同勝率再比中位數
   const rows = all.filter((r) => (r.rev ?? 0) >= min)
     .sort((a, b) => wins(b) / b.yrs - wins(a) / a.yrs || Math.abs(b.med) - Math.abs(a.med));
-  const wfm = z.walk.byMonth[mo.m];
+  const wfm = base.walk.byMonth[mo.m];
   const months = Array.from({ length: 12 }, (_, k) => ({ value: String(k + 1), label: `${k + 1} 月` }));
   const sideN = mo[`${state.side}N`];
-  return `${verdictCard(z)}
+  const yr = `${mo.years[0]}～${mo.years[mo.years.length - 1]}`;
+  return `<section class="card">
+      <div class="controls cyc-controls">
+        <span class="ssn-label">勝率基準</span>${pills('basis', BASES, state.basis)}
+      </div>
+      <p class="note">${B.def}。</p>
+    </section>
+    ${verdictCard(z)}
     <section class="card">
       <div class="controls cyc-controls">${pills('month', months, String(mo.m))}</div>
       <div class="stat-grid">
-        <div class="stat"><b>${mo.buyN}</b><span>符合買進（運氣 ${mo.luck}）</span></div>
-        <div class="stat"><b>${mo.sellN}</b><span>符合賣出（運氣 ${mo.luck}）</span></div>
-        <div class="stat"><b class="${dir(wfm)}">${wfm === null || wfm === undefined ? '—' : pct(wfm, 1)}</b><span>這個月的 walk-forward（${z.walk.byMonthN[mo.m]} 年）</span></div>
+        <div class="stat"><b>${mo.buyN}</b><span>符合買進（運氣 ${mo.luckBuy}）</span></div>
+        <div class="stat"><b>${mo.sellN}</b><span>符合賣出（運氣 ${mo.luckSell}）</span></div>
+        <div class="stat"><b>${z.upShare[mo.m]}%</b><span>${mo.m} 月平均有幾成股票上漲</span></div>
       </div>
       <div class="ssn-inds">
         ${indList(mo.indUp, `${mo.m} 月偏強的產業`)}
         ${indList(mo.indDown, `${mo.m} 月偏弱的產業`)}
       </div>
-      <p class="note">產業是成分股超額的中位數，再對 ${mo.years[0]}～${mo.years[mo.years.length - 1]} 年取平均；右邊是贏全市場的年份比例。
-        ${mo.m} 月全市場中位數平均 ${pct(mo.med, 1)}。</p>
+      <p class="note">產業是成分股${B.yearly}的中位數，再對 ${yr} 年取平均；右邊是${B.win}的年份比例。
+        只看 ${mo.m} 月的 walk-forward（${base.walk.byMonthN[mo.m]} 年）：買進減賣出 ${wfm === null || wfm === undefined ? '—' : pct(wfm, 1)}。</p>
     </section>
     <section class="card">
       <h2>${mo.m} 月${state.side === 'buy' ? '買進' : '賣出'}清單 <small>${sideN} 檔符合，列出前 ${all.length} 檔中的 ${rows.length} 檔</small></h2>
@@ -428,11 +461,9 @@ function seasonView() {
       </div>
       ${rows.length ? rows.map((r) => seasonRow(r, mo.years)).join('') : '<p class="hint">這個條件下沒有股票。</p>'}
       <p class="note">${state.side === 'buy' ? '買進' : '賣出'}：過去至少 ${z.rules.minYears} 年的 ${mo.m} 月裡，
-        ${state.side === 'buy' ? '贏' : '輸'}全市場中位數的年份 ≥ ${Math.round(z.rules.hit * 100)}%。
-        右邊的大數字是<b>${state.side === 'buy' ? '勝率' : '敗率'}</b>：這個月它的漲跌${state.side === 'buy' ? '贏' : '輸'}過
-        <b>全市場普通股漲跌的中位數</b>的年份比例——比的是「一般股票」，不是加權指數（加權指數四成是台積電）。
-        依勝率排，同勝率再比超額中位數。底下一行：超額的中位數、它自己含息上漲的年份與平均漲跌（不扣大盤）。
-        小長條是每一年 ${mo.m} 月的超額（${mo.years[0]} → ${mo.years[mo.years.length - 1]}，紅贏綠輸）。
+        ${state.side === 'buy' ? B.win : B.lose}的年份 ≥ ${Math.round(z.rules.hit * 100)}%（基準：${B.what}），
+        依勝率排、同勝率比中位數。底下一行補上另一種勝率、平均含息漲跌，與${B.yearly}的中位數。
+        小長條是每一年 ${mo.m} 月的${B.yearly}（${mo.years[0]} → ${mo.years[mo.years.length - 1]}，紅${B.win}綠${B.lose}）。
         股價已還原除權息；資料 ${esc(z.from)} ～ ${esc(z.to)}。</p>
     </section>`;
 }
@@ -483,6 +514,9 @@ function bind() {
       save(KEYS.tab, ds.tab);
     } else if (ds.month) {
       state.month = Number(ds.month);
+    } else if (ds.basis) {
+      state.basis = ds.basis;
+      save(KEYS.basis, ds.basis);
     } else if (ds.side) {
       state.side = ds.side;
     } else if (ds.more === 'list') {
@@ -518,6 +552,7 @@ function restore() {
     state.size = pick(KEYS.size, SIZES) || state.size;
     state.sort = pick(KEYS.sort, SORTS) || state.sort;
     state.tab = pick(KEYS.tab, TABS) || state.tab;
+    state.basis = pick(KEYS.basis, BASES) || state.basis;
   } catch (err) {
     /* 讀不到就用預設 */
   }
