@@ -362,6 +362,9 @@ function yearBars(y, years) {
   }).join('')}</span>`;
 }
 
+/** 過往勝率：「86%（6／7）」。百分比好比，括號裡的年數提醒樣本只有這幾年。 */
+const rate = (k, n) => (n ? `${Math.round((k / n) * 100)}%（${k}／${n}）` : '—');
+
 function seasonRow(r, years) {
   return `<a class="row ssn-row" href="index.html#/stock/${esc(r.c)}">
     <span class="ident">
@@ -369,13 +372,18 @@ function seasonRow(r, years) {
       <span class="code">${esc(r.c)} · ${esc(r.ind)}${r.rev ? ` · 營收 ${fmt(r.rev, 0)} 億` : ''}</span>
     </span>
     ${yearBars(r.y, years)}
-    <span class="figures"><span class="value ${dir(r.med)}">${pct(r.med, 1)}</span><span class="price">${state.side === 'buy' ? '贏' : '輸'} ${state.side === 'buy' ? r.win : r.yrs - r.win}／${r.yrs} 年</span></span>
+    <span class="figures"><span class="value ${dir(r.med)}">${pct(r.med, 1)}</span><span class="price">超額中位數</span></span>
+    <span class="ssn-rate">
+      <span>贏大盤 <b>${rate(r.win, r.yrs)}</b></span>
+      <span>上漲 <b>${rate(r.up, r.yrs)}</b></span>
+      <span>平均 <b class="${dir(r.avg)}">${pct(r.avg, 1)}</b></span>
+    </span>
   </a>`;
 }
 
 function indList(rows, title) {
   return `<div class="ssn-ind"><h3>${title}</h3><ol>${rows.map((r) =>
-    `<li><span>${esc(r.ind)}</span><em class="${dir(r.avg)}">${pct(r.avg, 1)}</em><small>${r.win}／${r.yrs}</small></li>`).join('')}</ol></div>`;
+    `<li><span>${esc(r.ind)}</span><em class="${dir(r.avg)}">${pct(r.avg, 1)}</em><small>${Math.round((r.win / r.yrs) * 100)}%</small></li>`).join('')}</ol></div>`;
 }
 
 function seasonView() {
@@ -401,7 +409,7 @@ function seasonView() {
         ${indList(mo.indUp, `${mo.m} 月偏強的產業`)}
         ${indList(mo.indDown, `${mo.m} 月偏弱的產業`)}
       </div>
-      <p class="note">產業是成分股超額的中位數，再對 ${mo.years[0]}～${mo.years[mo.years.length - 1]} 年取平均；右邊是贏的年數。
+      <p class="note">產業是成分股超額的中位數，再對 ${mo.years[0]}～${mo.years[mo.years.length - 1]} 年取平均；右邊是贏全市場的年份比例。
         ${mo.m} 月全市場中位數平均 ${pct(mo.med, 1)}。</p>
     </section>
     <section class="card">
@@ -413,6 +421,8 @@ function seasonView() {
       ${rows.length ? rows.map((r) => seasonRow(r, mo.years)).join('') : '<p class="hint">這個條件下沒有股票。</p>'}
       <p class="note">${state.side === 'buy' ? '買進' : '賣出'}：過去至少 ${z.rules.minYears} 年的 ${mo.m} 月裡，
         ${state.side === 'buy' ? '贏' : '輸'}全市場中位數的年份 ≥ ${Math.round(z.rules.hit * 100)}%，依超額的中位數排。
+        右邊三行：超額的中位數；<b>贏大盤</b>的勝率（這個月贏全市場中位數的年份）；<b>上漲</b>的勝率與平均漲跌
+        （它自己含息漲跌，不扣大盤）。
         小長條是每一年 ${mo.m} 月的超額（${mo.years[0]} → ${mo.years[mo.years.length - 1]}，紅贏綠輸）。
         股價已還原除權息；資料 ${esc(z.from)} ～ ${esc(z.to)}。</p>
     </section>`;
