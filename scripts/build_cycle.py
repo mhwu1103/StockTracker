@@ -22,6 +22,19 @@
 4. **這一輪新跟上的**：前半段完全不跟景氣、後半段才高度同步的（台積電、欣興是典型）。
    比較像這一輪的主角，而不是傳統的循環股，獨立列出來，不混進名單。
 
+## 新循環從哪一族開始
+
+頁面最上面那一張。每個族群算**轉正廣度**：成分股裡，近 3 個月營收年增「剛由負轉正」的比例
+（現在 > 0、前三個月裡最低 ≤ 0）。廣度最高的族群，就是新一輪循環正在那裡起頭的地方。
+
+為什麼不用「族群年增率的中位數剛轉正」：試過，官方產業 3 個月只贏 +0.2%（t 0.2），前後兩半正負
+相反；「中位數還是負的、但在回升」（即將轉正）也沒有用。廣度才有用——每個月取廣度前 3 名的官方產業
+減後 3 名，之後 3 個月 +3.2%（t 2.5），前後兩半 +3.2%／+3.1%（2026-10）。這個檢驗每次重算都會重跑，
+結果在 `groupWalk`，前端照它寫。
+
+族群有兩種：官方產業（檢驗用這個，沒有偏誤）與題材子族群（`themes.json`，比較貼近「族群」的說法，
+但名單是今天挑的、只收進過成交值前 200 大的，回測會高估，所以只當參考）。
+
 ## 循環位置
 
 每一檔用兩個軸放進四格：
@@ -66,6 +79,10 @@ FRESH_BETA1 = 0.6
 NEAR_PEAK = 0.85      # 近 12 個月營收在高點的 85% 以上算「接近高峰」
 MIN_IND = 5           # 產業至少 5 檔才列
 MONTH_YEARS = 6       # 適合買進的月份：那個月至少要有 6 年的紀錄
+GROUP_MIN = 5         # 族群至少幾檔有年增率才排（題材子族群 4 檔）
+GROUP_TOP = 3         # 檢驗：每個月前 3 名減後 3 名
+GROUP_H = 3           # 檢驗：持有 3 個月
+GROUP_SHOW = 6        # 頁面上列前幾個族群
 
 
 def load():
@@ -135,10 +152,9 @@ def best_month(r: dict, years: list):
     return best, stats
 
 
-def add_buy_months(stocks: list, industry: dict) -> dict:
+def add_buy_months(stocks: list, ret: dict, rm: list) -> dict:
     """每一檔加上 bm（適合買進的月份）與 mon（12 個月的勝率），並做 walk-forward：
     只用那一年以前的資料挑最好的月份，看那一年它在那個月的報酬，是不是比它自己其餘月份的平均好。"""
-    ret, rm = build_season.total_returns(industry)
     years = sorted({m[:4] for m in rm})
     diffs, hits = [], []
     for s in stocks:
@@ -175,6 +191,104 @@ def _best_short(r: dict, train: list):
             if key is None or k > key:
                 best, key = mm, k
     return best, None
+
+
+def official_groups(industry: dict) -> dict:
+    g = {}
+    for c, k in industry.items():
+        if "金融" not in k:
+            g.setdefault(k, []).append(c)
+    return g
+
+
+def theme_groups() -> dict:
+    t = twse.read_json(twse.DATA_DIR / "themes.json") or {}
+    return {f"{gr['name']}／{s['name']}": s["codes"] for gr in t.get("groups") or [] for s in gr.get("subs") or []}
+
+
+def turned(ys: list, i: int) -> bool:
+    """第 i 個月：近 3 個月營收年增 > 0，而且前三個月裡最低 ≤ 0（剛由負轉正）。"""
+    if i < 3 or ys[i] is None or ys[i] <= 0:
+        return False
+    prev = [v for v in ys[i - 3:i] if v is not None]
+    return bool(prev) and min(prev) <= 0
+
+
+def breadth(codes: list, yoy: dict, i: int, min_n: int):
+    """(轉正比例, 有年增率的檔數, 剛轉正的代號)；檔數不夠回 None。"""
+    cs = [c for c in codes if c in yoy and yoy[c][i] is not None]
+    if len(cs) < min_n:
+        return None
+    hit = [c for c in cs if turned(yoy[c], i)]
+    return len(hit) / len(cs), len(cs), hit
+
+
+def group_turns(groups: dict, yoy: dict, months: list, names: dict, min_n: int) -> list:
+    """最新一個月，每個族群的轉正廣度，由高到低。"""
+    i = len(months) - 1
+    rows = []
+    for g, codes in groups.items():
+        b = breadth(codes, yoy, i, min_n)
+        if not b:
+            continue
+        share, n, hit = b
+        cs = [c for c in codes if c in yoy and yoy[c][i] is not None]
+        med = statistics.median(yoy[c][i] for c in cs)
+        prev = [yoy[c][i - 3] for c in cs if yoy[c][i - 3] is not None]
+        rows.append({
+            "g": g, "n": n, "k": len(hit), "b": round(share * 100),
+            "yoy": pct(med), "yoy3": pct(statistics.median(prev)) if prev else None,
+            "up": round(sum(yoy[c][i] > 0 for c in cs) / n * 100),
+            "hit": sorted(({"c": c, "n": names.get(c), "yoy": pct(yoy[c][i])} for c in hit),
+                          key=lambda r: -(r["yoy"] or 0)),
+        })
+    rows.sort(key=lambda r: (-r["b"], -r["k"]))
+    return rows
+
+
+def group_backtest(groups: dict, yoy: dict, months: list, ret: dict, rm: list, min_n: int) -> dict:
+    """每個月底（只用上個月以前的營收）取轉正廣度前 GROUP_TOP 名減後 GROUP_TOP 名，
+    成分股之後 GROUP_H 個月的含息報酬（減全體平均）。"""
+    idx = {m: k for k, m in enumerate(months)}
+    spreads = []
+    for j, t in enumerate(rm):
+        y, mo = int(t[:4]), int(t[5:])
+        prev = f"{y - (mo == 1)}-{(mo - 2) % 12 + 1:02d}"       # t 月底看得到的是 t-1 月的營收
+        if prev not in idx or j + GROUP_H >= len(rm):
+            continue
+        i = idx[prev]
+        ahead = rm[j + 1:j + 1 + GROUP_H]
+        fwd = {}
+        for c, r in ret.items():
+            if all(m in r for m in ahead):
+                fwd[c] = math.prod(1 + r[m] for m in ahead) - 1
+        if not fwd:
+            continue
+        mean = statistics.fmean(fwd.values())
+        scored = []
+        for g, codes in groups.items():
+            b = breadth(codes, yoy, i, min_n)
+            got = [fwd[c] - mean for c in codes if c in fwd]
+            if b and len(got) >= min_n:
+                scored.append((b[0], statistics.fmean(got)))
+        if len(scored) < 2 * GROUP_TOP:
+            continue
+        scored.sort(key=lambda r: r[0])
+        top = statistics.fmean(x for _, x in scored[-GROUP_TOP:])
+        bot = statistics.fmean(x for _, x in scored[:GROUP_TOP])
+        spreads.append((t, top - bot))
+    if len(spreads) < 12:
+        return {}
+    xs = [s for _, s in spreads]
+    mu, sd = statistics.fmean(xs), statistics.stdev(xs)
+    half = len(xs) // 2
+    return {
+        "n": len(xs), "from": spreads[0][0], "to": spreads[-1][0], "h": GROUP_H, "k": GROUP_TOP,
+        "spread": round(mu * 100, 2),
+        "t": round(mu / (sd / math.sqrt(len(xs))) / math.sqrt(GROUP_H), 2),   # 持有期重疊，粗略除以 √h
+        "win": round(sum(x > 0 for x in xs) / len(xs) * 100),
+        "h1": round(statistics.fmean(xs[:half]) * 100, 2), "h2": round(statistics.fmean(xs[half:]) * 100, 2),
+    }
 
 
 def main():
@@ -285,7 +399,12 @@ def main():
         else:
             break
 
-    best_walk = add_buy_months(out, industry)
+    ret, rm = build_season.total_returns(industry)
+    best_walk = add_buy_months(out, ret, rm)
+    groups = {"ind": official_groups(industry), "theme": theme_groups()}
+    turns = {k: group_turns(g, yoy, months, names, GROUP_MIN if k == "ind" else GROUP_MIN - 1) for k, g in groups.items()}
+    group_walk = {k: group_backtest(g, yoy, months, ret, rm, GROUP_MIN if k == "ind" else GROUP_MIN - 1)
+                  for k, g in groups.items()}
 
     payload = {
         "updated": datetime.now(twse.TAIPEI).isoformat(timespec="seconds"),
@@ -302,6 +421,8 @@ def main():
         "industries": industries,
         "stocks": out,
         "bestWalk": best_walk,
+        "groups": turns,
+        "groupWalk": group_walk,
     }
     twse.write_json(OUT_PATH, payload)
     strict = sum(s["strict"] for s in out)
