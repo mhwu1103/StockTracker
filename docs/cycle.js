@@ -365,6 +365,9 @@ function yearBars(y, years) {
 /** 過往勝率：「86%（6／7）」。百分比好比，括號裡的年數提醒樣本只有這幾年。 */
 const rate = (k, n) => (n ? `${Math.round((k / n) * 100)}%（${k}／${n}）` : '—');
 
+/** 買進清單看贏的年數、賣出清單看輸的年數。 */
+const wins = (r) => (state.side === 'buy' ? r.win : r.yrs - r.win);
+
 function seasonRow(r, years) {
   return `<a class="row ssn-row" href="index.html#/stock/${esc(r.c)}">
     <span class="ident">
@@ -372,10 +375,13 @@ function seasonRow(r, years) {
       <span class="code">${esc(r.c)} · ${esc(r.ind)}${r.rev ? ` · 營收 ${fmt(r.rev, 0)} 億` : ''}</span>
     </span>
     ${yearBars(r.y, years)}
-    <span class="figures"><span class="value ${dir(r.med)}">${pct(r.med, 1)}</span><span class="price">超額中位數</span></span>
+    <span class="figures ssn-win">
+      <span class="value ${state.side === 'buy' ? 'up' : 'down'}">${Math.round((wins(r) / r.yrs) * 100)}%</span>
+      <span class="price">${state.side === 'buy' ? '勝率' : '敗率'} ${wins(r)}／${r.yrs} 年</span>
+    </span>
     <span class="ssn-rate">
-      <span>贏大盤 <b>${rate(r.win, r.yrs)}</b></span>
-      <span>上漲 <b>${rate(r.up, r.yrs)}</b></span>
+      <span>超額中位數 <b class="${dir(r.med)}">${pct(r.med, 1)}</b></span>
+      <span>自己上漲 <b>${rate(r.up, r.yrs)}</b></span>
       <span>平均 <b class="${dir(r.avg)}">${pct(r.avg, 1)}</b></span>
     </span>
   </a>`;
@@ -393,7 +399,9 @@ function seasonView() {
   const mo = z.months.find((r) => r.m === state.month) || z.months[0];
   const min = Number(state.size);
   const all = mo[state.side];
-  const rows = all.filter((r) => (r.rev ?? 0) >= min);
+  // 勝率高的排前面，同勝率再比超額中位數
+  const rows = all.filter((r) => (r.rev ?? 0) >= min)
+    .sort((a, b) => wins(b) / b.yrs - wins(a) / a.yrs || Math.abs(b.med) - Math.abs(a.med));
   const wfm = z.walk.byMonth[mo.m];
   const months = Array.from({ length: 12 }, (_, k) => ({ value: String(k + 1), label: `${k + 1} 月` }));
   const sideN = mo[`${state.side}N`];
@@ -420,9 +428,10 @@ function seasonView() {
       </div>
       ${rows.length ? rows.map((r) => seasonRow(r, mo.years)).join('') : '<p class="hint">這個條件下沒有股票。</p>'}
       <p class="note">${state.side === 'buy' ? '買進' : '賣出'}：過去至少 ${z.rules.minYears} 年的 ${mo.m} 月裡，
-        ${state.side === 'buy' ? '贏' : '輸'}全市場中位數的年份 ≥ ${Math.round(z.rules.hit * 100)}%，依超額的中位數排。
-        右邊三行：超額的中位數；<b>贏大盤</b>的勝率（這個月贏全市場中位數的年份）；<b>上漲</b>的勝率與平均漲跌
-        （它自己含息漲跌，不扣大盤）。
+        ${state.side === 'buy' ? '贏' : '輸'}全市場中位數的年份 ≥ ${Math.round(z.rules.hit * 100)}%。
+        右邊的大數字是<b>${state.side === 'buy' ? '勝率' : '敗率'}</b>：這個月它的漲跌${state.side === 'buy' ? '贏' : '輸'}過
+        <b>全市場普通股漲跌的中位數</b>的年份比例——比的是「一般股票」，不是加權指數（加權指數四成是台積電）。
+        依勝率排，同勝率再比超額中位數。底下一行：超額的中位數、它自己含息上漲的年份與平均漲跌（不扣大盤）。
         小長條是每一年 ${mo.m} 月的超額（${mo.years[0]} → ${mo.years[mo.years.length - 1]}，紅贏綠輸）。
         股價已還原除權息；資料 ${esc(z.from)} ～ ${esc(z.to)}。</p>
     </section>`;
