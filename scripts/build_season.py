@@ -222,14 +222,10 @@ def build_basis(key, series, p_win, ret, exc, med, avg, rm, years, industry, nam
     return {"walk": walk, "months": cal}
 
 
-def main():
+def total_returns(industry: dict):
+    """含息月報酬 {代號: {月: 報酬}} 與報酬的月份清單。景氣頁的「適合買進月份」也用這一支。"""
     close, months = load_close()
     fac = load_factors()
-    ind_map = twse.read_json(twse.DATA_DIR / "industry.json") or {}
-    industry, names = ind_map.get("map") or {}, ind_map.get("names") or {}
-    size = rev_size()
-
-    # 含息月報酬與超額
     ret = {}
     for code, s in close.items():
         if not industry.get(code):
@@ -240,7 +236,16 @@ def main():
                 r = s[b] / s[a] / f.get(b, 1.0) - 1
                 if RET_LO < r < RET_HI:
                     ret.setdefault(code, {})[b] = r
-    rm = months[1:]
+    return ret, months[1:]
+
+
+def main():
+    ind_map = twse.read_json(twse.DATA_DIR / "industry.json") or {}
+    industry, names = ind_map.get("map") or {}, ind_map.get("names") or {}
+    size = rev_size()
+
+    # 含息月報酬與超額
+    ret, rm = total_returns(industry)
     med = {m: statistics.median([ret[c][m] for c in ret if m in ret[c]]) for m in rm}
     avg = {m: statistics.fmean([ret[c][m] for c in ret if m in ret[c]]) for m in rm}
     exc = {c: {m: r - med[m] for m, r in s.items()} for c, s in ret.items()}

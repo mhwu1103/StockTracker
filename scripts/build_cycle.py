@@ -45,6 +45,7 @@ import math
 import statistics
 from datetime import datetime
 
+import build_season
 import twse
 import valuation
 
@@ -64,6 +65,7 @@ FRESH_CORR1 = 0.3     # 這一輪新跟上：前半段相關 < 0.3（或 beta < 
 FRESH_BETA1 = 0.6
 NEAR_PEAK = 0.85      # 近 12 個月營收在高點的 85% 以上算「接近高峰」
 MIN_IND = 5           # 產業至少 5 檔才列
+MONTH_YEARS = 6       # 適合買進的月份：那個月至少要有 6 年的紀錄
 
 
 def load():
@@ -115,6 +117,64 @@ def pct(logv, digits=1):
 
 def r2(v, digits=2):
     return None if v is None else round(v, digits)
+
+
+def best_month(r: dict, years: list):
+    """過去每年同一個月「自己含息上漲」的勝率最高的月份；同勝率比平均漲幅。
+    回傳 (月, [[漲的年數, 年數, 平均%] × 12])；紀錄不滿 MONTH_YEARS 年的月份不參加。"""
+    stats, best, key = [], None, None
+    for mm in range(1, 13):
+        xs = [r[f"{y}-{mm:02d}"] for y in years if f"{y}-{mm:02d}" in r]
+        up = sum(x > 0 for x in xs)
+        avg = statistics.fmean(xs) if xs else None
+        stats.append([up, len(xs), None if avg is None else round(avg * 100, 1)])
+        if len(xs) >= MONTH_YEARS:
+            k = (up / len(xs), avg)
+            if key is None or k > key:
+                best, key = mm, k
+    return best, stats
+
+
+def add_buy_months(stocks: list, industry: dict) -> dict:
+    """每一檔加上 bm（適合買進的月份）與 mon（12 個月的勝率），並做 walk-forward：
+    只用那一年以前的資料挑最好的月份，看那一年它在那個月的報酬，是不是比它自己其餘月份的平均好。"""
+    ret, rm = build_season.total_returns(industry)
+    years = sorted({m[:4] for m in rm})
+    diffs, hits = [], []
+    for s in stocks:
+        r = ret.get(s["c"], {})
+        s["bm"], s["mon"] = best_month(r, years)
+        if not s["strict"] and not s["loose"]:
+            continue                                   # 檢驗只算循環股
+        for y in years:
+            train = [t for t in years if t < y]
+            if len(train) < 2:
+                continue
+            bm, _ = best_month(r, train) if len(train) >= MONTH_YEARS else _best_short(r, train)
+            mine = f"{y}-{bm:02d}" if bm else None
+            rest = [r[f"{y}-{mm:02d}"] for mm in range(1, 13) if mm != bm and f"{y}-{mm:02d}" in r]
+            if not mine or mine not in r or len(rest) < 6:
+                continue
+            d = r[mine] - statistics.fmean(rest)
+            diffs.append(d)
+            hits.append(d > 0)
+    if len(diffs) < 30:
+        return {}
+    mu, sd = statistics.fmean(diffs), statistics.stdev(diffs)
+    return {"n": len(diffs), "diff": round(mu * 100, 2), "t": round(mu / (sd / math.sqrt(len(diffs))), 2),
+            "hit": round(sum(hits) / len(hits) * 100)}
+
+
+def _best_short(r: dict, train: list):
+    """walk-forward 前幾年訓練期不滿 MONTH_YEARS 年時，放寬到至少 2 年。"""
+    best, key = None, None
+    for mm in range(1, 13):
+        xs = [r[f"{y}-{mm:02d}"] for y in train if f"{y}-{mm:02d}" in r]
+        if len(xs) >= 2:
+            k = (sum(x > 0 for x in xs) / len(xs), statistics.fmean(xs))
+            if key is None or k > key:
+                best, key = mm, k
+    return best, None
 
 
 def main():
@@ -225,6 +285,8 @@ def main():
         else:
             break
 
+    best_walk = add_buy_months(out, industry)
+
     payload = {
         "updated": datetime.now(twse.TAIPEI).isoformat(timespec="seconds"),
         "revMonth": months[-1],
@@ -239,6 +301,7 @@ def main():
                   "fresh1": FRESH_CORR1},
         "industries": industries,
         "stocks": out,
+        "bestWalk": best_walk,
     }
     twse.write_json(OUT_PATH, payload)
     strict = sum(s["strict"] for s in out)
