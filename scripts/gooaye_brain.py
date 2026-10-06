@@ -34,6 +34,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -114,24 +115,47 @@ def read_episode(ep: int) -> tuple[dict, str]:
     return meta, body
 
 
+# 撞到用量上限時，claude -p 每一集都會瞬間失敗、花費 0；連續失敗這麼多次就不再開新的一集，
+# 免得把剩下幾百集全部空轉一遍。下次再跑會從沒做完的接著做。
+MAX_CONSECUTIVE_FAILS = 5
+_halt = threading.Event()
+_fails_lock = threading.Lock()
+_consecutive_fails = 0
+
+
+def _record(ok: bool) -> None:
+    global _consecutive_fails
+    with _fails_lock:
+        _consecutive_fails = 0 if ok else _consecutive_fails + 1
+        if _consecutive_fails >= MAX_CONSECUTIVE_FAILS:
+            _halt.set()
+
+
 def extract_one(ep: int, model: str, until: datetime | None) -> str:
     out = EPISODES / f"EP{ep:04d}.json"
     if out.exists():
         return f"EP{ep:04d} 已有，跳過"
     if until and datetime.now() >= until:
         return f"EP{ep:04d} 過了截止時間，留給下一批"
+    if _halt.is_set():
+        return f"EP{ep:04d} 連續失敗已暫停，留給下一批"
     meta, body = read_episode(ep)
     prompt = f"以下是 EP{ep}（{meta.get('episode_date', '')}）〈{meta.get('title', '')}〉的逐字稿：\n\n{body}"
     cmd = ["claude", "-p", "--model", model, "--output-format", "json",
            "--system-prompt", SYSTEM, "--json-schema", json.dumps(SCHEMA, ensure_ascii=False),
            "--tools", "", "--no-session-persistence", "--setting-sources", ""]
     r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8", timeout=900)
-    if r.returncode != 0:
+    try:
+        resp = json.loads(r.stdout.splitlines()[0])
+    except (IndexError, json.JSONDecodeError):
+        _record(False)
         return f"EP{ep:04d} 失敗：{(r.stderr or r.stdout)[:300]}"
-    resp = json.loads(r.stdout)
     data = resp.get("structured_output")
-    if data is None:
-        return f"EP{ep:04d} 沒有結構化輸出：{str(resp.get('result'))[:300]}"
+    if r.returncode != 0 or resp.get("is_error") or data is None:
+        _record(False)
+        why = resp.get("result") or resp.get("api_error_status") or resp.get("subtype")
+        return f"EP{ep:04d} 失敗：{str(why)[:300]}"
+    _record(True)
     data = {"episode": ep, "date": meta.get("episode_date"), "title": meta.get("title"), **data}
     out.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     return f"EP{ep:04d} 完成（${resp.get('total_cost_usd', 0):.3f}）"
@@ -156,9 +180,10 @@ def cmd_extract(args) -> int:
                 msg = f.result()
             except Exception as e:  # noqa: BLE001 —— 一集壞掉不要拖垮整批
                 msg = f"例外：{e}"
-            failed += "失敗" in msg or "例外" in msg or "沒有" in msg
+            failed += "失敗" in msg or "例外" in msg
             print(msg, flush=True)
-    print(f"失敗 {failed} 集")
+    done = len(list(EPISODES.glob("EP*.json")))
+    print(f"失敗 {failed} 集；目前共完成 {done} 集" + ("（連續失敗，已暫停）" if _halt.is_set() else ""))
     return 1 if failed else 0
 
 
