@@ -3,7 +3,8 @@
 把 MK 693 集裡講過的規則，拿網站的資料一條一條驗過（BACKTEST.md 的三節「MK 的……」），
 這一頁只做兩件事：
 
-1. **大盤溫度計**：加權指數相對季線、年線的位置（照他的原話跑一遍狀態），融資水位、維持率、券資比。
+1. **大盤溫度計**：加權指數相對季線、年線的位置（照他的原話跑一遍狀態），融資水位、維持率、券資比，
+   以及 VIX、油價、初領失業金（macro.json）。
 2. **今天的清單**：只列回測成立的規則挑出來的股票，以及回測說要避開的。
    算式跟回測共用 gooaye.py，定義跟 BACKTEST.md 一字不差——頁面上列的就是回測測的那個東西。
 
@@ -57,6 +58,15 @@ RULES = [
     {"k": "black", "era": "2023–24", "rule": "指數高檔出長黑就先降槓桿", "verdict": "no",
      "stat": "26 年 35 次：之後 20 日平均 +2.27%、69% 上漲；長黑後空手 20 天年化只剩 6.68%",
      "note": "看到長黑就降槓桿會少賺"},
+    {"k": "vix", "era": "2022", "rule": "VIX 彈破 30 就加碼", "verdict": "ok",
+     "stat": "加權指數 2000 年起，VIX 在 30 以上的日子買進：之後 60 日 +9.44%、120 日 +19.26%（80% 上漲）",
+     "note": "要待在高檔才是；剛站上 30 那一天之後 120 日只有 +4.64%，跟平常差不多"},
+    {"k": "oil", "era": "2025–26", "rule": "油價在 90 幾美元是承平，120～130 以上就退場", "verdict": "weak",
+     "stat": "布蘭特 120 美元以上：之後 60 日加權指數 −11.79%（只有 6% 上漲）；但五段裡 2008／2011／2012／2022 都跌，2026 反而 +30%",
+     "note": "只有五段、最新一段相反"},
+    {"k": "icsa", "era": "2020–21", "rule": "初領失業金是景氣轉壞的第一個警訊", "verdict": "no",
+     "stat": "初領失業金四週平均比去年多 20% 以上的日子：之後 120 日加權指數 +15.06%（77% 上漲）",
+     "note": "已經變差的時候股市在築底，拿來當賣出訊號會賣在低點"},
     {"k": "peak", "era": "2025–26", "rule": "營收爆出來、大家猜下個月更好就是尾聲", "verdict": "no",
      "stat": "營收連續創新高第 1／2／3／4+ 個月，下個月超額 +0.94／+1.25／+2.32／+2.69%",
      "note": "越連續越強；他說的可能只發生在少數題材股的頂部"},
@@ -129,6 +139,23 @@ def margin_state():
         "mt_min": min(v for v in m["mt"] if v), "mt_min_d": d[m["mt"].index(min(v for v in m["mt"] if v))],
         "series": {"d": d[-500:], "amt": [round(a) for a in amt[-500:]], "mt": m["mt"][-500:]},
     }
+
+
+def macro_state():
+    m = twse.read_json(twse.DATA_DIR / "macro.json")
+    if not m:
+        return None
+    out = {}
+    for k, x in m.items():
+        if x.get("v"):
+            out[k] = {"d": x["d"][-1], "v": x["v"][-1]}
+    ic = m.get("icsa")
+    if ic and len(ic["v"]) > 52:
+        out["icsa"]["yoy"] = round((ic["v"][-1] / ic["v"][-53] - 1) * 100, 1)
+    for k in ("vix", "brent"):
+        if k in m:
+            out[k]["series"] = {"d": m[k]["d"][-500:], "v": m[k]["v"][-500:]}
+    return out
 
 
 def main() -> int:
@@ -258,7 +285,7 @@ def main() -> int:
 
     payload = {
         "d": dates[today],
-        "market": {"taiex": taiex_state(), "margin": margin_state()},
+        "market": {"taiex": taiex_state(), "margin": margin_state(), "macro": macro_state()},
         "lists": {
             "drift": cap(drift), "accel": cap(accel), "base": cap(base_brk),
             "hotbreak": cap(hb), "newlow": cap(new_low), "lowbase": cap(low_base),

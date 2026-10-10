@@ -223,6 +223,12 @@ jobs:
         continue-on-error: true
         run: python scripts/build_season.py
 
+      # 總經（FRED：VIX、布蘭特、美債殖利率、美元、初領失業金、CPI），MK 頁的大盤溫度計用。
+      # 第三方來源，掛掉沿用舊檔，不該連帶讓當日行情更新失敗。
+      - name: 抓總經數字
+        continue-on-error: true
+        run: python scripts/fetch_macro.py
+
       # 融資序列。原始檔只留兩年，但序列沿用 margin.json 裡算好的舊值，所以排在
       # prune_data.py 後面也不會把長歷史修掉。
       - name: 重算融資序列

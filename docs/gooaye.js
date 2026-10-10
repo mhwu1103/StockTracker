@@ -3,7 +3,8 @@
  *
  *   今天   只列回測成立的規則挑出來的股票（營收創高後的漂移、突破＋營收加速、整理後突破），
  *          以及回測說要避開的（強勢股剛破季線、創一年新低、低基期的高 YoY）
- *   大盤   加權指數相對季線、年線的位置，照他的原話跑出來的「持有／空手」；融資水位與維持率
+ *   大盤   加權指數相對季線、年線的位置，照他的原話跑出來的「持有／空手」；融資水位與維持率；
+ *          VIX、油價、初領失業金
  *   規則   他講過的每一條規則與回測結論：成立、只在多頭、只能控風險、證據不足、推翻
  *
  * 清單與判斷全在 scripts/build_gooaye.py 算好（算式跟回測共用 scripts/gooaye.py），這裡只畫。
@@ -251,6 +252,37 @@ function marginCard(m) {
   </section>`;
 }
 
+function macroCard(x) {
+  if (!x) return '';
+  const vix = x.vix;
+  const oil = x.brent;
+  const ic = x.icsa;
+  const RV = rule('vix');
+  const RO = rule('oil');
+  const RI = rule('icsa');
+  return `<section class="card">
+    <h2>總經 <small>FRED · 美國資料，台股隔天才用得到</small></h2>
+    <div class="stat-grid">
+      ${vix ? `<div class="stat"><b class="${vix.v >= 30 ? 'up' : ''}">${fmt(vix.v, 1)}</b><span>VIX（${esc(vix.d.slice(5))}）</span></div>` : ''}
+      ${oil ? `<div class="stat"><b class="${oil.v >= 120 ? 'down' : ''}">${fmt(oil.v, 1)}</b><span>布蘭特（美元，${esc(oil.d.slice(5))}）</span></div>` : ''}
+      ${x.us10y ? `<div class="stat"><b>${fmt(x.us10y.v, 2)}%</b><span>美債 10 年</span></div>` : ''}
+      ${ic ? `<div class="stat"><b>${pct(ic.yoy, 0)}</b><span>初領失業金年增（四週平均）</span></div>` : ''}
+      ${x.cpi ? `<div class="stat"><b>${fmt(x.cpi.v, 1)}%</b><span>CPI 年增（${esc(x.cpi.d.slice(0, 7))}）</span></div>` : ''}
+    </div>
+    ${vix?.series ? lineChart(vix.series.d, [{ v: vix.series.v, cls: 'cyc-line--mkt' }], { height: 100, label: 'VIX' }) : ''}
+    <p class="gy-keys"><span class="cyc-key cyc-line--mkt">VIX</span></p>
+    ${oil?.series ? lineChart(oil.series.d, [{ v: oil.series.v, cls: 'gy-line--ma240' }], { height: 100, label: '布蘭特原油' }) : ''}
+    <p class="gy-keys"><span class="cyc-key gy-line--ma240">布蘭特（美元／桶）</span></p>
+    <ul class="rule-rules">
+      <li>${verdictTag(RV.verdict)} <b>${esc(RV.rule)}</b><span>${esc(RV.stat)}。${vix && vix.v >= 30
+        ? '<b class="rule-good">現在就在 30 以上。</b>' : `現在 ${fmt(vix?.v, 1)}，沒有觸發。`}</span></li>
+      <li>${verdictTag(RO.verdict)} <b>${esc(RO.rule)}</b><span>${esc(RO.stat)}。${esc(RO.note)}。${oil && oil.v >= 120
+        ? '<b class="rule-bad">現在就在 120 以上。</b>' : ''}</span></li>
+      <li>${verdictTag(RI.verdict)} <b>${esc(RI.rule)}</b><span>${esc(RI.stat)}。${esc(RI.note)}</span></li>
+    </ul>
+  </section>`;
+}
+
 // --------------------------------------------------------------------------
 // 規則
 // --------------------------------------------------------------------------
@@ -284,7 +316,7 @@ function render() {
   $('#meta').textContent = `資料 ${d.d} · ${d.rules.length} 條規則回測過`;
   const head = `<section class="card"><div class="controls cyc-tabs">${pills('tab', TABS, state.tab)}</div></section>`;
   let body;
-  if (state.tab === 'market') body = taiexCard(d.market.taiex) + marginCard(d.market.margin);
+  if (state.tab === 'market') body = taiexCard(d.market.taiex) + marginCard(d.market.margin) + macroCard(d.market.macro);
   else if (state.tab === 'rules') body = rulesView();
   else body = todayView();
   $('#view').innerHTML = head + body;

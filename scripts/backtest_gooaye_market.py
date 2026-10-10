@@ -7,6 +7,7 @@
   1. 2022：大盤跌破季線就不做多，季線轉正才回來（擇時）
   2. 2023–24：加權指數跌破年線就閉眼分批買（左側）
   3. 指數高檔出長黑 K 就先降槓桿
+另外是幾條總經規則（VIX、油價、初領失業金），資料來自 FRED。
 網站自己的資料只到 2021-10，季線、年線的狀態幾乎都落在多頭裡，所以另外用長歷史測。
 訊號用收盤判斷，隔天開盤換手。只印表，不寫檔；結論整理在 BACKTEST.md。
 """
@@ -121,6 +122,73 @@ def main():
                 return f(i) if i <= hi else False
             eq, cagr, mdd, tr = run_seg(c, o, s0, idx[-1], f)
             print(f"  {a}–{b} {lab:<28} 年化 {cagr * 100:+6.2f}%  最大回落 {mdd * 100:6.1f}%")
+    macro(d, o, c)
+
+
+# ---------------------------------------------------------------------------
+# 總經規則（FRED，免金鑰）：美國的數字一律只用台股那一天開盤前已經公布的值
+# ---------------------------------------------------------------------------
+FRED = "https://fred.stlouisfed.org/graph/fredgraph.csv?id="
+LAG = {"ICSA": 5, "CPIAUCSL": 45}       # 週資料的週末 → 週四公布；CPI 次月中公布
+
+
+def fred(series_id):
+    from datetime import date, timedelta
+    txt = requests.get(FRED + series_id, timeout=60).text
+    out = []
+    for line in txt.splitlines()[1:]:
+        d, _, v = line.partition(",")
+        if v and v != ".":
+            day = date.fromisoformat(d) + timedelta(days=LAG.get(series_id, 1))   # 日資料：美國收盤 → 台股隔天
+            out.append((day.isoformat(), float(v)))
+    return out
+
+
+def asof(series, dates):
+    """每個台股交易日能看到的最新值。"""
+    out, k = [], -1
+    for d in dates:
+        while k + 1 < len(series) and series[k + 1][0] <= d:
+            k += 1
+        out.append(series[k][1] if k >= 0 else None)
+    return out
+
+
+def macro(d, o, c):
+    n = len(d)
+
+    def fwd(i, h):
+        return c[i + h] / o[i + 1] - 1 if i + h < n else None
+
+    def show(lab, idx):
+        print(f"  {lab}（{len(idx)} 次）")
+        for h in (20, 60, 120):
+            rs = [r for i in idx if (r := fwd(i, h)) is not None]
+            if rs:
+                print(f"    {h:>3} 日  n={len(rs):>4}  平均 {st.fmean(rs) * 100:+6.2f}%  中位 {st.median(rs) * 100:+6.2f}%  "
+                      f"上漲 {st.fmean(r > 0 for r in rs) * 100:3.0f}%  最差 {min(rs) * 100:+6.1f}%")
+
+    def crosses(xs, lvl, gap=20):
+        """第一次站上 lvl（之前 gap 天都在下面）"""
+        return [i for i in range(gap, n) if xs[i] is not None and xs[i] >= lvl
+                and all(x is not None and x < lvl for x in xs[i - gap:i])]
+
+    print("\n=== 總經規則：之後加權指數的報酬（全部日子：20 日 +0.74%、60 日 +2.52%、120 日 +5.43%） ===")
+    vix = asof(fred("VIXCLS"), d)
+    show("VIX 第一次站上 30（前 20 天都在 30 以下）", crosses(vix, 30))
+    show("VIX 第一次站上 40", crosses(vix, 40))
+    show("VIX 在 30 以上的每一天", [i for i in range(n) if vix[i] and vix[i] >= 30])
+    oil = asof(fred("DCOILBRENTEU"), d)
+    show("布蘭特第一次站上 120 美元", crosses(oil, 120))
+    show("布蘭特在 120 美元以上的每一天", [i for i in range(n) if oil[i] and oil[i] >= 120])
+    show("布蘭特在 90～110 美元（他說的承平區）", [i for i in range(n) if oil[i] and 90 <= oil[i] < 110])
+    ic = fred("ICSA")
+    # 四週平均的年增：初領失業金比去年同期多兩成以上
+    ic4 = [(ic[k][0], st.fmean(v for _, v in ic[k - 3:k + 1])) for k in range(3, len(ic))]
+    ic_yoy = [(ic4[k][0], ic4[k][1] / ic4[k - 52][1] - 1) for k in range(52, len(ic4))]
+    yy = asof(ic_yoy, d)
+    show("初領失業金四週平均比去年多 20% 以上", [i for i in range(n) if yy[i] is not None and yy[i] >= 0.2])
+    show("同上，第一次轉成多 20%", crosses(yy, 0.2))
 
 
 def run_seg(c, o, s, e, rule):
