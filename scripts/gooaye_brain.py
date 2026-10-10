@@ -17,11 +17,14 @@
      views.json     標的 -> 立場時間軸
      BRAIN.md       給人看的總整理
 
-逐字稿只看 EP1–693：EP694 以後是沒校對過的語音辨識，錯字多到連節目名都錯。
+EP1–693 是校對過的逐字稿。EP694 以後只有沒校對的語音辨識（frontmatter 的
+transcription_review_status 是 machine_transcribed…），同音錯字多到連節目名都錯；這些集數照樣抽，
+提示裡先告訴模型這是語音辨識稿、名稱要照上下文還原、拿不準的寧可不寫，結果標上 "asr": true。
+不抽的話，大腦會永遠停在 EP693。
 data/gooaye/ 整個在 .gitignore 裡（逐字稿是節目內容，repo 是公開的）。
 
 用法：
-    python scripts/gooaye_brain.py extract --eps 1-693 --workers 4
+    python scripts/gooaye_brain.py extract --workers 4                # 全部有逐字稿的集數（已有的跳過）
     python scripts/gooaye_brain.py extract --eps 100,300,500 --model haiku   # 先試幾集
     python scripts/gooaye_brain.py build
 """
@@ -98,6 +101,8 @@ SYSTEM = f"""你在整理台灣財經 Podcast《MK》（主持人 MK）的逐字
 
 
 def parse_eps(spec: str) -> list[int]:
+    if spec == "all":
+        return sorted(int(p.stem[2:]) for p in TRANSCRIPTS.glob("EP*.md"))
     eps: set[int] = set()
     for part in spec.split(","):
         a, _, b = part.partition("-")
@@ -140,7 +145,10 @@ def extract_one(ep: int, model: str, until: datetime | None) -> str:
     if _halt.is_set():
         return f"EP{ep:04d} 連續失敗已暫停，留給下一批"
     meta, body = read_episode(ep)
-    prompt = f"以下是 EP{ep}（{meta.get('episode_date', '')}）〈{meta.get('title', '')}〉的逐字稿：\n\n{body}"
+    asr = "machine" in meta.get("transcription_review_status", "")
+    note = ("（注意：這份是沒有人工校對的語音辨識稿，同音錯字很多，公司名、人名、代號常常寫錯。"
+            "請照上下文還原成正確的名稱；拿不準是哪一家的就不要寫進 views。）") if asr else ""
+    prompt = f"以下是 EP{ep}（{meta.get('episode_date', '')}）〈{meta.get('title', '')}〉的逐字稿{note}：\n\n{body}"
     cmd = ["claude", "-p", "--model", model, "--output-format", "json",
            "--system-prompt", SYSTEM, "--json-schema", json.dumps(SCHEMA, ensure_ascii=False),
            "--tools", "", "--no-session-persistence", "--setting-sources", ""]
@@ -157,6 +165,8 @@ def extract_one(ep: int, model: str, until: datetime | None) -> str:
         return f"EP{ep:04d} 失敗：{str(why)[:300]}"
     _record(True)
     data = {"episode": ep, "date": meta.get("episode_date"), "title": meta.get("title"), **data}
+    if asr:
+        data["asr"] = True
     out.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     return f"EP{ep:04d} 完成（${resp.get('total_cost_usd', 0):.3f}）"
 
@@ -263,7 +273,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="MK 大腦")
     sub = ap.add_subparsers(dest="cmd", required=True)
     ex = sub.add_parser("extract", help="逐集抽取")
-    ex.add_argument("--eps", default="1-693", help="集數，例如 1-693 或 100,300,500")
+    ex.add_argument("--eps", default="all", help="集數，例如 1-693 或 100,300,500；all＝全部有逐字稿的")
     ex.add_argument("--model", default="sonnet")
     ex.add_argument("--workers", type=int, default=4)
     ex.add_argument("--until", help="HH:MM 之後不再開新的一集（跑到一半的會跑完），例如要關機前")
