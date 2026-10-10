@@ -31,7 +31,7 @@
 | 資金 | 族群 · 流向 · 大盤 | 錢往哪一族去 |
 | 環境 | 報價 · 美股 · 日股 · 韓股 · 四市 · 景氣 · 觀點 | 上游報價、昨夜美股、同盤的日股與韓股、四個市場橫著比、景氣走到哪與誰是循環股、供應鏈上有人在講什麼 |
 | 查詢 | 個股 · 對照 | 查一檔、比兩天 |
-| 紀律 | 紀律 · 價值 | 照規則今天該做什麼：趨勢派的出場線；價值派的該不該撿、撿哪一族哪一檔 |
+| 紀律 | 紀律 · 價值 · MK | 照規則今天該做什麼：趨勢派的出場線；價值派的該不該撿、撿哪一族哪一檔；MK 講過、回測站得住的規則今天挑出誰 |
 
 分頁清單只寫在 `docs/nav.js` 的 `NAV` 一處，`index.html` 與三個獨立頁都只列群組——
 兩頁共用同一份，以前 `us.html` 手抄一份寫死在自己的 HTML 裡，漏同步過。
@@ -416,6 +416,22 @@ openapi 的 t187ap05 只給最新一個月，而「成長有沒有在加速」�
 判斷與門檻都在 `scripts/build_cycle.py`（只用標準函式庫），前端從 `cycle.json` 的 `rules` 讀。
 還沒報齊的月份（少於最多那個月九成的公司）自動跳過，每月 10 日前不會拿半個月的資料算。
 
+### 第九頁：MK 大腦
+
+`gooaye.html`，入口在「紀律 → MK」。把 MK Podcast EP1–693 逐集整理出來的規則（逐字稿與整理只留本機，
+見 `scripts/gooaye_brain.py`），拿網站的資料一條一條回測（BACKTEST.md 的「MK 的……」三節），頁面只列我們
+自己的回測結論與清單，不放他的原話。
+
+- **今天**：最上面是「用他的流程看一檔」——輸入代號，七步判斷裡資料能回答的（營收有沒有進來、股價有沒有
+  跟上、大盤季線、要不要走）直接打勾打叉，其餘列成問題。下面是回測成立的規則挑出來的清單：營收創歷史新高
+  ＋YoY>20% 公布後 20 個交易日（20 日超額 +2.98%、t 8.9）、股價創 12 個月新高＋營收 YoY 連兩月加速、
+  整理多季後的突破；以及要避開的：強勢股剛破季線、創一年新低、低基期的高 YoY。
+- **大盤**：加權指數相對季線、年線，照他的原話（跌破季線出場、季線上揚且站回才進場）跑出現在該不該做多；
+  融資餘額、大盤融資維持率、券資比；VIX、布蘭特、美債殖利率、初領失業金、CPI。每一項都附回測判讀。
+- **規則**：18 條規則的記分板，成立、只在多頭、只能控風險、證據不足、不成立。
+
+清單的算式跟回測共用 `scripts/gooaye.py`，網站列的就是回測測的那個東西。
+
 ### 三種寬度，三種版面
 
 同一份 DOM，三層：
@@ -559,6 +575,17 @@ scripts/
                     把社群維護的歷史存檔灌進來（標 src: archive）
   build_x.py        由月檔出索引 → docs/data/x/{index,tickers}.json 與 ticker/。
                     與 us_link.json 對照，標出哪幾檔接得回台股族群
+  gooaye.py         共用：MK 頁與它的回測共用的算式（還原股價與分割偵測、營收連續創新高）
+  build_gooaye.py   MK 頁 → docs/data/gooaye.json（大盤溫度計、清單、規則記分板）與
+                    gooaye_stocks.json（每一檔的檢核表）。要排在 build_margin.py 後面
+  fetch_margin.py   融資融券餘額（證交所 MI_MARGN、櫃買 margin/balance）→ docs/data/margin/daily/
+  build_margin.py   融資序列 → docs/data/margin.json：融資金額、大盤維持率、券資比。
+                    原始檔只留兩年，序列沿用舊值保留長歷史
+  fetch_macro.py    總經（FRED，免金鑰）→ docs/data/macro.json：VIX、布蘭特、美債 10 年、美元、
+                    初領失業金、CPI 年增
+  backtest_gooaye*.py MK 規則的回測（月頻、日頻、大盤與總經），只印表，結論在 BACKTEST.md
+  gooaye_brain.py   MK 逐字稿逐集抽取與彙整（本機，claude -p），結果在 data/gooaye/（不進 git）
+  gooaye_ask.py     查 MK 大腦：某檔的立場時間軸、最近在盯什麼、某主題的原則
   fetch_taiex.py    抓加權指數每日收盤（證交所 FMTQIK）→ docs/data/taiex.json。
                     平常重抓當月與上月；--months 15 是首次回補（年線要 240 天）
   build_rule.py     紀律頁 → docs/data/rule.json：全市場每一檔在 10／20／60／240
@@ -593,6 +620,8 @@ docs/               GitHub Pages 網站根目錄
                     行寬照長文的標準走，不共用 .row
   value.html value.js 「價值紀律」——逢低、看本益比位階的價值派規則，入口在「紀律 → 價值」。
                     判斷全在 build_value.py，這支只畫
+  gooaye.html gooaye.js 「MK 大腦」——MK 講過、回測站得住的規則今天挑出誰，入口在
+                    「紀律 → MK」。判斷全在 build_gooaye.py，這支只畫
   cycle.html cycle.js 「景氣循環」——用月營收找循環股與它們在循環的哪一段，入口在
                     「環境 → 景氣」。判斷全在 build_cycle.py，這支只畫
   jp.html kr.html    「日股 × 台股族群」與「韓股 × 台股族群」，入口在「日股」「韓股」。
@@ -643,6 +672,11 @@ docs/               GitHub Pages 網站根目錄
     value.json      價值頁直接讀的表：大盤的立場與資金份數、子族群的量價、每一檔的本益比
                     與股淨比區間與位階、KD 訊號，以及所有門檻（rules）
     taiex.json      加權指數每日收盤 {d: 日期, c: 收盤}，台股自己的交易日曆
+    margin/daily/YYYY-MM-DD.json  融資融券：{tw/tp: [融資金額(仟元), 融資張, 融券張], s: {代號: [融資張, 融券張]}}
+    margin.json     融資序列 {d, amt_tw, amt_tp（億）, mt_tw, mt_tp, mt（維持率 %）, sr（券資比 %）, sh}
+    macro.json      總經 {vix, brent, us10y, usd, icsa（四週平均）, cpi（年增 %）: {d, v}}，最近三年
+    gooaye.json     MK 頁：market（taiex／margin／macro）、lists（六份清單）、rules（記分板）
+    gooaye_stocks.json 每一檔的檢核表，欄位寫在檔案的 fields
     rule.json       紀律頁直接讀的表：stocks 是代號 -> [簡稱, 收, 漲跌%, 10／20／60／240
                     日線, 10／20／60 日線連續站上（正）跌破（負）天數, 多頭排列, 外資連買天數]，
                     另帶整份 taiex。判斷規則不在檔案裡，在 docs/rule.js
