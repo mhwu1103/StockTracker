@@ -31,7 +31,7 @@ const PAGE = 20;
 const DRIFT_DAYS = 20;     // 營收創高後的漂移，回測持有 20 個交易日（build_gooaye.py 的 DRIFT_DAYS）
 const KEY_TAB = 'stocktracker.gooayetab';
 
-const state = { data: null, tab: 'today', more: {} };
+const state = { data: null, tab: 'today', more: {}, q: '', stocks: undefined };   // stocks：undefined 還沒載、null 載不到
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -115,16 +115,108 @@ function listCard(key, { title, small, ruleKey, avoid = false, row, empty }) {
   const rest = L.rows.length - shown.length;
   return `<section class="card gy-list ${avoid ? 'gy-list--avoid' : ''}" id="list-${key}">
     <h2>${title} <small>${L.n} 檔${L.n > L.rows.length ? `，列前 ${L.rows.length}` : ''}${small ? ` · ${small}` : ''}</small></h2>
-    ${R ? `<p class="gy-why">${verdictTag(R.verdict)}<span><b>${esc(R.rule)}</b>　${esc(R.stat)}</span></p>` : ''}
+    ${R ? `<p class="gy-why">${verdictTag(R.verdict)}<span>他說「<b>${esc(R.rule)}</b>」${R.verdict === 'no' ? '，資料說不是' : ''}：${esc(R.stat)}</span></p>` : ''}
     ${shown.length ? shown.map((r) => stockLink(r, row(r))).join('') : `<p class="hint">${empty}</p>`}
     ${rest > 0 ? `<button class="cyc-morebtn" data-more="${key}">再列 ${Math.min(PAGE, rest)} 檔（還有 ${rest}）</button>` : ''}
   </section>`;
+}
+
+// --------------------------------------------------------------------------
+// 用他的七步看一檔：能用資料回答的打勾打叉，不能的列成問題
+// --------------------------------------------------------------------------
+const LIST_LABEL = {
+  drift: '營收創新高之後', accel: '突破＋營收加速', base: '整理後突破',
+  hotbreak: '強勢股剛破季線', newlow: '創一年新低', lowbase: '低基期的高 YoY',
+};
+
+function findStock(q) {
+  const z = state.stocks;
+  if (!z || !q) return null;
+  const t = q.trim();
+  if (z.s[t]) return [t, z.s[t]];
+  const hit = Object.entries(z.s).find(([, v]) => v[0] && v[0].includes(t));
+  return hit || null;
+}
+
+function mark(ok) {
+  if (ok === null || ok === undefined) return '<i class="gy-mark gy-mark--q">？</i>';
+  return ok ? '<i class="gy-mark gy-mark--ok">✓</i>' : '<i class="gy-mark gy-mark--no">✗</i>';
+}
+
+function checkCard() {
+  const form = `<div class="gy-ask">
+      <input id="gy-q" type="search" inputmode="search" placeholder="代號或名稱，例如 2330、聯發科" value="${esc(state.q)}">
+      <button class="pill active" data-ask="1">看這檔</button>
+    </div>`;
+  let body = '';
+  if (state.q) {
+    if (state.stocks === undefined) body = '<p class="hint">載入中…</p>';
+    else if (state.stocks === null) body = '<p class="hint">個股檢核資料載不到（gooaye_stocks.json）。</p>';
+    else {
+      const f = findStock(state.q);
+      body = f ? checkList(f[0], f[1]) : `<p class="hint">找不到「${esc(state.q)}」：只收上市櫃普通股。</p>`;
+    }
+  }
+  return `<section class="card" id="ask">
+    <h2>用他的流程看一檔 <small>七步判斷，資料能回答的直接打勾</small></h2>
+    ${form}${body}
+  </section>`;
+}
+
+function checkList(code, v) {
+  const [name, ind, revM, yoy, streak, accel, lowBase, above60, ma60Up, fromHi, r20, lists] = v;
+  const mk = state.data.market;
+  const t = mk.taiex;
+  const mg = mk.margin;
+  const vix = mk.macro?.vix;
+  const revOk = lowBase ? false : (streak >= 1 && yoy > 20) || accel ? true : (yoy !== null && yoy < 0 ? false : null);
+  const priceOk = above60 === null ? null : Boolean(above60 && (fromHi === null || fromHi > -10)) && !lists.includes('newlow');
+  const exitWarn = lists.includes('hotbreak') || above60 === 0;
+  const steps = [
+    { q: '看得懂嗎？', ok: null, a: `${esc(ind || '—')}。這一步只有你能回答：講不出它的故事、算不出估值，就跳過。` },
+    { q: '題材是真的嗎？營收有沒有進來', ok: revOk,
+      a: revM ? `${esc(revM)} 營收 YoY ${pct(yoy, 1)}${streak ? `，連 ${streak} 個月創歷史新高` : '，沒有創新高'}${accel ? '，YoY 連兩個月加速' : ''}。`
+        + (lowBase ? '<b class="rule-bad">YoY 高但營收離兩年高點還遠：低基期，回測等於隨機。</b>' : '')
+        : '沒有營收資料。' },
+    { q: '市場認同嗎？股價有沒有跟上', ok: priceOk,
+      a: `${above60 === null ? '季線資料不足' : above60 ? '在季線上' : '在季線下'}${ma60Up === null ? '' : `、季線${ma60Up ? '往上' : '往下'}`}，`
+        + `離一年高點 ${pct(fromHi, 1)}，近 20 日 ${pct(r20, 1)}。`
+        + (lists.includes('newlow') ? '<b class="rule-bad">最近創一年新低：回測說不要抄底。</b>' : '') },
+    { q: '怎麼買？', ok: t ? t.hold : null,
+      a: `分批（他常用 3-3-4），先試單 2–5%，漲了才往上加、跌了不攤平。大盤：${t ? (t.hold ? '照季線規則可以做多' : '<b class="rule-bad">照季線規則現在不做多</b>') : '—'}。` },
+    { q: '買多少？', ok: null,
+      a: `單一個股他在 10～30% 之間依行情調整，越不懂放越小。${mg ? `大盤融資維持率 ${fmt(mg.mt, 1)}%、融資 20 日 ${pct(mg.chg20, 1)}。` : ''}` },
+    { q: '什麼時候走？', ok: exitWarn ? false : null,
+      a: (lists.includes('hotbreak') ? '<b class="rule-bad">強勢股剛跌破季線：回測 5 日 −0.72%。</b>' : '')
+        + '買進理由消失、大黑 K 或跌破均線、資訊優勢消失、漲超過原定比例就減回去；減碼不賣光。' },
+    { q: '情緒怎麼看？', ok: null,
+      a: `${vix ? `VIX ${fmt(vix.v, 1)}${vix.v >= 30 ? '（30 以上：回測是買點）' : ''}。` : ''}過熱：開戶排隊、大家問怎麼開槓桿；冰點：沒人想討論盤面。` },
+  ];
+  return `<div class="gy-check">
+    <p class="gy-check__head"><a href="index.html#/stock/${esc(code)}"><b>${esc(name || code)}</b> ${esc(code)}</a>
+      ${lists.map((k) => `<span class="gy-chip">${esc(LIST_LABEL[k] || k)}</span>`).join('')}</p>
+    <ol class="gy-steps">${steps.map((x) => `<li>${mark(x.ok)}<div><b>${x.q}</b><span>${x.a}</span></div></li>`).join('')}</ol>
+    <p class="note">打勾打叉只用網站的資料判斷；「？」是資料回答不了、要你自己想的。七步出自他的節目整理，回測結論見「規則」分頁。</p>
+  </div>`;
+}
+
+async function loadStocks() {
+  try {
+    const res = await fetch(`${DATA}/gooaye_stocks.json`);
+    if (!res.ok) throw new Error(`gooaye_stocks.json ${res.status}`);
+    state.stocks = await res.json();
+  } catch (err) {
+    console.error(err);
+    state.stocks = null;
+  }
+  render();
 }
 
 function todayView() {
   const drift = state.data.lists.drift.rows;
   const pending = drift.length && drift.every((r) => r.day === null);
   return [
+    checkCard(),
     listCard('drift', {
       title: '營收創新高之後',
       small: pending ? '公布期間，回測從 11 日開盤才算' : `公布後 ${DRIFT_DAYS} 個交易日內`,
@@ -327,7 +419,10 @@ function bind() {
     const el = ev.target.closest('button');
     if (!el) return;
     const ds = el.dataset;
-    if (ds.tab) {
+    if (ds.ask) {
+      state.q = $('#gy-q').value.trim();
+      if (state.q && state.stocks === undefined) loadStocks();
+    } else if (ds.tab) {
       state.tab = ds.tab;
       try { localStorage.setItem(KEY_TAB, ds.tab); } catch (err) { /* 記不住就算了 */ }
     } else if (ds.more) {
@@ -335,6 +430,12 @@ function bind() {
     } else {
       return;
     }
+    render();
+  });
+  $('#view').addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter' || ev.target.id !== 'gy-q') return;
+    state.q = ev.target.value.trim();
+    if (state.q && state.stocks === undefined) loadStocks();
     render();
   });
 }

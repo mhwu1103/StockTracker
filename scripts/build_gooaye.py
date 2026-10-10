@@ -280,6 +280,41 @@ def main() -> int:
             low_base.append({**base(c), "m": L, "yoy": yoy, "vs_hi": round((cur / max(prior) - 1) * 100)})
     low_base.sort(key=lambda r: -r["yoy"])
 
+    # ---------- 7. 每一檔的檢核表（查詢用，另存一份，前端查的時候才載） ----------
+    member = {}
+    for key, rows in (("drift", drift), ("accel", accel), ("base", base_brk),
+                      ("hotbreak", hb), ("newlow", new_low), ("lowbase", low_base)):
+        for r in rows:
+            member.setdefault(r["c"], set()).add(key)
+    stocks = {}
+    for c in commons:
+        xs = P.adj(c)
+        if not xs[today]:
+            continue
+        m60 = ma(xs, 60)
+        win = [v for v in xs[max(0, today - 249):today + 1] if v]
+        rs = rev.get(c, {})
+        L = max(rs) if rs else None
+        yy = [rs.get(prev_month(L, k), (None, None))[1] for k in range(3)] if L else [None] * 3
+        prior = [rs[prev_month(L, k)][0] for k in range(1, 25) if L and prev_month(L, k) in rs]
+        stocks[c] = [
+            names.get(c), industry.get(c), L,
+            yy[0], streak[c].get(L, 0) if L else 0,
+            int(None not in yy and yy[0] > yy[1] > yy[2] and yy[0] > 0),
+            int(bool(L and yy[0] is not None and yy[0] > 30 and len(prior) >= 20 and rs[L][0] < 0.9 * max(prior))),
+            None if m60[today] is None else int(xs[today] >= m60[today]),
+            None if m60[today] is None or m60[today - 5] is None else int(m60[today] > m60[today - 5]),
+            round((xs[today] / max(win) - 1) * 100, 1) if len(win) >= 200 else None,
+            round((xs[today] / xs[today - 20] - 1) * 100, 1) if xs[today - 20] else None,
+            sorted(member.get(c, ())),
+        ]
+    twse.write_if_changed(twse.DATA_DIR / "gooaye_stocks.json", {
+        "d": dates[today],
+        "fields": ["name", "ind", "revMonth", "yoy", "revStreak", "accel", "lowBase",
+                   "aboveMa60", "ma60Up", "fromHigh250", "r20", "lists"],
+        "s": stocks,
+    })
+
     def cap(xs):
         return {"n": len(xs), "rows": xs[:TOP]}
 
