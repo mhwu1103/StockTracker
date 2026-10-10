@@ -16,96 +16,26 @@
 
 from __future__ import annotations
 
-import glob
-import json
 import math
 import os
 import statistics as st
 from collections import defaultdict
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-SITE = os.path.join(HERE, "..", "docs", "data")
+from gooaye import SITE, Prices, common, dated_files, load, ma, roll_prev
+
 DIRS = [d for d in (os.environ.get("GOOAYE_DATA"), SITE) if d]
 HZ = (5, 20, 60)
 VALUE_CUT = 3e7          # 法人單日買超至少 0.3 億
 
 
-def load(p):
-    with open(p, encoding="utf8") as f:
-        return json.load(f)
-
-
-def common(code):
-    return len(code) == 4 and code.isdigit() and not code.startswith("0")
-
-
-# ---------------- 資料 ----------------
 def files(sub):
-    out = {}
-    for d in reversed(DIRS):          # 後面的（長歷史）先放，網站的覆蓋同一天
-        for p in glob.glob(os.path.join(d, sub, "*.json")):
-            out[os.path.basename(p)[:-5]] = p
-    return out
+    return dated_files(sub, DIRS)
 
 
-ctw, ctp = files("close/twse"), files("close/tpex")
-dates = sorted(ctw)
-di = {d: i for i, d in enumerate(dates)}
-O, C = defaultdict(dict), defaultdict(dict)      # O[code][i]
-for i, d in enumerate(dates):
-    for src in (ctw, ctp):
-        if d in src:
-            x = load(src[d])
-            for code, v in x["c"].items():
-                if v:
-                    C[code][i] = v
-            for code, v in x["o"].items():
-                if v:
-                    O[code][i] = v
-# 還原：除權息日 i 的因子 f（參考價 ÷ 前收盤）。adj[code][i] = 到 i 為止所有因子的乘積
-fac = defaultdict(dict)
-for p in glob.glob(os.path.join(SITE, "exright", "*.json")):
-    for code, ev in load(p).items():
-        for d, f in ev:
-            if d in di:
-                fac[code][di[d]] = fac[code].get(di[d], 1.0) * f
-N = len(dates)
-cum = {}
-for code in C:
-    a, out = 1.0, [1.0] * N
-    fc = fac.get(code, {})
-    prev = None
-    for i in range(N):
-        f = fc.get(i, 1.0)
-        c = C[code].get(i)
-        # 單日漲跌幅上限 10%：還原除權息後還差超過 ±20% 的，當作分割、減資之類沒公告在除權息表的事件
-        if c and prev and not 0.8 < c / prev[1] / f < 1.25 and i - prev[0] <= 15:
-            f *= c / prev[1] / f
-        a *= f
-        out[i] = a
-        if c:
-            prev = (i, c)
-    cum[code] = out
+P = Prices(DIRS)
+dates, di, N, ret = P.dates, P.di, P.N, P.ret
 
-
-def adj_close(code, i):
-    """還原後收盤（以最後一天為基準往前除），用來比高低點。"""
-    c = C[code].get(i)
-    return c / cum[code][i] if c else None
-
-
-def ret(code, i, h):
-    """i+1 開盤進場、i+h 收盤出場的還原報酬。"""
-    if i + h >= N:
-        return None
-    o, c = O[code].get(i + 1), C[code].get(i + h)
-    if not o or not c:
-        return None
-    r = c / o / (cum[code][i + h] / cum[code][i + 1]) - 1
-    return r if -0.7 < r < 3 else None
-
-
-COMMONS = [c for c in C if common(c)]
+COMMONS = [c for c in P.C if common(c)]
 bench, bmed = {h: {} for h in HZ}, {h: {} for h in HZ}
 for h in HZ:
     for i in range(N - h):
@@ -119,49 +49,7 @@ for c in COMMONS:
     if c in industry:
         ind_size[industry[c]] += 1
 
-
-def series(code):
-    return [adj_close(code, i) for i in range(N)]
-
-
-AC = {c: series(c) for c in COMMONS + ["0050"]}
-
-
-def roll_prev(xs, n, sign=1):
-    """前 n 天（不含當天）的最高（sign=1）或最低（sign=-1）：回傳 (值, 位置, 有效天數) 的陣列。
-    單調佇列，同值保留最近的那一天。"""
-    from collections import deque
-    q, out, cnt = deque(), [None] * len(xs), 0
-    for i in range(len(xs)):
-        lo = i - n
-        while q and q[0] < lo:
-            q.popleft()
-        if i - n - 1 >= 0 and xs[i - n - 1] is not None:
-            cnt -= 1
-        out[i] = (xs[q[0]], q[0], cnt) if q else (None, None, cnt)
-        v = xs[i]
-        if v is not None:
-            cnt += 1
-            while q and xs[q[-1]] * sign <= v * sign:
-                q.pop()
-            q.append(i)
-    return out
-
-
-def ma(xs, n):
-    out, s, k = [None] * len(xs), 0.0, 0
-    for i, v in enumerate(xs):
-        if v is None:
-            s, k = 0.0, 0
-            continue
-        s += v
-        k += 1
-        if k > n:
-            s -= xs[i - n]
-            k = n
-        if k == n:
-            out[i] = s / n
-    return out
+AC = {c: P.adj(c) for c in COMMONS + ["0050"]}
 
 
 # ---------------- 統計 ----------------

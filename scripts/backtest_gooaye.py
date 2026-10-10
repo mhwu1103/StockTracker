@@ -21,6 +21,7 @@ from collections import defaultdict
 sys.path.insert(0, __import__("os").path.dirname(__file__))
 import twse  # noqa: E402
 import valuation  # noqa: E402
+from gooaye import prev_month, rev_streaks  # noqa: E402
 
 RET_LO, RET_HI = -0.6, 3.0     # 月報酬超出這個範圍視為減資、分割等沒還原的事件，丟掉
 MIN_N = 5                      # 一個月至少幾檔訊號股才算那個月
@@ -55,12 +56,6 @@ def load():
     return close, fac, rev, months
 
 
-def prev_month(m: str, k: int = 1) -> str:
-    y, mm = int(m[:4]), int(m[5:])
-    n = y * 12 + mm - 1 - k
-    return f"{n // 12}-{n % 12 + 1:02d}"
-
-
 def main():
     close, fac, rev, months = load()
     # 月報酬（含息）
@@ -90,15 +85,7 @@ def main():
     def nxt(m, k):
         return prev_month(m, -k)
 
-    # 連續創歷史新高第幾個月（歷史＝資料起點以來，至少要先有 12 個月）
-    streaks = defaultdict(dict)
-    for code, rs in rev.items():
-        hi, k = None, 0
-        for i, m in enumerate(sorted(rs)):
-            v = rs[m][0]
-            k = k + 1 if (i >= 12 and v > hi) else 0
-            streaks[code][m] = k
-            hi = v if hi is None else max(hi, v)
+    streaks = rev_streaks(rev)
 
     # 營收衍生量，以「t 月底能看到的最新一個月 L = t−1」為準
     def feats(code, t):
