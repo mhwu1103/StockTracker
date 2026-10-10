@@ -76,6 +76,13 @@ jobs:
         continue-on-error: true
         run: python scripts/fetch_institutions.py --days 14 --sleep 3
 
+      # 融資融券餘額（證交所＋櫃買，兩張全市場表）。MK 頁的大盤溫度計用它看融資水位與
+      # 維持率。build_margin.py 算維持率要乘當日收盤，所以排在 backfill.py 後面；
+      # 最近 14 天缺的才抓，排程漏跑也補得回來。附加資訊，不該連帶讓當日行情更新失敗。
+      - name: 抓融資融券餘額
+        continue-on-error: true
+        run: python scripts/fetch_margin.py
+
       # 報價來自第三方的免費頁面（TrendForce、Yahoo），改版或臨時掛掉都有可能。
       # 那是附加資訊，不該連帶讓當日行情更新失敗，所以這兩步都允許出錯。
       - name: 抓上游報價與原物料
@@ -215,6 +222,12 @@ jobs:
       - name: 重算景氣頁月曆
         continue-on-error: true
         run: python scripts/build_season.py
+
+      # 融資序列。原始檔只留兩年，但序列沿用 margin.json 裡算好的舊值，所以排在
+      # prune_data.py 後面也不會把長歷史修掉。
+      - name: 重算融資序列
+        continue-on-error: true
+        run: python scripts/build_margin.py
 
       - name: 提交資料變更
         run: |
