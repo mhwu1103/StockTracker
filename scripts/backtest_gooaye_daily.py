@@ -395,6 +395,40 @@ def h11_trust():
         evaluate(lab, ev)
 
 
+def h_sbl():
+    """借券賣出餘額 20 天內翻倍（增加 ≥0.5 億）vs 20 天內減半（回補 ≥0.5 億）。資料只有 2024-10 起。"""
+    sbl = defaultdict(dict)
+    for d, p in files("margin/daily").items():
+        if d in di:
+            x = load(p)
+            if "b" in x:
+                for code, v in x["b"].items():
+                    sbl[code][di[d]] = v
+    days = sorted({i for s in sbl.values() for i in s})
+    if not days:
+        print("\n（沒有借券資料，跳過 H15）")
+        return
+    up, down = [], []
+    for code, s in sbl.items():
+        if not common(code):
+            continue
+        last_up = last_dn = -999
+        for k in range(20, len(days)):
+            i, j = days[k], days[k - 20]          # 檔裡只存餘額不是 0 的，沒有的那天就是 0
+            a, b = s.get(j, 0), s.get(i, 0)
+            px = P.C[code].get(i)
+            if not px:
+                continue
+            if b >= 2 * a and (b - a) * 1000 * px >= 5e7 and i - last_up > 20:
+                up.append((i, code))
+                last_up = i
+            if a >= 2 * b and (a - b) * 1000 * px >= 5e7 and i - last_dn > 20:
+                down.append((i, code))
+                last_dn = i
+    evaluate("H15 借券賣出 20 天內翻倍（增加 ≥0.5 億）", up, f"{dates[days[0]]} 起")
+    evaluate("H15 對照：借券賣出 20 天內減半（回補 ≥0.5 億）", down)
+
+
 if __name__ == "__main__":
     print(f"資料：{dates[0]} ~ {dates[-1]}，{N} 個交易日；目錄 {DIRS}")
     allb = h7_sync()
@@ -407,5 +441,6 @@ if __name__ == "__main__":
     h6_pre_announce()
     print_rows("營收公布時點")
     h11_trust()
+    h_sbl()
     print_rows("投信（20 日欄的 2022 ≈ ETF 熱潮前、2023+ ≈ ETF 熱潮後）")
     h10_filter(allb)
