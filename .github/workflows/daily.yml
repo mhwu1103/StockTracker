@@ -229,6 +229,12 @@ jobs:
         continue-on-error: true
         run: python scripts/build_margin.py
 
+      # MK 頁：大盤溫度計（taiex.json、margin.json）與回測成立的規則今天挑出來的清單。
+      # 讀 close/、exright/、value/rev/、industry.json，所以排在上面這些都更新完之後。
+      - name: 重算 MK 頁
+        continue-on-error: true
+        run: python scripts/build_gooaye.py
+
       - name: 提交資料變更
         run: |
           git config user.name "github-actions[bot]"

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>景氣循環</title>
-<meta name="description" content="用月營收找出跟著景氣循環的產業與個股、它們現在在循環的哪一段，以及照過去每年同月表現排的 1～12 月清單">
+<title>MK 大腦</title>
+<meta name="description" content="把 MK 693 集講過的規則拿台股資料一條一條回測，只列成立的規則今天挑出來的股票，加上大盤季線、年線與融資水位">
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#0f1216">
 <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
@@ -13,12 +13,12 @@
 <!-- 亮／暗切換。刻意不用 defer，理由在 theme.js 的開頭。 -->
 <script src="theme.js?v=80"></script>
 </head>
-<!-- data-view 告訴 nav.js：這是獨立頁面，而且停在「環境」群組的「景氣」那一項 -->
-<body data-view="cycle">
+<!-- data-view 告訴 nav.js：這是獨立頁面，而且停在「紀律」群組的「MK」那一項 -->
+<body data-view="gooaye">
 
 <header class="app-bar">
   <div class="app-bar__top">
-    <h1>景氣循環</h1>
+    <h1>MK 大腦</h1>
   </div>
   <p class="app-bar__meta" id="meta">載入中…</p>
 </header>
@@ -33,11 +33,11 @@
 </main>
 
 <footer class="foot">
-  「循環」只用公開資訊觀測站的月營收判斷，股價有沒有跟著走還沒有回測；「月曆」是過去每年同一個月的股價表現，
-  walk-forward 檢驗的結果寫在那一頁最上面。這一頁不是投資建議。
+  規則出自 MK Podcast EP1–693 的逐集整理，回測方法與完整數字在 repo 的 BACKTEST.md。只列回測成立的規則，
+  推翻的留在「規則」分頁對照。這一頁不是投資建議，也不代表節目本人的看法。
 </footer>
 
 <script src="nav.js?v=80" defer></script>
-<script src="cycle.js?v=80" defer></script>
+<script src="gooaye.js?v=80" defer></script>
 </body>
 </html>

@@ -60,7 +60,8 @@ window.StockNav = (function () {
     // 本益比回到自己的低檔就撿）。擺在同一組，是要人先決定一筆錢屬於哪一派再照那一派做。
     { key: 'rule', label: '紀律', views: [
       { v: 'rule', label: '紀律', href: 'rule.html' },
-      { v: 'value', label: '價值', href: 'value.html' }] },
+      { v: 'value', label: '價值', href: 'value.html' },
+      { v: 'gooaye', label: 'MK', href: 'gooaye.html' }] },
   ];
 
   /*
