@@ -123,6 +123,7 @@ def main():
             eq, cagr, mdd, tr = run_seg(c, o, s0, idx[-1], f)
             print(f"  {a}–{b} {lab:<28} 年化 {cagr * 100:+6.2f}%  最大回落 {mdd * 100:6.1f}%")
     macro(d, o, c)
+    margin_rules(d, o, c)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +190,46 @@ def macro(d, o, c):
     yy = asof(ic_yoy, d)
     show("初領失業金四週平均比去年多 20% 以上", [i for i in range(n) if yy[i] is not None and yy[i] >= 0.2])
     show("同上，第一次轉成多 20%", crosses(yy, 0.2))
+
+
+def margin_rules(d, o, c):
+    """融資規則：讀網站的 margin.json（2021-10 起，build_margin.py 算的）。只有五年，次數都少，照實印出來。"""
+    import os
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "data", "margin.json")
+    if not os.path.exists(p):
+        print("\n（沒有 margin.json，跳過融資規則）")
+        return
+    m = json.load(open(p, encoding="utf-8"))
+    di = {x: i for i, x in enumerate(d)}
+    amt = {x: a + b for x, a, b in zip(m["d"], m["amt_tw"], m["amt_tp"])}
+    mt = dict(zip(m["d"], m["mt"]))
+    days = [x for x in m["d"] if x in di]
+    n = len(d)
+
+    def fwd(i, h):
+        return c[i + h] / o[i + 1] - 1 if i + h < n else None
+
+    def show(lab, xs):
+        idx = [di[x] for x in xs]
+        print(f"  {lab}（{len(idx)} 天{'，' + '、'.join(sorted({x[:7] for x in xs})) if 0 < len(xs) <= 60 else ''}）")
+        for h in (20, 60, 120):
+            rs = [r for i in idx if (r := fwd(i, h)) is not None]
+            if rs:
+                print(f"    {h:>3} 日  n={len(rs):>4}  平均 {st.fmean(rs) * 100:+6.2f}%  中位 {st.median(rs) * 100:+6.2f}%  "
+                      f"上漲 {st.fmean(r > 0 for r in rs) * 100:3.0f}%")
+
+    print(f"\n=== 融資規則（{days[0]} ~ {days[-1]}，{len(days)} 天）：之後加權指數的報酬 ===")
+    show("全部日子", days)
+    chg = {}
+    for k in range(20, len(days)):
+        a, b = amt[days[k - 20]], amt[days[k]]
+        chg[days[k]] = b / a - 1
+    show("維持率 < 150%", [x for x in days if mt[x] and mt[x] < 150])
+    show("維持率 < 145%", [x for x in days if mt[x] and mt[x] < 145])
+    show("融資 20 日減少 10% 以上（降槓桿、斷頭潮）", [x for x, v in chg.items() if v <= -0.10])
+    show("融資 20 日減少 15% 以上", [x for x, v in chg.items() if v <= -0.15])
+    show("融資 20 日增加 15% 以上（過熱）", [x for x, v in chg.items() if v >= 0.15])
+    show("融資餘額 < 2000 億（他在 2022 年講的線）", [x for x in days if amt[x] < 2000])
 
 
 def run_seg(c, o, s, e, rule):
