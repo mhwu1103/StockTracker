@@ -398,7 +398,8 @@ def h11_trust():
 def h_sbl():
     """借券賣出餘額 20 天內翻倍（增加 ≥0.5 億）vs 20 天內減半（回補 ≥0.5 億）。資料只有 2024-10 起。"""
     sbl = defaultdict(dict)
-    for d, p in files("margin/daily").items():
+    # 只看網站的檔：長歷史是加借券以前備份的，同一天會蓋掉網站有 b 的檔
+    for d, p in dated_files("margin/daily", [SITE]).items():
         if d in di:
             x = load(p)
             if "b" in x:
