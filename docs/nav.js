@@ -37,7 +37,7 @@ window.StockNav = (function () {
       { v: 'period', label: '週月' }] },
     { key: 'tech', label: '技術', views: [
       { v: 'burst', label: '爆量' }, { v: 'ma', label: '均線' }, { v: 'macd', label: 'MACD' },
-      { v: 'rsi', label: 'RSI' },
+      { v: 'rsi', label: 'RSI' }, { v: 'combo', label: '組合' },
       { v: 'structure', label: '結構' }] },
     { key: 'chips', label: '籌碼', views: [
       { v: 'holders', label: '大戶' }, { v: 'insti', label: '法人' },

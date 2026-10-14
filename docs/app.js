@@ -79,6 +79,8 @@ const state = {
   rsiSide: 'down',     // 「RSI」分頁：up 往上穿／down 往下穿（說法跟著線走，見 rsiSides）
   rsiWhen: '3',        // 「RSI」分頁的時點：近 N 日已穿過，或 d1 明天
   rsiStack: 'any',     // 「RSI」分頁的四線篩選：沿用均線頁的 any／up／down
+  // 「組合」分頁的條件。空字串＝不限；days 是穿越／交叉類條件共用的天數
+  combo: { days: '3', vh: '', lots: '', bar: '', ma: '', stack: '', macd: '', zone: '', rsi: '', rsiv: '' },
   structK: 3,          // 「結構」分頁的樞紐敏感度：3 短波段、5 大波段
   structDir: 'any',    // 「結構」分頁的方向篩選：any 不限、up 向上、down 向下
   structPhase: 1,      // 「結構」分頁選中的階段（STRUCT_PHASES 的索引）
@@ -2274,6 +2276,177 @@ async function renderRsi(view) {
       <p class="note">連續資料少於 60 個交易日的不出數字——今天榜上有 ${board.length - withRsi.length} 檔是這種情況。
         名次與 NEW／▲▼ 是成交值在${esc(scopeLabel())}裡的排名與對比前一交易日的變化。
         這是條件篩選與算術的結果，不是買賣訊號。</p>
+    </section>`;
+}
+
+// --------------------------------------------------------------------------
+// 分頁：組合（爆量、均線、MACD、RSI 的條件自己勾、取交集）
+//
+// 前面四頁各自只看一種指標，頂多再疊一層四線或 MACD。這一頁把它們的判斷函式
+// 全部借過來排成條件列，跟籌碼雷達同一個骨架：每排預設「不限」，選了才算，
+// 逐條套用畫成漏斗；每顆 pill 旁邊的數字是「這一排改選它，其他排不動，會剩幾檔」，
+// 不用一路勾到 0 檔才發現是哪一條太緊。
+//
+// 「近 N 日」那一排是均線穿越、MACD 交叉、RSI 穿越三條共用的天數（跟雷達的金額門檻
+// 一樣是參數，不是一條條件）——三條各給一排天數會多出三排 pill。
+//
+// ⚠ 單一條件各有回測（BACKTEST.md），組起來的沒有。這一頁不顯示組合的報酬：
+// 勾得越多樣本越少，越容易撈到「歷史上剛好很漂亮」的組合。真要用哪一組，
+// 拿去 walk-forward 驗過才算數。
+// --------------------------------------------------------------------------
+const COMBO_CONDS = [
+  { key: 'days', label: '近 N 日', opts: [['1', '近 1 日'], ['3', '近 3 日'], ['5', '近 5 日'], ['10', '近 10 日']] },
+  { key: 'vh', label: '量能', opts: [['', '不限'], ...BURST_HIGHS.map((o) => [String(o.value), `創 ${o.label}`])] },
+  { key: 'lots', label: '張數', opts: [['', '不限'], ...BURST_LOTS.map((o) => [String(o.value), `> ${o.label}`])] },
+  { key: 'bar', label: 'K 棒', opts: [['', '不限'], ['red', '收紅'], ['black', '收黑']] },
+  { key: 'ma', label: '穿均線', opts: [['', '不限'],
+    ...MA_WINDOWS.map((w) => [`u${w}`, `站上 ${w} 日`]), ...MA_WINDOWS.map((w) => [`d${w}`, `跌破 ${w} 日`])] },
+  { key: 'stack', label: '四線', opts: [['', '不限'], ['up', '四線全上'], ['down', '四線全下']] },
+  { key: 'macd', label: 'MACD', opts: [['', '不限'], ['up', '黃金交叉'], ['down', '死亡交叉']] },
+  { key: 'zone', label: '零軸', opts: [['', '不限'], ['up', '已黃金交叉'], ['down', '已死亡交叉']] },
+  { key: 'rsi', label: '穿 RSI', opts: [['', '不限'],
+    ...RSI_LEVELS.flatMap((v) => rsiSides(v).map((s) => [`${v}${s.value}`, s.label]))] },
+  { key: 'rsiv', label: 'RSI 值', opts: [['', '不限'], ['70', '≥ 70'], ['50', '50～70'], ['30', '30～50'], ['0', '≤ 30']] },
+];
+const COMBO_KEY = 'stocktracker.combo';
+
+/** 一條條件的判斷。回 true 代表這一檔通過；指標算不出來的一律不通過。 */
+function comboPass(stock, key, value, days) {
+  if (!value) return true;
+  if (key === 'vh') return volHigh(stock) >= Number(value);
+  if (key === 'lots') return lots(stock.volume) > Number(value);
+  if (key === 'bar') {
+    if (stock.open === null || stock.open === undefined || stock.close === null) return false;
+    return value === 'red' ? stock.close > stock.open : stock.close < stock.open;
+  }
+  if (key === 'ma') return maHit(stock, Number(value.slice(1)), value[0] === 'u' ? 'up' : 'down', days);
+  if (key === 'stack') return maStacked(stock, value);
+  if (key === 'macd') return macdCrossed(stock, value, days);
+  if (key === 'zone') return macdZoned(stock, value);
+  if (key === 'rsi') return rsiCrossed(stock, value.slice(0, 2), value.slice(2), days);
+  if (key === 'rsiv') {
+    const r = rsiOf(stock);
+    if (!r) return false;
+    if (value === '70') return r.value >= 70;
+    if (value === '0') return r.value <= 30;
+    const lo = Number(value);
+    return r.value >= lo && r.value < lo + 20;
+  }
+  return true;
+}
+
+/** 逐條套用，記下每一步剩幾檔。最後一格就是命中的集合。 */
+function comboFunnel(pool, picks) {
+  const days = Number(picks.days);
+  const steps = [];
+  let left = pool;
+  for (const cond of COMBO_CONDS) {
+    if (cond.key === 'days') continue;          // 天數是參數，不是獨立的一條
+    const value = picks[cond.key];
+    if (!value) continue;
+    left = left.filter((s) => comboPass(s, cond.key, value, days));
+    const label = (cond.opts.find(([v]) => v === value) || [])[1] || value;
+    steps.push({ label: `${cond.label} ${label}`, n: left.length });
+  }
+  return { steps, hit: left };
+}
+
+/** 條件列，每顆 pill 帶「這一排改選它會剩幾檔」 */
+function comboCond(cond, picks, pool) {
+  return `<div class="cond"><b>${esc(cond.label)}</b><div class="pills">${cond.opts
+    .map(([value, label]) => {
+      const n = comboFunnel(pool, { ...picks, [cond.key]: value }).hit.length;
+      return `<button class="pill ${value === picks[cond.key] ? 'active' : ''}"
+        data-combo="${cond.key}:${value}">${esc(label)} <small>${n}</small></button>`;
+    })
+    .join('')}</div></div>`;
+}
+
+function comboRow(stock, base) {
+  const r = rsiOf(stock);
+  const pct = stock.changePct;
+  const pctText = pct === null || pct === undefined ? '' : `<em class="${trend(pct)}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</em>`;
+  return `<a class="row" href="#/stock/${stock.code}">
+    <div class="rank"><span class="no">${stock.rank}</span>${deltaBadge(stock.rank, base ? base.rank : null)}</div>
+    <div class="ident"><span class="name">${state.watch.has(stock.code) ? '<span class="star">★</span>' : ''}${esc(stock.name)}</span>
+      <span class="code">${stock.code}${stock.m ? ` · ${esc(MARKET_TAGS[stock.m])}` : ''}${hasIndustry() ? ` · ${esc(industryOf(stock.code))}` : ''}</span>
+      <span class="streak">RSI ${r ? num(r.value, 1) : '—'} · 量${volHighLabel(volHigh(stock))}</span>
+      <span class="ma-chips">${maChips(stock)}${macdChip(stock)}</span></div>
+    <div class="figures"><span class="value">${num(stock.close, 2)} ${pctText}</span>
+      <span class="price">${num(lots(stock.volume), 0)} 張</span></div>
+  </a>`;
+}
+
+const comboList = (stocks, baseMap) => listOf(stocks,
+  (s) => comboRow(s, baseMap.get(s.code)),
+  () => ({
+    href: (s) => `#/stock/${s.code}`,
+    cols: [
+      col('名次', W.rank, 'w-rank',
+        (s) => `<b>${s.rank}</b>${deltaBadge(s.rank, (baseMap.get(s.code) || {}).rank)}`),
+      col('名稱', W.name, 'w-name', (s) => wideName(s.code, s.name, s.m)),
+      ...(hasIndustry() ? [colIndustry((s) => s.code, true)] : []),
+      col('收盤', W.price, 'w-num', (s) => cellNum(s.close)),
+      col('漲跌%', W.pct, 'w-num', (s) => widePct(s.changePct)),
+      col('成交量', W.lots, 'w-num w-val', (s) => `${num(lots(s.volume), 0)} 張`),
+      col('量能', W.note, 'w-num w-streak', (s) => volHighLabel(volHigh(s))),
+      col('RSI', W.pct, 'w-num', (s) => { const r = rsiOf(s); return r ? num(r.value, 1) : '—'; }),
+      col('均線與 MACD', W.chipsMacd, 'w-chips', (s) => `${maChips(s)}${macdChip(s)}`),
+    ],
+  }));
+
+async function renderCombo(view) {
+  const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(dateBack(1))]);
+  const baseMap = rankMap(base);
+  const picks = state.combo;
+  // 均線、MACD、RSI 只有前 200 名有，所以爆量的條件也只在這個池子裡算（爆量頁看的是前 300 名）
+  const pool = today.stocks.filter((s) => s.rank <= TOP);
+  const hasOpen = pool.some((s) => s.open !== null && s.open !== undefined);
+  const { steps, hit } = comboFunnel(pool, picks);
+  const sorted = hit.slice().sort((a, b) => a.rank - b.rank);
+
+  setExport(`技術組合_${state.scope}_${state.date}.csv`,
+    ['代號', '名稱', '名次', '收盤', '漲跌%', '成交量(張)', '量創N日新高', 'RSI',
+      ...MA_WINDOWS.map((w) => `站上${w}日線`), 'MACD柱在零軸上'],
+    sorted.map((s) => {
+      const r = rsiOf(s);
+      const m = macdOf(s);
+      return [s.code, s.name, s.rank, s.close, s.changePct, lots(s.volume), volHigh(s),
+        r ? r.value.toFixed(1) : '',
+        ...MA_WINDOWS.map((w) => { const a = maAbove(s, w); return a === null ? '' : a ? 'Y' : 'N'; }),
+        m ? (macdAbove(m) ? 'Y' : 'N') : ''];
+    }));
+
+  view.innerHTML = `
+    <div class="conds">${COMBO_CONDS.map((c) => comboCond(c, picks, pool)).join('')}</div>
+    ${hasOpen ? '' : `<p class="hint">${state.date} 的資料沒有開盤價，「K 棒」那一排篩不到東西。</p>`}
+    <section class="card">
+      <h2>技術組合 <small>${esc(state.date)} 榜上前 ${TOP} 名 · 命中 ${hit.length} 檔</small></h2>
+      ${steps.length ? `<ol class="funnel">
+        <li><span>全部</span><b>${pool.length}</b></li>
+        ${steps.map((s) => `<li><span>${esc(s.label)}</span><b>${s.n}</b></li>`).join('')}
+      </ol>` : `<p class="note">目前<b>一條條件都沒下</b>，所以這裡是榜上全部的 ${pool.length} 檔。
+        每排預設「不限」，選幾排就是取它們的<b>交集</b>。</p>`}
+      <p class="note">pill 旁邊的小數字是「這一排改選它、其他排不動」會剩幾檔。
+        「近 N 日」是穿均線、MACD 交叉、穿 RSI 三排共用的天數：1 是今天剛發生。
+        「四線」「零軸」「RSI 值」看的是<b>現在</b>的位置，不看天數。</p>
+    </section>
+    ${exportBar()}
+    ${listCard('命中的股票', `依名次排序 · 共 ${hit.length} 檔`,
+      comboList(sorted, baseMap),
+      `${state.date} 榜上沒有一檔同時符合這幾條。看上面的漏斗，掉到 0 的那一條就是最緊的。`)}
+    <section class="card">
+      <h2>這一頁在看什麼 <small>以及不能拿它講什麼</small></h2>
+      <p class="note">每一排都是把爆量、均線、MACD、RSI 頁的同一個判斷借過來，算法與那幾頁一模一樣，
+        細節請看各頁底下的說明。指標算不出來的（連續資料不夠）一律不通過，所以勾了 MACD 或 RSI 的條件會少掉一批新股。
+        均線、MACD、RSI 只有成交值前 ${TOP} 名有資料，這一頁的池子也就是這 ${TOP} 檔——爆量頁看的是前 ${KEPT} 名，檔數會對不上。</p>
+      <p class="note"><b>單一條件各有回測，組起來的沒有。</b>BACKTEST.md 裡驗過的是一條一條的：
+        RSI 跌破或回升 30 之後 20 日落後大盤、上穿 70 之後沒有變弱；營收創新高再挑 RSI ≥ 70 的才是驗過的組合，在 MK 頁。
+        這裡隨手勾出來的組合沒有驗過，勾得越多樣本越少，越容易撈到「歷史上剛好很漂亮」的那一組，
+        所以這一頁不顯示組合的報酬。真想用哪一組，先拿去 walk-forward 驗一次。</p>
+      <p class="note">條件記在瀏覽器裡，換日期不會被重設——把頂部的日期往回挪，就是對那一天跑同一組條件。
+        名次與 NEW／▲▼ 是成交值在${esc(scopeLabel())}裡的排名與對比前一交易日的變化。
+        這是條件篩選的結果，不是買賣訊號。</p>
     </section>`;
 }
 
@@ -6951,6 +7124,7 @@ async function render() {
     else if (route.view === 'ma') await renderMa(view);
     else if (route.view === 'macd') await renderMacd(view);
     else if (route.view === 'rsi') await renderRsi(view);
+    else if (route.view === 'combo') await renderCombo(view);
     else if (route.view === 'structure') await renderStructure(view, route.arg);
     else if (route.view === 'holders') await renderHolders(view, route.arg);
     else if (route.view === 'insti') await renderInsti(view);
@@ -7023,6 +7197,15 @@ function bindGlobalControls() {
     if (pill.dataset.rsiside) state.rsiSide = pill.dataset.rsiside;
     if (pill.dataset.rsiwhen) state.rsiWhen = pill.dataset.rsiwhen;
     if (pill.dataset.rsistack) state.rsiStack = pill.dataset.rsistack;
+    if (pill.dataset.combo) {
+      const [key, value] = pill.dataset.combo.split(':');
+      state.combo = { ...state.combo, [key]: value };
+      try {
+        localStorage.setItem(COMBO_KEY, JSON.stringify(state.combo));
+      } catch (err) {
+        /* 記不住就算了，下次回到全部「不限」 */
+      }
+    }
     if (pill.dataset.structk) {
       state.structK = Number(pill.dataset.structk);
       try {
@@ -7229,6 +7412,10 @@ async function start() {
     const radar = JSON.parse(localStorage.getItem(RADAR_KEY) || '{}');
     for (const cond of RADAR_CONDS) {
       if (cond.opts.some(([v]) => v === radar[cond.key])) state.radar[cond.key] = radar[cond.key];
+    }
+    const combo = JSON.parse(localStorage.getItem(COMBO_KEY) || '{}');
+    for (const cond of COMBO_CONDS) {
+      if (cond.opts.some(([v]) => v === combo[cond.key])) state.combo[cond.key] = combo[cond.key];
     }
     // 「不限」是 0，而讀不到時 Number(null) 也是 0 —— 兩者的結果一樣，所以不用分辨
     const runDays = Number(localStorage.getItem(RUN_DAYS_KEY));
