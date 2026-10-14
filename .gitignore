@@ -4,3 +4,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .claude/
+
+# MK 逐字稿：節目內容，只留本機（scripts/fetch_gooaye.py 抓）
+data/gooaye/

@@ -6,7 +6,7 @@
 GitHub Pages 發佈的網站上限是 1 GB，每日資料一年約長 130 MB；不修剪的話，網站
 每年自己就會長大到碰牆。這裡只刪**原始檔**（排行、四價、法人每日檔），K 線、結構、
 法人累計、歷史等衍生檔由各支 build_*.py 依照現存的原始檔重建，過期的會自己清掉，
-所以這一支要排在所有 build 之前。
+所以這一支要排在所有 build 之前。融資的序列（margin.json）沿用已經算好的舊值，不會跟著被修掉。
 
 回測要用的長歷史不放在網站上：整包原始檔壓成 zip 放在 GitHub Release，
 還原方式見 BACKTEST.md。
@@ -27,6 +27,7 @@ RAW_DIRS = [
     twse.DATA_DIR / "close" / "twse",
     twse.DATA_DIR / "close" / "tpex",
     twse.DATA_DIR / "insti" / "daily",
+    twse.DATA_DIR / "margin" / "daily",
 ]
 
 
