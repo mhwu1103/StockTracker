@@ -862,6 +862,35 @@ select, input, button {
 .q-axis-title { letter-spacing: 1.2px; opacity: .8; }
 
 /* 這三條是亮度補償而不是配色，所以沒辦法收進上面那份調色盤，只能整組掛在選擇器上 */
+/* ---------- 動向：族群法人四象限的回放 ---------- */
+/* 回放時每一幀都在改座標，進場的彈出動畫只會讓泡泡一直閃 */
+.q-live .q-dot circle { animation: none; }
+.q-live .q-dot { cursor: pointer; transition: opacity .2s; }
+.q-live .q-dot.dim { opacity: .14; }
+.q-live .q-dot.pin .q-body { fill-opacity: .42; stroke-width: 2.2; }
+.q-live .q-dot.pin .q-name { font-weight: 700; }
+/* 尾巴是「前幾天在哪」，要看得出方向但不能搶過泡泡本身 */
+.q-trail {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-opacity: .35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.flow-play {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 4px;
+}
+.flow-play .flow-btn { flex: none; min-width: 44px; color: var(--text); }
+.flow-play .flow-range { flex: 1 1 auto; min-width: 0; accent-color: var(--accent); }
+.flow-play .flow-date { flex: none; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.row--flow { cursor: pointer; }
+.row--flow .tag { text-align: center; font-size: 12px; line-height: 1.25; }
+.row--flow.pin { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+
 :root[data-theme="dark"] .q-body {
   filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 55%, transparent));
 }

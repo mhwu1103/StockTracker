@@ -115,6 +115,10 @@ const state = {
   quotes: null,        // Promise<quotes/index.json>，進到報價頁才載
   quoteSeries: new Map(),// 品類 -> Promise<quotes/series/{cat}.json|null>
   entry: null,         // Promise<entry.json>，進到「後續」頁才載
+  sectorFlow: null,    // Promise<sector_flow.json>，進到「動向」頁才載
+  flowWho: '三大',     // 「動向」分頁看哪一方法人：三大／外資／投信
+  flowSpan: 20,        // 「動向」分頁回放幾個交易日
+  flowPin: new Set(),  // 「動向」分頁釘選的族群（其他族會淡掉）；不記，換頁就清空
   period: 'w',         // 「週月」分頁看週還是月（PERIODS 的 value）
   daily: new Map(),    // date -> Promise<payload>
   history: new Map(),  // year -> Promise<payload>
@@ -6193,6 +6197,390 @@ async function renderFlow(view) {
 }
 
 // --------------------------------------------------------------------------
+// 分頁：動向（族群法人資金四象限，含回放）
+// --------------------------------------------------------------------------
+/*
+ * 流向頁看的是「成交值」——一買一賣才成交，它沒有方向；這一頁看的是法人買賣超，
+ * 有方向，而且拉長到 5 日與 20 日，回答的是「法人這週在加碼哪幾族、從哪幾族撤出」。
+ *
+ * 資料是 build_sector_flow.py 預先算好的（算法在 scripts/sector_flow.py，回測同一份）：
+ * 每一族每一天一個點 [X, Y, 近 5 日淨買賣（億）, 尺度（億）]。
+ *
+ * ⚠️ 回測過，這張圖**不是訊號**（BACKTEST.md 2026-10-15）：同一天加碼 − 減碼的族，
+ * 之後 20 日只多 +0.26%，比來回成本還小，2022 空頭歸零；「剛進加碼」反而比較差。
+ * 所以畫面上只描述錢往哪裡跑，最下面一定附回測，不寫「加碼＝買」。
+ */
+const FLOW_WHO = [
+  { value: '三大', label: '三大法人' },
+  { value: '外資', label: '外資' },
+  { value: '投信', label: '投信' },
+];
+const FLOW_WHO_KEY = 'stocktracker.flowwho';
+const FLOW_SPANS = [
+  { value: 10, label: '回放 10 日' },
+  { value: 20, label: '回放 20 日' },
+  { value: 60, label: '回放 60 日' },
+];
+const FLOW_TRAIL = 5;          // 尾巴拖幾天
+const FLOW_STEP_MS = 520;      // 回放每一天停多久
+const FLOW_NAMED = 3;          // 買最多、賣最多各標幾族的名字（釘選的另外一定標）
+
+function loadSectorFlow() {
+  // 同一個網址每天整份重寫，一律抓最新的
+  if (!state.sectorFlow) state.sectorFlow = getJSON(`${DATA}/sector_flow.json`, { cache: 'reload' });
+  return state.sectorFlow;
+}
+
+function flowQuad(p) {
+  if (!p) return '';
+  return p[0] > 0 ? (p[1] > 0 ? '加碼' : '買盤收斂') : (p[1] > 0 ? '賣壓收斂' : '減碼');
+}
+
+/** 動向頁的一句話：各象限幾族，這週法人買最多、賣最多的是哪一族。 */
+function instiFlowSay(rows, at, who, date) {
+  const live = rows.map((g) => ({ g, p: g.pts[who][at] })).filter((x) => x.p);
+  if (!live.length) return takeaway('這一天每一族都算不出來（前 20 個交易日的法人資料不齊）。', date);
+  const count = (q) => live.filter((x) => flowQuad(x.p) === q).length;
+  const buy = live.reduce((a, b) => (b.p[2] > a.p[2] ? b : a));
+  const sell = live.reduce((a, b) => (b.p[2] < a.p[2] ? b : a));
+  const whoText = FLOW_WHO.find((w) => w.value === who).label;
+  const stats = [
+    { b: count('加碼'), span: '加碼', cls: 'up' },
+    { b: count('買盤收斂'), span: '買盤收斂' },
+    { b: count('賣壓收斂'), span: '賣壓收斂' },
+    { b: count('減碼'), span: '減碼', cls: 'down' },
+  ];
+  return takeaway(
+    `近 5 個交易日，${whoText}在 ${live.length} 族裡淨買 ${count('加碼') + count('買盤收斂')} 族、
+     淨賣 ${count('賣壓收斂') + count('減碼')} 族；買最多的是 <b>${esc(buy.g.name)}</b>
+     ${tint(buy.p[2], `${buy.p[2] > 0 ? '+' : ''}${num(buy.p[2], 0)} 億`)}（${flowQuad(buy.p)}），
+     賣最多的是 <b>${esc(sell.g.name)}</b>
+     ${tint(sell.p[2], `${num(sell.p[2], 0)} 億`)}（${flowQuad(sell.p)}）。`,
+    `${date} · ${whoText} · 近 5 日`, stats);
+}
+
+async function renderInstiFlow(view) {
+  stopFlowReplay();
+  let data;
+  try {
+    data = await loadSectorFlow();
+  } catch (err) {
+    state.sectorFlow = null;
+    view.innerHTML = `<p class="hint">還沒有族群法人資料（${esc(err.message)}）。<br>
+      請先執行 <code>scripts/build_sector_flow.py</code>。</p>`;
+    return;
+  }
+  const mode = state.grouping === 'theme' && data.groups.theme?.length ? 'theme' : 'industry';
+  const rows = data.groups[mode] || [];
+  const days = data.days || [];
+  const who = state.flowWho;
+  const at = days.indexOf(state.date);
+  const controls = `<div class="controls">
+      ${pills('grouping', GROUPINGS, mode)}
+      ${pills('flowwho', FLOW_WHO, who)}
+      ${pills('flowspan', FLOW_SPANS, state.flowSpan)}
+    </div>`;
+  if (at < 0) {
+    view.innerHTML = `${controls}<p class="hint">${state.date} 不在這一頁的範圍裡。<br>
+      這一頁只留最近 ${days.length} 個交易日：${esc(days[0] || '—')} ~ ${esc(days[days.length - 1] || '—')}。</p>`;
+    return;
+  }
+  const from = Math.max(0, at - state.flowSpan + 1);
+  const pinned = state.flowPin;
+
+  const list = rows
+    .map((g) => ({ g, p: g.pts[who][at] }))
+    .filter((x) => x.p)
+    .sort((a, b) => b.p[0] - a.p[0]);
+  const listRows = list.map(({ g, p }) => `
+    <div class="row row--flow ${pinned.has(g.name) ? 'pin' : ''}" data-flowpin="${esc(g.name)}" role="button" tabindex="0">
+      <div class="tag ${trend(p[0])}"><span class="mark">${flowQuad(p)}</span></div>
+      <div class="ident"><span class="name">${esc(g.name)}</span>
+        <span class="code">${g.n} 檔 · 20 日量 ${num(p[3], 0)} 億</span></div>
+      <div class="figures"><span class="value ${trend(p[2])}">${p[2] > 0 ? '+' : ''}${num(p[2], Math.abs(p[2]) < 10 ? 1 : 0)} 億</span>
+        <span class="price">5 日 ${signedPct(p[0] * 100, 0)}</span></div>
+    </div>`).join('');
+
+  view.innerHTML = `${controls}
+    ${instiFlowSay(rows, at, who, state.date)}
+    <section class="card">
+      <h2>族群法人四象限 <small>泡泡大小＝近 20 日法人進出量，尾巴＝有標名字的那幾族前 ${FLOW_TRAIL} 天的位置</small></h2>
+      <div class="map-box"><div class="quad-box flow-box"></div></div>
+      <div class="flow-play">
+        <button type="button" class="pill flow-btn" aria-label="播放">▶</button>
+        <input type="range" class="flow-range" min="${from}" max="${at}" step="1" value="${at}"
+               aria-label="回放日期">
+        <span class="flow-date">${esc(days[at])}</span>
+      </div>
+      <p class="note">橫軸是近 5 個交易日的法人淨買賣，除以這一族近 20 日每天進出金額的總和——
+        不除的話大族永遠在最右邊；縱軸是這週的日均跟這個月的日均比，往上是這週更積極。
+        點泡泡或下面的列可以釘選，其他族會淡掉；按 ▶ 從 ${esc(days[from])} 播到 ${esc(days[at])}。
+        ${mode === 'theme' ? '題材族群一檔可屬多族，重疊的股票兩邊都算。' : ''}
+        只算普通股（ETF 的買賣超大多是申購買回），上市櫃合計，不跟頂部的範圍切換。</p>
+    </section>
+    <section class="card">
+      <h2>這週法人買賣 <small>依橫軸排序 · ${list.length} 族</small></h2>
+      ${listRows || '<p class="hint">這一天沒有算得出來的族群。</p>'}
+    </section>
+    <section class="card">
+      <h2>回測 <small>2021-10 ~ 2026-10 · 族內等權、對全體普通股</small></h2>
+      <p class="note rsi-bt"><b>同一天加碼 − 減碼</b>　之後 20 日 +0.26%（官方產業，t 2.4），
+        2022 空頭時 +0.02%；題材 +0.36%（t 1.7）。比一趟來回成本 0.585% 還小。</p>
+      <p class="note rsi-bt rsi-bt--down"><b>剛進加碼 − 剛進減碼</b>　之後 20 日 −0.36%（官方產業，t −2.1）：
+        翻進加碼象限的那一天不是買點，反而比較差。</p>
+      <p class="note rsi-bt"><b>縱軸</b>　加碼跟買盤收斂之後的表現幾乎一樣，賣壓收斂跟減碼也一樣——
+        有差的只有「在買還是在賣」，「加速還是收手」看不出東西。外資、投信分開看也一樣。</p>
+      <p class="note">所以這張圖是用來看「錢這週往哪裡跑」，不是用來挑族群。細節見 BACKTEST.md。</p>
+    </section>`;
+
+  mountFlowChart(view, rows, who, days, from, at);
+}
+
+/* ---------- 四象限 + 回放 ---------- */
+let flowTimer = null;
+
+function stopFlowReplay() {
+  if (flowTimer) cancelAnimationFrame(flowTimer);
+  flowTimer = null;
+}
+
+/** 回放期間座標軸固定不動，所以上限拿整段窗口的點算，而不是只看當天。 */
+function flowAxes(rows, who, from, to) {
+  const xs = [];
+  const ys = [];
+  let maxG = 0;
+  rows.forEach((g) => {
+    for (let i = Math.max(0, from - FLOW_TRAIL); i <= to; i++) {
+      const p = g.pts[who][i];
+      if (!p) continue;
+      xs.push(p[0]);
+      ys.push(p[1]);
+      maxG = Math.max(maxG, p[3]);
+    }
+  });
+  return { maxX: axisMax(xs, 0.2), maxY: axisMax(ys, 0.5), maxG: maxG || 1 };
+}
+
+/** frame 可以是小數：兩天之間照比例內插，回放才是滑過去而不是一格一格跳。 */
+function flowPoint(g, who, frame) {
+  const a = Math.floor(frame);
+  const t = frame - a;
+  const pa = g.pts[who][a];
+  const pb = g.pts[who][Math.min(a + 1, g.pts[who].length - 1)];
+  if (!pa) return t > 0.5 ? pb : null;
+  if (!pb || t === 0) return pa;
+  return pa.map((v, k) => v + (pb[k] - v) * t);
+}
+
+function mountFlowChart(view, rows, who, days, from, at) {
+  const box = $('.flow-box', view);
+  const range = $('.flow-range', view);
+  const btn = $('.flow-btn', view);
+  const dateEl = $('.flow-date', view);
+  if (!box) return;
+  const axes = flowAxes(rows, who, from, at);
+  let frame = at;
+  let paint = null;
+
+  const build = () => {
+    const { width, height } = box.getBoundingClientRect();
+    if (!width || !height) return;
+    const svg = flowSvg(rows, axes, width, height);
+    box.innerHTML = svg.html;
+    paint = svg.paint;
+    paint(who, frame, state.flowPin);
+  };
+  const show = (f) => {
+    frame = f;
+    if (paint) paint(who, frame, state.flowPin);
+    const d = Math.round(frame);
+    dateEl.textContent = days[d];
+    range.value = String(d);
+  };
+
+  range.addEventListener('input', () => {
+    stopFlowReplay();
+    btn.textContent = '▶';
+    show(Number(range.value));
+  });
+  btn.addEventListener('click', () => {
+    if (flowTimer) {
+      stopFlowReplay();
+      btn.textContent = '▶';
+      show(Math.round(frame));
+      return;
+    }
+    if (frame >= at) show(from);
+    btn.textContent = '❚❚';
+    const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const f0 = frame;
+    let t0 = null;
+    const tick = (now) => {
+      if (!box.isConnected) return stopFlowReplay();
+      if (t0 === null) t0 = now;
+      // 不想看動畫的人一格一格跳，但每一天停的時間一樣
+      const run = f0 + (now - t0) / FLOW_STEP_MS;
+      const next = still ? Math.floor(run) : run;
+      if (next >= at) {
+        show(at);
+        stopFlowReplay();
+        btn.textContent = '▶';
+        return;
+      }
+      show(next);
+      flowTimer = requestAnimationFrame(tick);
+    };
+    flowTimer = requestAnimationFrame(tick);
+  });
+
+  // 釘選：點泡泡或點清單的列。只重畫狀態，不整頁重繪（回放播到一半也不會被打斷）
+  const toggle = (name) => {
+    if (state.flowPin.has(name)) state.flowPin.delete(name);
+    else state.flowPin.add(name);
+    view.querySelectorAll('.row--flow').forEach((r) => r.classList.toggle('pin', state.flowPin.has(r.dataset.flowpin)));
+    if (paint) paint(who, frame, state.flowPin);
+  };
+  box.addEventListener('click', (e) => {
+    const g = e.target.closest('[data-g]');
+    if (g) toggle(g.dataset.g);
+  });
+  view.querySelectorAll('.row--flow').forEach((r) => {
+    r.addEventListener('click', () => toggle(r.dataset.flowpin));
+    r.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggle(r.dataset.flowpin);
+      }
+    });
+  });
+
+  build();
+  if (chartObserver) chartObserver.disconnect();
+  if (window.ResizeObserver) {
+    let size = '';
+    chartObserver = new ResizeObserver(() => {
+      const { width, height } = box.getBoundingClientRect();
+      const now = `${Math.round(width)}x${Math.round(height)}`;
+      if (now === size) return;
+      size = now;
+      build();
+    });
+    chartObserver.observe(box);
+  }
+}
+
+/**
+ * 畫一次骨架（底板、軸、四角、每族一組泡泡），回傳 paint(who, frame, pinned)：
+ * 回放時只改座標與 class，不重建 DOM。外觀沿用流向頁的量價四象限（同一組 q-* 樣式）。
+ */
+function flowSvg(rows, axes, w, h) {
+  const Q = quadGeom(w, h);
+  const innerW = Q.w - Q.r - Q.l;
+  const innerH = Q.h - Q.b - Q.t;
+  const clamp = (v, max) => Math.max(-1, Math.min(1, v / max)) * 0.9;
+  const px = (v) => Q.l + ((clamp(v, axes.maxX) + 1) / 2) * innerW;
+  const py = (v) => Q.t + ((1 - clamp(v, axes.maxY)) / 2) * innerH;
+  const pr = (g) => (3 + Math.sqrt(Math.max(0, g) / axes.maxG) * 13) * Q.dot;
+  const cx = px(0);
+  const cy = py(0);
+  const inset = 16 * Q.u;
+  const corners = [
+    { x: Q.w - Q.r - inset, y: Q.t + Q.small * 1.65, anchor: 'end', text: '加碼' },
+    { x: Q.l + inset, y: Q.t + Q.small * 1.65, anchor: 'start', text: '賣壓收斂' },
+    { x: Q.w - Q.r - inset, y: Q.h - Q.b - Q.small, anchor: 'end', text: '買盤收斂' },
+    { x: Q.l + inset, y: Q.h - Q.b - Q.small, anchor: 'start', text: '減碼' },
+  ];
+  const gx = innerW / 8;
+  const gy = innerH / 8;
+  const ah = 2.6 * Q.u;
+
+  const html = `<svg class="quad q-live" viewBox="0 0 ${Q.w.toFixed(1)} ${Q.h.toFixed(1)}"
+    style="--q-fs:${Q.name}px;--q-fs-s:${Q.small}px" role="img" aria-label="族群法人資金四象限">
+    <defs>
+      <clipPath id="f-clip"><rect x="${Q.l}" y="${Q.t}" width="${innerW}" height="${innerH}" rx="8"/></clipPath>
+      <linearGradient id="f-panel" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" class="q-panel-a"/><stop offset="1" class="q-panel-b"/>
+      </linearGradient>
+      <pattern id="f-mesh" x="${Q.l}" y="${Q.t}" width="${gx.toFixed(2)}" height="${gy.toFixed(2)}" patternUnits="userSpaceOnUse">
+        <path class="q-mesh-line" d="M${gx.toFixed(2)} 0 H0 V${gy.toFixed(2)}"/>
+      </pattern>
+      <radialGradient id="f-zone-up" cx="1" cy="0" r="1">
+        <stop offset="0" class="q-stop-up"/><stop offset="1" class="q-stop-up q-stop-out"/>
+      </radialGradient>
+      <radialGradient id="f-zone-down" cx="0" cy="1" r="1">
+        <stop offset="0" class="q-stop-down"/><stop offset="1" class="q-stop-down q-stop-out"/>
+      </radialGradient>
+    </defs>
+    <rect class="q-plot" x="${Q.l}" y="${Q.t}" width="${innerW}" height="${innerH}" rx="8" fill="url(#f-panel)"/>
+    <g clip-path="url(#f-clip)">
+      <rect x="${Q.l}" y="${Q.t}" width="${innerW}" height="${innerH}" fill="url(#f-mesh)"/>
+      <rect x="${cx}" y="${Q.t}" width="${Q.w - Q.r - cx}" height="${cy - Q.t}" fill="url(#f-zone-up)"/>
+      <rect x="${Q.l}" y="${cy}" width="${cx - Q.l}" height="${Q.h - Q.b - cy}" fill="url(#f-zone-down)"/>
+    </g>
+    ${corners.map((c) => `<text class="q-corner" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}" text-anchor="${c.anchor}">${c.text}</text>`).join('')}
+    <line class="q-axis" x1="${Q.l}" y1="${cy}" x2="${Q.w - Q.r}" y2="${cy}"/>
+    <line class="q-axis" x1="${cx}" y1="${Q.t}" x2="${cx}" y2="${Q.h - Q.b}"/>
+    <path class="q-arrow" d="M${Q.w - Q.r - ah * 1.7} ${cy - ah} L${Q.w - Q.r} ${cy} L${Q.w - Q.r - ah * 1.7} ${cy + ah} Z"/>
+    <path class="q-arrow" d="M${cx - ah} ${Q.t + ah * 1.7} L${cx} ${Q.t} L${cx + ah} ${Q.t + ah * 1.7} Z"/>
+    <g class="f-dots">${rows.map((g) => `<g class="q-dot" data-g="${esc(g.name)}">
+      <polyline class="q-trail"/><circle class="q-body"/><text class="q-name"></text><title></title></g>`).join('')}</g>
+    <text class="q-tick" x="${Q.l - Q.small * 0.5}" y="${cy + Q.small * 0.35}" text-anchor="end">0</text>
+    <text class="q-tick" x="${Q.w - Q.r}" y="${Q.h - Q.b + Q.small * 1.4}" text-anchor="end">淨買 ${(axes.maxX * 100).toFixed(0)}%</text>
+    <text class="q-tick" x="${Q.l}" y="${Q.h - Q.b + Q.small * 1.4}" text-anchor="start">淨賣 ${(axes.maxX * 100).toFixed(0)}%</text>
+    <text class="q-tick" x="${Q.l - Q.small * 0.5}" y="${Q.t + Q.small}" text-anchor="end">+${axes.maxY.toFixed(1)}</text>
+    <text class="q-tick" x="${Q.l - Q.small * 0.5}" y="${Q.h - Q.b}" text-anchor="end">−${axes.maxY.toFixed(1)}</text>
+    <text class="q-tick q-axis-title" x="${Q.w / 2}" y="${Q.h - Q.small * 0.45}" text-anchor="middle">橫軸：近 5 日淨買賣　縱軸：這週比這個月積極</text>
+  </svg>`;
+
+  const paint = (who, frame, pinned) => {
+    const layer = document.querySelector('.flow-box .f-dots');
+    if (!layer) return;
+    const now = rows.map((g) => ({ g, p: flowPoint(g, who, frame) })).filter((x) => x.p);
+    const byBuy = now.slice().sort((a, b) => b.p[2] - a.p[2]);
+    const named = new Set([
+      ...byBuy.slice(0, FLOW_NAMED).filter((x) => x.p[2] > 0),
+      ...byBuy.slice(-FLOW_NAMED).filter((x) => x.p[2] < 0),
+    ].map((x) => x.g.name));
+    const order = [];
+    rows.forEach((g) => {
+      const el = layer.querySelector(`[data-g="${CSS.escape(g.name)}"]`);
+      const p = flowPoint(g, who, frame);
+      el.style.display = p ? '' : 'none';
+      if (!p) return;
+      const x = px(p[0]);
+      const y = py(p[1]);
+      const r = pr(p[3]);
+      const pin = pinned.has(g.name);
+      el.setAttribute('class', `q-dot ${trend(p[0])}${pin ? ' pin' : ''}${pinned.size && !pin ? ' dim' : ''}`);
+      const body = el.querySelector('.q-body');
+      body.setAttribute('cx', x.toFixed(1));
+      body.setAttribute('cy', y.toFixed(1));
+      body.setAttribute('r', r.toFixed(1));
+      // 尾巴只給有名字的：三十幾族都拖尾巴就是一團毛線，看不出誰往哪走
+      const show = pin || (!pinned.size && named.has(g.name));
+      const trail = [];
+      for (let k = show ? FLOW_TRAIL : 0; k >= 1; k--) {
+        const q = flowPoint(g, who, Math.max(0, frame - k));
+        if (q) trail.push(`${px(q[0]).toFixed(1)},${py(q[1]).toFixed(1)}`);
+      }
+      trail.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+      el.querySelector('.q-trail').setAttribute('points', show ? trail.join(' ') : '');
+      const name = el.querySelector('.q-name');
+      name.textContent = show ? g.name : '';
+      const right = x < Q.w - Q.r - 60;
+      name.setAttribute('x', (right ? x + r + 3 * Q.u : x - r - 3 * Q.u).toFixed(1));
+      name.setAttribute('y', (y + Q.name * 0.35).toFixed(1));
+      name.setAttribute('text-anchor', right ? 'start' : 'end');
+      el.querySelector('title').textContent = `${g.name}｜${flowQuad(p)}｜近 5 日 `
+        + `${p[2] > 0 ? '+' : ''}${num(p[2], 1)} 億｜20 日量 ${num(p[3], 0)} 億`;
+      if (pin || show) order.push(el);
+    });
+    order.forEach((el) => layer.appendChild(el));     // 有名字的、釘選的疊在最上面
+  };
+  return { html, paint };
+}
+
+// --------------------------------------------------------------------------
 // 分頁五：大盤（成交值走勢與資金集中度）
 // --------------------------------------------------------------------------
 const SPANS = [
@@ -7073,7 +7461,7 @@ async function render() {
   destroyCharts();
   const view = $('#view');
   // 流向頁那兩張圖看的是面積，寬螢幕不跟其他分頁一樣限在 720px
-  view.classList.toggle('wide', route.view === 'flow');
+  view.classList.toggle('wide', route.view === 'flow' || route.view === 'instiflow');
 
   /*
    * 換頁要回到頂端，換篩選不要。
@@ -7116,6 +7504,7 @@ async function render() {
     if (route.view === 'market') await renderMarket(view);
     else if (route.view === 'sector') await renderSector(view);
     else if (route.view === 'flow') await renderFlow(view);
+    else if (route.view === 'instiflow') await renderInstiFlow(view);
     else if (route.view === 'streak') await renderStreak(view);
     else if (route.view === 'moves') await renderMoves(view);
     else if (route.view === 'entry') await renderEntry(view);
@@ -7297,6 +7686,15 @@ function bindGlobalControls() {
     if (pill.dataset.quotecat) state.quoteCat = pill.dataset.quotecat;
     if (pill.dataset.quotespan) state.quoteSpan = pill.dataset.quotespan;
     if (pill.dataset.quotechart) state.quoteChart = Number(pill.dataset.quotechart);
+    if (pill.dataset.flowwho) {
+      state.flowWho = pill.dataset.flowwho;
+      try {
+        localStorage.setItem(FLOW_WHO_KEY, state.flowWho);
+      } catch (err) {
+        /* 記不住就算了，下次回到預設的三大法人 */
+      }
+    }
+    if (pill.dataset.flowspan) state.flowSpan = Number(pill.dataset.flowspan);
     if (pill.dataset.grouping) {
       state.grouping = pill.dataset.grouping;
       try {
@@ -7395,6 +7793,8 @@ async function start() {
     if (SCOPES.some((s) => s.value === saved) && state.index.scopes[saved]) state.scope = saved;
     const grouping = localStorage.getItem(GROUPING_KEY);
     if (GROUPINGS.some((g) => g.value === grouping)) state.grouping = grouping;
+    const flowWho = localStorage.getItem(FLOW_WHO_KEY);
+    if (FLOW_WHO.some((o) => o.value === flowWho)) state.flowWho = flowWho;
     const lots = Number(localStorage.getItem(HOLDER_LOTS_KEY));
     if (HOLDER_LOTS.some((o) => o.value === lots)) state.holderLots = lots;
     const instiMin = Number(localStorage.getItem(INSTI_MIN_KEY));

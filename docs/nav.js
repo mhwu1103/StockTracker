@@ -44,7 +44,8 @@ window.StockNav = (function () {
       { v: 'instirank', label: '買超' }, { v: 'instirun', label: '連買' },
       { v: 'radar', label: '雷達' }] },
     { key: 'money', label: '資金', views: [
-      { v: 'sector', label: '族群' }, { v: 'flow', label: '流向' }, { v: 'market', label: '大盤' }] },
+      { v: 'sector', label: '族群' }, { v: 'flow', label: '流向' }, { v: 'instiflow', label: '動向' },
+      { v: 'market', label: '大盤' }] },
     { key: 'world', label: '環境', views: [
       { v: 'quote', label: '報價' }, { v: 'us', label: '美股', href: 'us.html' },
       { v: 'jp', label: '日股', href: 'jp.html' },

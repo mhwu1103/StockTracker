@@ -6,12 +6,7 @@
 只印表，不寫檔；結論整理在 BACKTEST.md。進出場、超額、t 值都跟 backtest_gooaye_daily.py 同一套
 （直接 import 它）：訊號日隔天開盤進場、減全體普通股等權平均、Newey-West。
 
-每一族、每一天：
-- 淨流入 = 族內普通股法人買賣超（股數 × 收盤）加總；法人檔只收單日夠大的，小筆的沒算到
-- 尺度   = 近 20 日每天 |淨流入| 的加總——各族大小差很多，不除的話台積電那族永遠在最右邊
-- 橫軸 X = 近 5 日淨流入 ÷ 尺度（> 0：這週法人在買）
-- 縱軸 Y = （近 5 日日均 − 近 20 日日均）÷ 尺度日均（> 0：這週比這個月更積極）
-- 象限：加碼 X>0,Y>0／買盤收斂 X>0,Y<0（還在買、力道收）／賣壓收斂 X<0,Y>0（還在賣、力道回）／減碼 X<0,Y<0
+族群、橫縱軸與象限的算法都在 sector_flow.py（網站的「資金 → 動向」分頁畫的是同一份）。
 
 報酬是族內普通股等權平均，再對同一天的全體普通股；一天裡同象限的各族先各算一個，再平均。
 族群分兩種：官方產業別（industry.json，一檔一類）與題材（themes.json 的大類，一檔可多類）。
@@ -25,63 +20,24 @@ import statistics as st
 from collections import defaultdict
 
 from backtest_gooaye_daily import COMMONS, HZ, N, bench, dates, di, files, industry, nw_t, ret
-from gooaye import SITE, common, load
-
-MIN_SIZE = 5          # 族裡至少幾檔普通股
-QUADS = ("加碼", "買盤收斂", "賣壓收斂", "減碼")
+from gooaye import SITE, load
+from sector_flow import QUADS, WHO, amounts, coords, quad
+from sector_flow import groups as make_groups
 
 
 def groups():
-    """{'產業': {族: [代號]}, '題材': {族: [代號]}}"""
-    ind = defaultdict(list)
-    cs = set(COMMONS)
-    for c, g in industry.items():
-        if c in cs:
-            ind[g].append(c)
-    th = {}
-    for g in load(os.path.join(SITE, "themes.json"))["groups"]:
-        codes = sorted({c for s in g["subs"] for c in s["codes"] if c in cs})
-        th[g["name"]] = codes
-    keep = lambda d: {k: v for k, v in d.items() if len(v) >= MIN_SIZE and k != "其他"}
-    return {"產業": keep(ind), "題材": keep(th)}
+    g = make_groups(industry, load(os.path.join(SITE, "themes.json"))["groups"], set(COMMONS))
+    return {"產業": g["industry"], "題材": g["theme"]}
 
 
 def flows():
     """flow[誰][i][代號] = 買賣超金額；誰 = 三大／外資／投信。"""
-    out = {k: defaultdict(dict) for k in ("三大", "外資", "投信")}
+    out = {k: {} for k in WHO}
     for d, p in files("insti/daily").items():
-        if d not in di:
-            continue
-        i = di[d]
-        for mk, rows in (load(p).get("stocks") or {}).items():
-            for code, r in rows.items():
-                if common(code) and r[4]:
-                    out["外資"][i][code] = r[1] * r[4]
-                    out["投信"][i][code] = r[2] * r[4]
-                    out["三大"][i][code] = (r[1] + r[2] + r[3]) * r[4]
+        if d in di:
+            for k, v in amounts(load(p)).items():
+                out[k][di[d]] = v
     return out
-
-
-def coords(flow, members):
-    """xy[族][i] = (X, Y)；只給前 20 天都有法人檔的日子。"""
-    days = sorted(flow)
-    xy = defaultdict(dict)
-    for g, cs in members.items():
-        net = [sum(flow[i].get(c, 0) for c in cs) for i in days]
-        for k in range(19, len(days)):
-            w = net[k - 19:k + 1]
-            if days[k] - days[k - 19] > 25:          # 中間缺檔
-                continue
-            gross = sum(abs(v) for v in w)
-            if gross <= 0:
-                continue
-            f5, f20 = sum(w[-5:]), sum(w)
-            xy[g][days[k]] = (f5 / gross, (f5 / 5 - f20 / 20) / (gross / 20))
-    return xy
-
-
-def quad(x, y):
-    return ("加碼" if y > 0 else "買盤收斂") if x > 0 else ("賣壓收斂" if y > 0 else "減碼")
 
 
 def grp_ret(cs, i, h):
@@ -148,7 +104,7 @@ def run(kind, members, who, flow):
     for g, s in xy.items():
         prev = None
         for i in sorted(s):
-            q = quad(*s[i])
+            q = quad(*s[i][:2])
             state[q][i].append(g)
             if prev is not None and q != prev and i - last.get((g, q), -999) > 20:
                 enter[q][i].append(g)

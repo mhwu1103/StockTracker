@@ -165,6 +165,12 @@ jobs:
         continue-on-error: true
         run: python scripts/build_institutions.py
 
+      # 要放在 build_history.py 後面：交易日序號取自它寫的 index.json，
+      # 用來判斷前 20 天的法人日檔有沒有缺檔。
+      - name: 重建族群法人四象限（動向分頁）
+        continue-on-error: true
+        run: python scripts/build_sector_flow.py
+
       # 要放在 build_institutions.py 後面：短線訊號的「外資連買」讀的是它剛寫出來的
       # insti/streak/。放在前面也不會報錯，只是那一欄會是昨天的、或整欄空的。
       - name: 重建紀律頁的出場線
