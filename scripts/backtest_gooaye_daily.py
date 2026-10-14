@@ -172,6 +172,7 @@ def h12_base():
             last = i
     evaluate("H12 創 250 日新高，舊高在 120 天前（整理後突破）", base)
     evaluate("H12 創 250 日新高，舊高在 20 天內（連續創高）", cont)
+    return base
 
 
 def market_state():
@@ -349,6 +350,7 @@ def h6_pre_announce():
         print(f"  營收月最後一天 → 次月 10 日（公布期間）：平均超額 {st.fmean(ex) * 100:+.2f}%、"
               f"中位 {st.median(ex) * 100:+.2f}%")
     evaluate("H6 營收創高＋YoY>20%，10 日之後才進場", post)
+    return post
 
 
 def h11_trust():
