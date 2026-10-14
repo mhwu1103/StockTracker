@@ -28,6 +28,11 @@
   --q-edge: #dde3ea;
   --q-mesh: #c4d1e2;
   --q-halo: #f5f8fb;
+  /* 動向頁四象限：加碼／買盤收斂／賣壓收斂／減碼。紅綠沿用漲跌，中間兩個是「方向對、力道在退」 */
+  --qd-add: #e0362a;
+  --qd-ease: #d08a00;
+  --qd-calm: #5f7a96;
+  --qd-cut: #109a52;
 
   /* 美股頁的星等。避開紅綠（全站的紅綠是漲跌，拿來標星等會被讀成「這一組在漲」），
      用一條藍→紫→琥珀的色相帶；星等同時也用點的半徑編碼，不只靠顏色。 */
@@ -63,6 +68,10 @@
   --q-edge: #24303c;
   --q-mesh: #22303e;
   --q-halo: #0d131a;
+  --qd-add: #ff5a4a;
+  --qd-ease: #ffb02e;
+  --qd-calm: #8fa6c2;
+  --qd-cut: #2fd384;
 
   --star3: #6f9dff;
   --star2: #a48cff;
@@ -863,20 +872,54 @@ select, input, button {
 
 /* 這三條是亮度補償而不是配色，所以沒辦法收進上面那份調色盤，只能整組掛在選擇器上 */
 /* ---------- 動向：族群法人四象限的回放 ---------- */
+.qd-add { color: var(--qd-add); }
+.qd-ease { color: var(--qd-ease); }
+.qd-calm { color: var(--qd-calm); }
+.qd-cut { color: var(--qd-cut); }
+.stat b.qd-add, .stat b.qd-ease, .stat b.qd-calm, .stat b.qd-cut { font-size: 26px; }
+.stat span small { font-size: 11px; opacity: .8; }
+
 /* 回放時每一幀都在改座標，進場的彈出動畫只會讓泡泡一直閃 */
 .q-live .q-dot circle { animation: none; }
 .q-live .q-dot { cursor: pointer; transition: opacity .2s; }
-.q-live .q-dot.dim { opacity: .14; }
-.q-live .q-dot.pin .q-body { fill-opacity: .42; stroke-width: 2.2; }
+.q-live .q-dot.dim { opacity: .12; }
+.q-live .q-body { fill-opacity: 1; stroke-width: 1.2; stroke-opacity: .9; }
+.q-live .q-dot:hover .q-body, .q-live .q-dot.pin .q-body { stroke-width: 2.2; stroke-opacity: 1; }
 .q-live .q-dot.pin .q-name { font-weight: 700; }
+/* 外面一圈很淡的同色光，深色底上像燈；淺色底上幾乎看不到，只是讓邊緣柔一點 */
+.f-halo { fill: currentColor; fill-opacity: .07; stroke: none; }
+:root[data-theme="dark"] .f-halo { fill-opacity: .12; }
+:root[data-theme="dark"] .q-live .q-body {
+  filter: drop-shadow(0 0 6px color-mix(in srgb, currentColor 60%, transparent));
+}
+/* 泡泡裡的字：名字與金額。描一圈泡泡色當白邊，疊在別的泡泡上也讀得出來 */
+.f-in {
+  fill: var(--text);
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, currentColor 22%, var(--q-halo));
+  stroke-width: .22em;
+  stroke-linejoin: round;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.f-in2 { font-weight: 500; opacity: .85; }
+.f-grid { stroke: var(--q-mesh); stroke-width: .6; opacity: .45; }
+.f-axis { stroke: var(--muted); stroke-width: 1; opacity: .55; }
+.f-corner { font-size: var(--q-fs, 10px); font-weight: 700; letter-spacing: 2px; opacity: .75; fill: currentColor; }
 /* 尾巴是「前幾天在哪」，要看得出方向但不能搶過泡泡本身 */
 .q-trail {
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.4;
-  stroke-opacity: .35;
+  stroke-width: 1.6;
+  stroke-opacity: .45;
   stroke-linecap: round;
   stroke-linejoin: round;
+  stroke-dasharray: 2 4;
+}
+.flow-card .quad-box { aspect-ratio: 1 / 0.95; max-height: 80vh; }
+@media (min-width: 1024px) {
+  .view.wide .flow-card .quad-box { aspect-ratio: 1 / 0.62; }
 }
 .flow-play {
   display: flex;
@@ -898,7 +941,7 @@ select, input, button {
 .flow-play .flow-range { flex: 1 1 auto; min-width: 0; accent-color: var(--accent); }
 .flow-play .flow-date { flex: none; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .row--flow { cursor: pointer; }
-.row--flow .tag { text-align: center; font-size: 12px; line-height: 1.25; }
+.row--flow .tag { text-align: center; font-size: 12px; font-weight: 600; line-height: 1.25; }
 .row--flow.pin { background: color-mix(in srgb, var(--accent) 9%, transparent); }
 
 :root[data-theme="dark"] .q-body {

@@ -8,7 +8,8 @@
 - 縱軸 Y = （近 5 日日均 − 近 20 日日均）÷ 尺度日均（> 0：這週比這個月更積極）
 - 象限：加碼 X>0,Y>0／買盤收斂 X>0,Y<0（還在買、力道收）／賣壓收斂 X<0,Y>0（還在賣、力道回）／減碼 X<0,Y<0
 
-族群分兩種：官方產業別（industry.json，一檔一類）與題材（themes.json 的大類，一檔可多類）。
+族群分三種：官方產業別（industry.json，一檔一類）、題材大類與題材細項（themes.json 的 groups 與
+subs，一檔可多類）。回測只測前兩種。
 ETF 不算：ETF 的法人買賣超大多是申購買回，不是看好哪一族。
 """
 
@@ -17,6 +18,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 MIN_SIZE = 5          # 族裡至少幾檔普通股
+MIN_SUB = 3           # 題材細項本來就切得細，放寬到 3 檔
 WHO = ("三大", "外資", "投信")
 QUADS = ("加碼", "買盤收斂", "賣壓收斂", "減碼")
 
@@ -26,15 +28,16 @@ def common(code: str) -> bool:
 
 
 def groups(industry: dict, themes: list, codes=None) -> dict:
-    """{'industry': {族: [代號]}, 'theme': {族: [代號]}}；codes 給的話只收這些代號。"""
+    """{"industry"|"theme"|"sub": {族: [代號]}}；codes 給的話只收這些代號。"""
     ok = (lambda c: common(c) and (codes is None or c in codes))
     ind = defaultdict(list)
     for c, g in industry.items():
         if ok(c):
             ind[g].append(c)
     th = {g["name"]: sorted({c for s in g["subs"] for c in s["codes"] if ok(c)}) for g in themes}
-    keep = lambda d: {k: sorted(v) for k, v in d.items() if len(v) >= MIN_SIZE and k != "其他"}
-    return {"industry": keep(ind), "theme": keep(th)}
+    sub = {s["name"]: sorted({c for c in s["codes"] if ok(c)}) for g in themes for s in g["subs"]}
+    keep = lambda d, n=MIN_SIZE: {k: sorted(v) for k, v in d.items() if len(v) >= n and k != "其他"}
+    return {"industry": keep(ind), "theme": keep(th), "sub": keep(sub, MIN_SUB)}
 
 
 def amounts(day: dict) -> dict:

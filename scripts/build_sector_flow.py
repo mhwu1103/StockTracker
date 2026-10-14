@@ -11,8 +11,13 @@
 
 檔案格式：
     days    交易日（舊 → 新）
-    groups  {industry|theme: [{name, n, pts: {三大|外資|投信: [[X, Y, 近5日億, 尺度億] | null, …]}}]}
+    groups  {industry|theme|sub: [{name, n, pts: {三大|外資|投信: [[近5日淨買賣, 日均差, 20日量] | null, …]}}]}
+            單位都是億：近 5 日淨買賣加總；日均差＝近 5 日日均 − 近 20 日日均（億/天）；
+            20 日量＝近 20 日每天 |淨買賣| 的加總（泡泡大小）。
             pts 的每一格對應 days 的同一格；那一天算不出來（前 20 天缺檔、整族沒有法人買賣）是 null
+
+畫面直接畫金額（對數式刻度），回測用的是除以 20 日量之後的比例。兩者的正負號完全一樣
+（除的是正數），所以落在哪個象限不受影響，回測結論照樣適用。
 
 用法：
     python scripts/build_sector_flow.py
@@ -32,7 +37,7 @@ from sector_flow import WHO, amounts, coords, groups
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "data")
 OUT = os.path.join(DATA, "sector_flow.json")
 KEEP = 60
-VERSION = 1
+VERSION = 2
 
 
 def load(p):
@@ -65,7 +70,8 @@ def main() -> int:
             pts = {}
             for k in WHO:
                 s = xy[k].get(g, {})
-                pts[k] = [[round(s[i][0], 3), round(s[i][1], 3), round(s[i][2] / 1e8, 1), round(s[i][3] / 1e8, 1)]
+                # Y 是 (日均差 ÷ 尺度日均)，乘回尺度日均就是億/天
+                pts[k] = [[round(s[i][2] / 1e8, 2), round(s[i][1] * s[i][3] / 20 / 1e8, 3), round(s[i][3] / 1e8, 1)]
                           if i in s else None for i in keep]
             if any(p for v in pts.values() for p in v):
                 rows.append({"name": g, "n": len(cs), "pts": pts})
