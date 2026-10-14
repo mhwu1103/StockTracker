@@ -135,6 +135,31 @@ def ma(xs, n):
     return out
 
 
+def rsi(xs, n=14):
+    """Wilder RSI；前 n 個有效值用簡單平均起頭，碰到缺值重來。
+    漲跌用百分比而不是點數，所以跟看盤軟體的數字會差一兩點。"""
+    out = [None] * len(xs)
+    k, up, dn, prev = 0, 0.0, 0.0, None
+    for i, v in enumerate(xs):
+        if v is None:
+            k, up, dn, prev = 0, 0.0, 0.0, None
+            continue
+        if prev is not None:
+            ch = v / prev - 1
+            u, d = max(ch, 0.0), max(-ch, 0.0)
+            k += 1
+            if k <= n:
+                up += u / n
+                dn += d / n
+            else:
+                up = (up * (n - 1) + u) / n
+                dn = (dn * (n - 1) + d) / n
+            if k >= n:
+                out[i] = 100.0 if dn == 0 else 100 - 100 / (1 + up / dn)
+        prev = v
+    return out
+
+
 def load_revenue(dirs=(SITE,)) -> dict:
     """rev[代號][月] = (營收, YoY%)，只收普通股。"""
     rev = defaultdict(dict)

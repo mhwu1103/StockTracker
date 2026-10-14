@@ -2803,6 +2803,7 @@ button.ustag {
   line-height: 1.5;
 }
 .gy-why b { color: var(--text); font-weight: 600; }
+.gy-rsi-note { border-top: 0; border-bottom: 1px solid var(--line); padding-top: 0; }
 .gy-row { grid-template-columns: 1fr auto; color: inherit; text-decoration: none; }
 .gy-row .code { white-space: normal; }
 .gy-list--avoid h2 { color: var(--muted); }

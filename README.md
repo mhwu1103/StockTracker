@@ -424,7 +424,8 @@ openapi 的 t187ap05 只給最新一個月，而「成長有沒有在加速」�
 
 - **今天**：最上面是「用他的流程看一檔」——輸入代號，七步判斷裡資料能回答的（營收有沒有進來、股價有沒有
   跟上、大盤季線、要不要走）直接打勾打叉，其餘列成問題。下面是回測成立的規則挑出來的清單：營收創歷史新高
-  ＋YoY>20% 公布後 20 個交易日（20 日超額 +2.98%、t 8.9）、股價創 12 個月新高＋營收 YoY 連兩月加速、
+  ＋YoY>20% 公布後 20 個交易日（20 日超額 +2.98%、t 8.9；可以再選「RSI ≥ 70」只看 10 日收盤 RSI14 已經
+  過熱的，回測 +5.05%，RSI < 50 的只有 +0.81%，選過的會記住）、股價創 12 個月新高＋營收 YoY 連兩月加速、
   整理多季後的突破；以及要避開的：強勢股剛破季線、創一年新低、低基期的高 YoY。
 - **大盤**：加權指數相對季線、年線，照他的原話（跌破季線出場、季線上揚且站回才進場）跑出現在該不該做多；
   融資餘額、大盤融資維持率、券資比；VIX、布蘭特、美債殖利率、初領失業金、CPI。每一項都附回測判讀。
@@ -575,7 +576,7 @@ scripts/
                     把社群維護的歷史存檔灌進來（標 src: archive）
   build_x.py        由月檔出索引 → docs/data/x/{index,tickers}.json 與 ticker/。
                     與 us_link.json 對照，標出哪幾檔接得回台股族群
-  gooaye.py         共用：MK 頁與它的回測共用的算式（還原股價與分割偵測、營收連續創新高）
+  gooaye.py         共用：MK 頁與它的回測共用的算式（還原股價與分割偵測、營收連續創新高、RSI）
   build_gooaye.py   MK 頁 → docs/data/gooaye.json（大盤溫度計、清單、規則記分板）與
                     gooaye_stocks.json（每一檔的檢核表）。要排在 build_margin.py 後面
   fetch_margin.py   融資融券餘額（證交所 MI_MARGN、櫃買 margin/balance）→ docs/data/margin/daily/
@@ -584,6 +585,7 @@ scripts/
   fetch_macro.py    總經（FRED，免金鑰）→ docs/data/macro.json：VIX、布蘭特、美債 10 年、美元、
                     初領失業金、CPI 年增
   backtest_gooaye*.py MK 規則的回測（月頻、日頻、大盤與總經），只印表，結論在 BACKTEST.md
+  backtest_rsi.py   RSI 的回測：單獨當訊號（反轉還是動能）、當營收創高與突破的濾網、0050 的 RSI
   gooaye_brain.py   MK 逐字稿逐集抽取與彙整（本機，claude -p），結果在 data/gooaye/（不進 git）
   gooaye_ask.py     查 MK 大腦：某檔的立場時間軸、最近在盯什麼、某主題的原則
   fetch_taiex.py    抓加權指數每日收盤（證交所 FMTQIK）→ docs/data/taiex.json。
@@ -675,7 +677,7 @@ docs/               GitHub Pages 網站根目錄
     margin/daily/YYYY-MM-DD.json  融資融券：{tw/tp: [融資金額(仟元), 融資張, 融券張], s: {代號: [融資張, 融券張]}}
     margin.json     融資序列 {d, amt_tw, amt_tp（億）, mt_tw, mt_tp, mt（維持率 %）, sr（券資比 %）, sh}
     macro.json      總經 {vix, brent, us10y, usd, icsa（四週平均）, cpi（年增 %）: {d, v}}，最近三年
-    gooaye.json     MK 頁：market（taiex／margin／macro）、lists（六份清單）、rules（記分板）
+    gooaye.json     MK 頁：market（taiex／margin／macro）、lists（六份清單；drift 每列帶 rsi）、rules（記分板）、rsiFilter
     gooaye_stocks.json 每一檔的檢核表，欄位寫在檔案的 fields
     rule.json       紀律頁直接讀的表：stocks 是代號 -> [簡稱, 收, 漲跌%, 10／20／60／240
                     日線, 10／20／60 日線連續站上（正）跌破（負）天數, 多頭排列, 外資連買天數]，

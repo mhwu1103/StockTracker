@@ -2,6 +2,7 @@
  * MK 大腦（gooaye.html）：MK 講過的規則，哪些經得起台股資料的回測，今天照那些規則挑出來的是誰。
  *
  *   今天   只列回測成立的規則挑出來的股票（營收創高後的漂移、突破＋營收加速、整理後突破），
+ *          營收創高那一份可以再加 RSI 濾網（要不要加由使用者選，記在 localStorage），
  *          以及回測說要避開的（強勢股剛破季線、創一年新低、低基期的高 YoY）
  *   大盤   加權指數相對季線、年線的位置，照他的原話跑出來的「持有／空手」；融資水位與維持率；
  *          VIX、油價、初領失業金
@@ -30,8 +31,13 @@ const VERDICT = {
 const PAGE = 20;
 const DRIFT_DAYS = 20;     // 營收創高後的漂移，回測持有 20 個交易日（build_gooaye.py 的 DRIFT_DAYS）
 const KEY_TAB = 'stocktracker.gooayetab';
+const KEY_RSI = 'stocktracker.gooayersi';
+const RSI_OPTS = [
+  { value: 'all', label: '不限 RSI' },
+  { value: 'hot', label: 'RSI ≥ 70' },
+];
 
-const state = { data: null, tab: 'today', more: {}, q: '', stocks: undefined };   // stocks：undefined 還沒載、null 載不到
+const state = { data: null, tab: 'today', rsi: 'all', more: {}, q: '', stocks: undefined };   // stocks：undefined 還沒載、null 載不到
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -108,14 +114,17 @@ function stockLink(r, extra) {
   </a>`;
 }
 
-function listCard(key, { title, small, ruleKey, avoid = false, row, empty }) {
-  const L = state.data.lists[key];
+// keep：只留符合的列（篩選是在前端做的，後端這一份沒有截）；extra：規則說明底下再放的東西
+function listCard(key, { title, small, ruleKey, avoid = false, row, empty, keep, extra = '' }) {
+  const L0 = state.data.lists[key];
+  const L = keep ? { n: L0.rows.filter(keep).length, rows: L0.rows.filter(keep) } : L0;
   const R = rule(ruleKey);
   const shown = L.rows.slice(0, PAGE * (state.more[key] || 1));
   const rest = L.rows.length - shown.length;
   return `<section class="card gy-list ${avoid ? 'gy-list--avoid' : ''}" id="list-${key}">
-    <h2>${title} <small>${L.n} 檔${L.n > L.rows.length ? `，列前 ${L.rows.length}` : ''}${small ? ` · ${small}` : ''}</small></h2>
+    <h2>${title} <small>${L.n} 檔${keep ? `（共 ${L0.n}）` : ''}${L.n > L.rows.length ? `，列前 ${L.rows.length}` : ''}${small ? ` · ${small}` : ''}</small></h2>
     ${R ? `<p class="gy-why">${verdictTag(R.verdict)}<span>他說「<b>${esc(R.rule)}</b>」${R.verdict === 'no' ? '，資料說不是' : ''}：${esc(R.stat)}</span></p>` : ''}
+    ${extra}
     ${shown.length ? shown.map((r) => stockLink(r, row(r))).join('') : `<p class="hint">${empty}</p>`}
     ${rest > 0 ? `<button class="cyc-morebtn" data-more="${key}">再列 ${Math.min(PAGE, rest)} 檔（還有 ${rest}）</button>` : ''}
   </section>`;
@@ -212,22 +221,35 @@ async function loadStocks() {
   render();
 }
 
+// 營收創高那一份的 RSI 濾網：選不選由使用者決定，回測數字擺在選項旁邊
+function rsiControls(pending) {
+  const F = state.data.rsiFilter;
+  if (!F) return '';
+  return `<div class="controls">${pills('rsi', RSI_OPTS, state.rsi)}</div>
+    <p class="note gy-rsi-note">${esc(F.stat)}。${pending ? '現在還在公布期間，RSI 是今天的，要到 10 日收盤才定案。' : ''}</p>`;
+}
+
 function todayView() {
   const drift = state.data.lists.drift.rows;
   const pending = drift.length && drift.every((r) => r.day === null);
+  const cut = state.data.rsiFilter?.cut ?? 70;
+  const hot = state.rsi === 'hot' && state.data.rsiFilter;
   return [
     checkCard(),
     listCard('drift', {
       title: '營收創新高之後',
       small: pending ? '公布期間，回測從 11 日開盤才算' : `公布後 ${DRIFT_DAYS} 個交易日內`,
       ruleKey: 'drift',
+      extra: rsiControls(pending),
+      keep: hot ? (r) => r.rsi !== null && r.rsi !== undefined && r.rsi >= cut : null,
       row: (r) => ({
         main: r.day === null ? `YoY ${pct(r.yoy)}` : pct(r.r, 1),
         cls: r.day === null ? '' : dir(r.r),
         foot: r.day === null ? '公布中' : `第 ${r.day} 天`,
-        sub: `${esc(r.m)} 營收 YoY ${pct(r.yoy)}，連 ${r.streak} 個月創新高`,
+        sub: `${esc(r.m)} 營收 YoY ${pct(r.yoy)}，連 ${r.streak} 個月創新高`
+          + (r.rsi === null || r.rsi === undefined ? '' : ` · RSI ${r.rsi}${r.day === null ? '（今天）' : ''}`),
       }),
-      empty: '這個月的營收還沒有創新高又年增 20% 以上的公司，或 20 天已經走完。',
+      empty: hot ? `營收創新高的公司裡，沒有 RSI ≥ ${cut} 的。` : '這個月的營收還沒有創新高又年增 20% 以上的公司，或 20 天已經走完。',
     }),
     listCard('accel', {
       title: '股價創 12 個月新高＋營收加速',
@@ -425,6 +447,10 @@ function bind() {
     } else if (ds.tab) {
       state.tab = ds.tab;
       try { localStorage.setItem(KEY_TAB, ds.tab); } catch (err) { /* 記不住就算了 */ }
+    } else if (ds.rsi) {
+      state.rsi = ds.rsi;
+      state.more.drift = 1;
+      try { localStorage.setItem(KEY_RSI, ds.rsi); } catch (err) { /* 記不住就算了 */ }
     } else if (ds.more) {
       state.more[ds.more] = (state.more[ds.more] || 1) + 1;
     } else {
@@ -444,6 +470,8 @@ async function main() {
   try {
     const v = localStorage.getItem(KEY_TAB);
     if (TABS.some((t) => t.value === v)) state.tab = v;
+    const r = localStorage.getItem(KEY_RSI);
+    if (RSI_OPTS.some((o) => o.value === r)) state.rsi = r;
   } catch (err) { /* 讀不到就用預設 */ }
   try {
     const res = await fetch(`${DATA}/gooaye.json`);

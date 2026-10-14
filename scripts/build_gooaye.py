@@ -19,12 +19,14 @@ import statistics as st
 from datetime import date
 
 import twse
-from gooaye import Prices, common, load_revenue, ma, prev_month, rev_streaks, roll_prev
+from gooaye import Prices, common, load_revenue, ma, prev_month, rev_streaks, roll_prev, rsi
 
 OUT = twse.DATA_DIR / "gooaye.json"
 RECENT = 5          # 價格型態的清單看最近幾個交易日
 DRIFT_DAYS = 20     # 營收創高之後的漂移，回測持有 20 個交易日
 TOP = 80            # 每份清單最多列幾檔
+RSI_HOT = 70        # 營收漂移的 RSI 濾網：訊號日 RSI14 ≥ 70（BACKTEST.md 2026-10-14）
+RSI_STAT = "10 日收盤 RSI14 ≥ 70 的，之後 20 日超額 +5.05%（t 7.9），RSI < 50 的只有 +0.81%；2022 空頭也一樣"
 
 # ---------------------------------------------------------------------------
 # 規則記分板：他講過的規則、我們的資料怎麼說。數字出自 BACKTEST.md 2026-10-11 的三節。
@@ -33,7 +35,8 @@ TOP = 80            # 每份清單最多列幾檔
 RULES = [
     {"k": "drift", "era": "2020–21", "rule": "月營收 10 號出來再進場已經晚了", "verdict": "no",
      "stat": "營收創歷史新高＋YoY>20%，11 日開盤才進場，之後 20 日超額 +2.98%（t 8.9），2022 空頭 +1.32%",
-     "note": "公布期間確實先漲 +3.4%，但公布後還有一段。全部規則裡最強的一條，下面清單第一份就是它"},
+     "note": "公布期間確實先漲 +3.4%，但公布後還有一段。全部規則裡最強的一條，下面清單第一份就是它。"
+             "再加 RSI 濾網：10 日收盤 RSI14 ≥ 70 的 20 日 +5.05%，RSI < 50 的只有 +0.81%（同日相減 +4.29%、t 5.6，2022 也成立）"},
     {"k": "accel", "era": "2023–26", "rule": "營收要配股價確認：營收加速、股價突破", "verdict": "ok",
      "stat": "股價創 12 個月新高＋營收 YoY 連 2 月加速，下個月超額 +2.37%（t 3.0）；沒加速的只有 +1.12%",
      "note": "6 個年度都是正的；中位數 +1.28%，效果有一部分來自少數大漲股"},
@@ -181,6 +184,13 @@ def main() -> int:
         """訊號日隔天開盤進場到今天的還原報酬。"""
         return round(r * 100, 1) if i < today and (r := P.ret(c, i, today - i)) is not None else None
 
+    rsi_cache = {}
+
+    def R(c):
+        if c not in rsi_cache:
+            rsi_cache[c] = rsi(P.adj(c))
+        return rsi_cache[c]
+
     # ---------- 1. 營收創歷史新高＋YoY>20%，公布後 20 個交易日 ----------
     drift = []
     rev_months = sorted({m for s in rev.values() for m in s})[-2:]
@@ -194,6 +204,9 @@ def main() -> int:
         for c, s in rev.items():
             if m in s and streak[c].get(m, 0) >= 1 and (s[m][1] or 0) > 20:
                 row = {**base(c), "m": m, "yoy": s[m][1], "streak": streak[c][m]}
+                # RSI 看訊號日（10 日）收盤，跟回測一樣；還在公布期間就先看今天的，到 10 日才定案
+                ri = R(c)[today if pending else ten]
+                row["rsi"] = None if ri is None else round(ri)
                 if pending:
                     row.update(day=None, r=None)
                 else:
@@ -321,17 +334,19 @@ def main() -> int:
         "s": stocks,
     })
 
-    def cap(xs):
-        return {"n": len(xs), "rows": xs[:TOP]}
+    def cap(xs, top=TOP):
+        return {"n": len(xs), "rows": xs[:top]}
 
     payload = {
         "d": dates[today],
         "market": {"taiex": taiex_state(), "margin": margin_state(), "macro": macro_state()},
         "lists": {
-            "drift": cap(drift), "accel": cap(accel), "base": cap(base_brk),
+            "drift": cap(drift, 400),           # 前端可以只看 RSI ≥ 70，篩之前不能先截
+            "accel": cap(accel), "base": cap(base_brk),
             "hotbreak": cap(hb), "newlow": cap(new_low), "lowbase": cap(low_base),
         },
         "rules": RULES,
+        "rsiFilter": {"cut": RSI_HOT, "stat": RSI_STAT},
     }
     changed = twse.write_if_changed(OUT, payload)
     print(f"{dates[today]}：營收漂移 {len(drift)}、突破加速 {len(accel)}、整理後突破 {len(base_brk)}、"

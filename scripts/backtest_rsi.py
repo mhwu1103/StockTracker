@@ -6,7 +6,7 @@
 只印表，不寫檔；結論整理在 BACKTEST.md。進出場、超額、t 值與分段都跟 backtest_gooaye_daily.py
 同一套（直接 import 它）：訊號日隔天開盤進場、減全體普通股等權平均、Newey-West。
 
-- RSI 用 Wilder 平滑，算在還原後的收盤上；中間缺值就重新起算
+- RSI 用 Wilder 平滑，算在還原後的收盤上（gooaye.rsi，MK 頁的清單用同一個）
 - 穿越類的訊號同一檔 20 個交易日內只算第一次，免得同一段行情重複計數
 - 多空對照：同一天兩邊都有訊號才相減，剩下的才是方向的功勞
 """
@@ -18,32 +18,9 @@ from collections import defaultdict
 
 import backtest_gooaye_daily as B
 from backtest_gooaye_daily import AC, COMMONS, HZ, N, bench, dates, evaluate, nw_t, print_rows, ret
+from gooaye import rsi
 
 GAP = 20
-
-
-def rsi(xs, n=14):
-    """Wilder RSI；前 n 個有效值用簡單平均起頭，碰到缺值重來。"""
-    out = [None] * len(xs)
-    k, up, dn, prev = 0, 0.0, 0.0, None
-    for i, v in enumerate(xs):
-        if v is None:
-            k, up, dn, prev = 0, 0.0, 0.0, None
-            continue
-        if prev is not None:
-            ch = v / prev - 1
-            u, d = max(ch, 0.0), max(-ch, 0.0)
-            k += 1
-            if k <= n:
-                up += u / n
-                dn += d / n
-            else:
-                up = (up * (n - 1) + u) / n
-                dn = (dn * (n - 1) + d) / n
-            if k >= n:
-                out[i] = 100.0 if dn == 0 else 100 - 100 / (1 + up / dn)
-        prev = v
-    return out
 
 
 R14 = {c: rsi(AC[c], 14) for c in COMMONS + ["0050"]}
