@@ -6307,7 +6307,8 @@ async function renderInstiFlow(view) {
       <h2>族群法人四象限 <small>泡泡大小＝近 20 日法人進出量，尾巴＝有標名字的那幾族前 ${FLOW_TRAIL} 天的位置</small></h2>
       <div class="map-box"><div class="quad-box flow-box"></div></div>
       <div class="flow-play">
-        <button type="button" class="pill flow-btn" aria-label="播放">▶</button>
+        <!-- 不能掛 .pill：#view 上的委派會把任何 .pill 的點擊當成換條件、整頁重畫，回放一按就被打回最後一天 -->
+        <button type="button" class="flow-btn" aria-label="播放">▶</button>
         <input type="range" class="flow-range" min="${from}" max="${at}" step="1" value="${at}"
                aria-label="回放日期">
         <span class="flow-date">${esc(days[at])}</span>

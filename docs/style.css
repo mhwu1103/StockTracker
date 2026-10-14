@@ -884,7 +884,17 @@ select, input, button {
   gap: 10px;
   padding: 0 14px 4px;
 }
-.flow-play .flow-btn { flex: none; min-width: 44px; color: var(--text); }
+.flow-play .flow-btn {
+  flex: none;
+  min-width: 44px;
+  min-height: 40px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
 .flow-play .flow-range { flex: 1 1 auto; min-width: 0; accent-color: var(--accent); }
 .flow-play .flow-date { flex: none; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .row--flow { cursor: pointer; }
