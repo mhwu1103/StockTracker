@@ -965,6 +965,12 @@ select, input, button {
   border-top: 1px solid var(--line);
 }
 
+/* RSI 頁統計格底下的回測那一行：左邊一條色帶標方向（之後較弱用跌的顏色，沒差別就灰） */
+.rsi-bt { border-left: 3px solid var(--line); line-height: 1.6; }
+.rsi-bt b { color: var(--text); font-weight: 600; }
+.rsi-bt--down { border-left-color: var(--down); }
+.rsi-bt--up { border-left-color: var(--up); }
+
 /* ---------- 一句話 ----------
  * 每一頁最上面的導讀。字級比說明文字大一級、顏色用正文色：
  * 它不是註腳，是要先讀的那一句。

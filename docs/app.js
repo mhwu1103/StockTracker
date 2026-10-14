@@ -75,6 +75,10 @@ const state = {
   macdSide: 'up',      // 「MACD」分頁：up 黃金交叉／down 死亡交叉
   macdWhen: '3',       // 「MACD」分頁的時點：近 N 日已交叉，或 d1 明天／d2 後天
   macdStack: 'any',    // 「MACD」分頁的四線篩選：沿用均線頁的 any／up／down
+  rsiLine: '30',       // 「RSI」分頁看哪一條線：70／50／30
+  rsiSide: 'down',     // 「RSI」分頁：up 往上穿／down 往下穿（說法跟著線走，見 rsiSides）
+  rsiWhen: '3',        // 「RSI」分頁的時點：近 N 日已穿過，或 d1 明天
+  rsiStack: 'any',     // 「RSI」分頁的四線篩選：沿用均線頁的 any／up／down
   structK: 3,          // 「結構」分頁的樞紐敏感度：3 短波段、5 大波段
   structDir: 'any',    // 「結構」分頁的方向篩選：any 不限、up 向上、down 向下
   structPhase: 1,      // 「結構」分頁選中的階段（STRUCT_PHASES 的索引）
@@ -2052,6 +2056,222 @@ async function renderMacd(view) {
         上面那排「四線全上／全下」就是拿這四個標記在篩，篩完連時點那排的計數也一起跟著縮：
         「近 3 日黃金交叉」再加「四線全上」，就是動能剛翻正、價格也已經站上短中長期均線的那一群，
         今天榜上四線全上的有 ${allUp} 檔。四條線裡只要有一條算不出來就不算數，條件疊起來命中數會掉得很快。</p>
+        名次與 NEW／▲▼ 是成交值在${esc(scopeLabel())}裡的排名與對比前一交易日的變化。
+        這是條件篩選與算術的結果，不是買賣訊號。</p>
+    </section>`;
+}
+
+// --------------------------------------------------------------------------
+// 分頁：RSI（剛穿過 70／50／30 的，以及明天要收在多少才會穿過去）
+//
+// 跟 MACD 頁同一個骨架，差在說明：這一頁的每個選項旁邊都擺回測結果（BACKTEST.md 2026-10-14）。
+// 教科書的 RSI 在台股是反的——跌破 30 不是買點、上穿 70 不是賣點——所以這裡不寫「超買」「超賣」，
+// 只寫穿過了哪條線，以及歷史上之後通常怎麼走。
+// --------------------------------------------------------------------------
+const RSI_N = 14;                        // 與 build_history.py 的 RSI_N 一致
+const RSI_LEVELS = [70, 50, 30];         // 與 build_history.py 的 RSI_LEVELS 同順序
+
+const RSI_LINES = RSI_LEVELS.map((v) => ({ value: String(v), label: `${v} 線` }));
+
+/** 方向的說法跟著線走：70 是「上穿／跌回」，30 是「回升／跌破」 */
+function rsiSides(line) {
+  const name = {
+    70: ['上穿 70', '從 70 上跌回'],
+    50: ['上穿 50', '跌破 50'],
+    30: ['從 30 下回升', '跌破 30'],
+  }[line];
+  return [{ value: 'up', label: name[0] }, { value: 'down', label: name[1] }];
+}
+
+const RSI_WHENS = [
+  { value: '1', label: '近 1 日' },
+  { value: '3', label: '近 3 日' },
+  { value: '5', label: '近 5 日' },
+  { value: '10', label: '近 10 日' },
+  { value: 'd1', label: '明天' },
+];
+
+// 回測（5 年、訊號日隔天開盤進場、減全體普通股等權平均）：之後 20 個交易日的超額。
+// tone：up 之後較強／down 之後較弱／flat 沒有差別
+const RSI_BACKTEST = {
+  '70up': { tone: 'flat', text: '之後 20 日超額 +0.51%（t 1.9），不顯著——上穿 70 不是賣點。衝上 80 的是 +1.88%（t 4.1），但贏過中位數的只有 48%，靠少數大漲股撐起來' },
+  '70down': { tone: 'flat', text: '之後 20 日超額 +0.20%（t 0.9）——從 70 上回落之後沒有變弱，不是賣點' },
+  '50up': { tone: 'down', text: '之後 20 日超額 −0.44%（t −3.0）——中線上穿沒有用，短線反而落後' },
+  '50down': { tone: 'flat', text: '之後 20 日超額 −0.21%（t −1.9），不顯著' },
+  '30up': { tone: 'down', text: '之後 20 日超額 −0.96%（t −3.8）——教科書的買點，在台股之後反而繼續落後' },
+  '30down': { tone: 'down', text: '之後 20 日超額 −0.84%（t −3.2）——是弱勢延續，不是反彈；跌破 20 的也沒有反彈' },
+};
+
+function rsiOf(stock) {
+  const r = stock.rsi;
+  if (!r) return null;
+  const [u, d] = r;
+  return {
+    u, d,
+    runs: r.slice(2).map((v) => (v === undefined ? null : v)),
+    value: d === 0 ? 100 : 100 - 100 / (1 + u / d),
+  };
+}
+
+/** 已經穿過，而且是在近 days 個交易日內 */
+function rsiCrossed(stock, line, side, days) {
+  const r = rsiOf(stock);
+  const run = r ? r.runs[RSI_LEVELS.indexOf(Number(line))] : null;
+  if (run === null || run === undefined) return false;
+  return side === 'up' ? run >= 1 && run <= days : run <= -1 && run >= -days;
+}
+
+/**
+ * 還沒穿過的股票，明天要收在多少才會穿過 line。
+ *
+ * 跟 MACD 一樣是解方程式：Wilder 平滑是「舊平均 × 13/14 ＋ 今天的漲（或跌）幅 × 1/14」，
+ * 明天只會動到漲、跌其中一邊，所以 RSI = line 解得出明天的漲跌幅。
+ * 平盤的話兩邊一起 × 13/14，RSI 不變——所以沒有「後天」：明天平盤，後天要走的跟明天幾乎一樣。
+ * 回傳 null：沒有 RSI、已經在那一側，或要走的超過漲跌停。
+ */
+function rsiOutlook(stock, line, side) {
+  const r = rsiOf(stock);
+  if (!r || stock.close === null || stock.close === undefined) return null;
+  const want = side === 'up';
+  const level = Number(line);
+  if ((r.value > level) === want) return null;
+  const k = level / (100 - level);                       // 平均漲幅 ÷ 平均跌幅 要等於這個數
+  const n1 = RSI_N - 1;
+  const need = want ? k * n1 * r.d - n1 * r.u : -(n1 * r.u / k - n1 * r.d);
+  if (want ? need > PRICE_LIMIT : need < -PRICE_LIMIT) return null;
+  return { target: stock.close * (1 + need / 100), need };
+}
+
+function rsiPick(pool, line, side, when) {
+  if (when === 'd1') {
+    return pool
+      .map((s) => ({ stock: s, outlook: rsiOutlook(s, line, side) }))
+      .filter((x) => x.outlook)
+      .sort((a, b) => Math.abs(a.outlook.need) - Math.abs(b.outlook.need))
+      .map((x) => ({ ...x.stock, outlook: x.outlook }));
+  }
+  const i = RSI_LEVELS.indexOf(Number(line));
+  return pool
+    .filter((s) => rsiCrossed(s, line, side, Number(when)))
+    .sort((a, b) => Math.abs(rsiOf(a).runs[i]) - Math.abs(rsiOf(b).runs[i]) || a.rank - b.rank);
+}
+
+/** 狀態（不含 RSI 數值）：今天剛穿過、在線上第幾天、尚未穿過 */
+function rsiRunLabel(stock, line) {
+  const r = rsiOf(stock);
+  if (!r) return '資料不足';
+  if (stock.outlook) return `尚未穿過 ${line}`;
+  const run = r.runs[RSI_LEVELS.indexOf(Number(line))];
+  if (run === null) return '天數不足';
+  const days = Math.abs(run);
+  if (days === 1) return `今天剛${run > 0 ? '上穿' : '跌破'} ${line}`;
+  return `${line} ${run > 0 ? '以上' : '以下'}第 ${days >= MA_STREAK_MAX ? `${MA_STREAK_MAX}+` : days} 天`;
+}
+
+function rsiRow(stock, base, line, side) {
+  const r = rsiOf(stock);
+  const pct = stock.changePct;
+  const pctText = pct === null || pct === undefined ? '' : `<em class="${trend(pct)}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</em>`;
+  const detail = stock.outlook
+    ? `明天收${side === 'up' ? ' ≥ ' : ' ≤ '}${num(stock.outlook.target, 2)}
+       · <em class="${trend(stock.outlook.need)}">${signed(stock.outlook.need)}</em>`
+    : `RSI ${num(r.value, 1)}`;
+  return `<a class="row" href="#/stock/${stock.code}">
+    <div class="rank"><span class="no">${stock.rank}</span>${deltaBadge(stock.rank, base ? base.rank : null)}</div>
+    <div class="ident"><span class="name">${state.watch.has(stock.code) ? '<span class="star">★</span>' : ''}${esc(stock.name)}</span>
+      <span class="code">${stock.code}${stock.m ? ` · ${esc(MARKET_TAGS[stock.m])}` : ''}${hasIndustry() ? ` · ${esc(industryOf(stock.code))}` : ''}</span>
+      <span class="streak">RSI ${num(r.value, 1)} · ${rsiRunLabel(stock, line)}</span>
+      <span class="ma-chips">${maChips(stock)}</span></div>
+    <div class="figures"><span class="value">${num(stock.close, 2)} ${pctText}</span>
+      <span class="price">${detail}</span></div>
+  </a>`;
+}
+
+const rsiList = (stocks, baseMap, line, side) => listOf(stocks,
+  (s) => rsiRow(s, baseMap.get(s.code), line, side),
+  (list) => ({
+    href: (s) => `#/stock/${s.code}`,
+    cols: [
+      col('名次', W.rank, 'w-rank',
+        (s) => `<b>${s.rank}</b>${deltaBadge(s.rank, (baseMap.get(s.code) || {}).rank)}`),
+      col('名稱', W.name, 'w-name', (s) => wideName(s.code, s.name, s.m)),
+      ...(hasIndustry() ? [colIndustry((s) => s.code)] : []),
+      col('收盤', W.price, 'w-num', (s) => cellNum(s.close)),
+      col('漲跌%', W.pct, 'w-num', (s) => widePct(s.changePct)),
+      col('RSI', W.pct, 'w-num', (s) => num(rsiOf(s).value, 1)),
+      col('狀態', W.note, 'w-num w-streak', (s) => rsiRunLabel(s, line)),
+      ...(list.some((s) => s.outlook) ? [
+        col('明天臨界', W.price, 'w-num', (s) => (s.outlook ? cellNum(s.outlook.target) : '—')),
+        col('還要走', W.pct, 'w-num',
+          (s) => (s.outlook ? `<em class="${trend(s.outlook.need)}">${signed(s.outlook.need)}</em>` : '—')),
+      ] : []),
+      col('均線', W.chips, 'w-chips', (s) => maChips(s)),
+    ],
+  }));
+
+async function renderRsi(view) {
+  const [today, base] = await Promise.all([loadDaily(state.date), loadDaily(dateBack(1))]);
+  const baseMap = rankMap(base);
+  const line = state.rsiLine;
+  const side = state.rsiSide;
+  const when = state.rsiWhen;
+  const stack = state.rsiStack;
+  const sides = rsiSides(line);
+  const name = sides.find((s) => s.value === side).label;
+
+  const board = today.stocks.filter((s) => s.rank <= TOP);
+  const withRsi = board.filter((s) => rsiOf(s));
+  const hot = withRsi.filter((s) => rsiOf(s).value >= 70).length;
+  const cold = withRsi.filter((s) => rsiOf(s).value <= 30).length;
+
+  if (!withRsi.length) {
+    view.innerHTML = `<p class="hint">${state.date} 沒有 RSI 資料。</p>
+      <section class="card"><h2>要怎麼補</h2>
+        <p class="note">RSI 用 Wilder 平滑，跟 EMA 一樣沒有真正的起點，連續資料少於 60 個交易日就不出數字。</p>
+        <p class="note">補收盤價：<code>python scripts/backfill.py --to ${state.date} --days 170</code>，
+          再跑一次 <code>python scripts/build_history.py</code>。</p>
+      </section>`;
+    return;
+  }
+
+  const pool = stack === 'any' ? withRsi : withRsi.filter((s) => maStacked(s, stack));
+  const stackText = stack === 'any' ? '' : `　${stack === 'up' ? '四線全上' : '四線全下'}`;
+  const whens = RSI_WHENS.map((w) => ({ ...w, label: `${w.label} ${rsiPick(pool, line, side, w.value).length}` }));
+  const hits = rsiPick(pool, line, side, when);
+  const forecast = when === 'd1';
+  const title = forecast ? `明天可能${name}` : `近 ${when} 日${name}`;
+  const bt = RSI_BACKTEST[`${line}${side}`];
+
+  view.innerHTML = `
+    <div class="controls">${pills('rsiline', RSI_LINES, line)}${pills('rsiside', sides, side)}</div>
+    <div class="controls">${pills('rsiwhen', whens, when)}${pills('rsistack', MA_STACKS, stack)}</div>
+    <div class="card"><div class="stat-grid">
+      <div class="stat"><b class="${side === 'up' ? 'up' : 'down'}">${hits.length}</b><span>${title}</span></div>
+      <div class="stat"><b class="up">${hot}</b><span>RSI ≥ 70</span></div>
+      <div class="stat"><b class="down">${cold}</b><span>RSI ≤ 30</span></div>
+      <div class="stat"><b>${board.length - withRsi.length}</b><span>資料不足</span></div>
+    </div>
+    <p class="note rsi-bt rsi-bt--${bt.tone}"><b>回測：${esc(name)}</b>　${esc(bt.text)}</p></div>
+    ${listCard(`${state.date} ${title}${stackText}`,
+      forecast ? `榜上前 ${TOP} 名　要走的幅度小的排前面` : `榜上前 ${TOP} 名　穿越越新的排越前面`,
+      rsiList(hits, baseMap, line, side),
+      forecast
+        ? `${state.date} 榜上沒有一檔${stackText ? `${stackText.trim()}、` : ''}在漲跌停範圍內明天就會${name}的`
+        : `${state.date} 榜上沒有${stackText ? `${stackText.trim()}、而且` : ''}近 ${when} 日${name}的股票，把天數放寬看看`)}
+    <section class="card">
+      <h2>這一頁在看什麼</h2>
+      <p class="note">RSI 是近 14 日的平均漲幅 ÷（平均漲幅＋平均跌幅），用 Wilder 平滑，0～100。
+        漲跌用<b>還原除權息</b>的百分比，除息當天的跳空不會被當成一根大跌；也因為用百分比，
+        跟看盤軟體的數字會差一兩點。「近 N 日」與均線、MACD 頁同一套算法：1 是今天剛穿過。</p>
+      <p class="note"><b>這裡不寫「超買」「超賣」。</b>5 年回測（BACKTEST.md 2026-10-14）的結論是教科書用法在台股是反的：
+        跌破 30、從 30 下回升，之後 20 日都落後大盤 0.8～1.0%；上穿 70、從 70 回落，之後都沒有變弱。
+        台股個股比較偏「強者恆強」——跟「創新低不抄底」「創新高不賣」是同一件事。
+        RSI 真正有用的地方在 MK 頁：營收創新高之後再挑 RSI ≥ 70 的，20 日超額 +5.05%，RSI &lt; 50 的只有 +0.81%。</p>
+      <p class="note"><b>「明天」不是預測，是解方程式。</b>明天只會動到平均漲幅或平均跌幅其中一邊，
+        所以「RSI 剛好等於 ${line}」解得出明天的漲跌幅，清單上的「明天收 ≥ 某價」就是那個解。
+        沒有「後天」：平盤的話兩邊一起縮，RSI 不變，後天要走的跟明天幾乎一樣。
+        只列漲跌停 ±${PRICE_LIMIT}% 走得到的；明天要是除權息，臨界價會不準。</p>
+      <p class="note">連續資料少於 60 個交易日的不出數字——今天榜上有 ${board.length - withRsi.length} 檔是這種情況。
         名次與 NEW／▲▼ 是成交值在${esc(scopeLabel())}裡的排名與對比前一交易日的變化。
         這是條件篩選與算術的結果，不是買賣訊號。</p>
     </section>`;
@@ -6730,6 +6950,7 @@ async function render() {
     else if (route.view === 'burst') await renderBurst(view);
     else if (route.view === 'ma') await renderMa(view);
     else if (route.view === 'macd') await renderMacd(view);
+    else if (route.view === 'rsi') await renderRsi(view);
     else if (route.view === 'structure') await renderStructure(view, route.arg);
     else if (route.view === 'holders') await renderHolders(view, route.arg);
     else if (route.view === 'insti') await renderInsti(view);
@@ -6798,6 +7019,10 @@ function bindGlobalControls() {
     if (pill.dataset.macdside) state.macdSide = pill.dataset.macdside;
     if (pill.dataset.macdwhen) state.macdWhen = pill.dataset.macdwhen;
     if (pill.dataset.macdstack) state.macdStack = pill.dataset.macdstack;
+    if (pill.dataset.rsiline) state.rsiLine = pill.dataset.rsiline;
+    if (pill.dataset.rsiside) state.rsiSide = pill.dataset.rsiside;
+    if (pill.dataset.rsiwhen) state.rsiWhen = pill.dataset.rsiwhen;
+    if (pill.dataset.rsistack) state.rsiStack = pill.dataset.rsistack;
     if (pill.dataset.structk) {
       state.structK = Number(pill.dataset.structk);
       try {

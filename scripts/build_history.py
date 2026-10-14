@@ -10,7 +10,7 @@
 
 產出（全部是純衍生檔，隨時可重算）：
     docs/data/daily/all/YYYY-MM-DD.json    合併後的排行
-    daily/{scope}/*.json 裡的 streak／vh／ma／mav／macd 欄位（就地補寫）
+    daily/{scope}/*.json 裡的 streak／vh／ma／mav／macd／rsi 欄位（就地補寫）
     docs/data/index.json                   交易日清單 + 三種範圍的每日成交值
     docs/data/history/{scope}/YYYY.json     該範圍「個股 -> 每日 (名次, 成交值)」轉置表
     docs/data/kline/{market}/{code}/YYYY-MM.json
@@ -52,6 +52,13 @@ MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
 # EMA 沒有真正的起點，是從第一天的收盤價一路遞推出來的，跑不夠久就還帶著起點的味道。
 # 連續收盤價少於這麼多天就不出 MACD——26 日 EMA 的起點誤差到這裡只剩約 1%。
 MACD_WARMUP = 60
+
+# RSI：Wilder 14 日。漲跌用還原除權息的百分比（scripts/gooaye.py 的 rsi()，回測用的就是那個），
+# 不然除息當天的跳空會被當成一根大跌，高殖利率股每年都會假性跌破 30 一次。
+# 平滑係數是 1/14，比 MACD 的 EMA 慢，同樣跑滿 60 天才出數字（起點的影響剩 3% 左右）。
+RSI_N = 14
+RSI_WARMUP = 60
+RSI_LEVELS = (70, 50, 30)       # 前端看這三條線的穿越，順序與 rsi 欄位一致
 
 # 收盤價往回只湊得到這麼多天就斷了（新上市、長期停牌、資料起點）時，
 # 天數小於這個數字的一律當成資料不足。
@@ -176,8 +183,10 @@ class MaTracker:
         """這一天沒有收盤價檔（回補還沒補到）：連續性就斷在這裡。"""
         self.codes.clear()
 
-    def feed(self, closes: dict) -> dict:
+    def feed(self, closes: dict, factors: dict | None = None) -> dict:
+        """factors：今天除權息的股票 -> 參考價 ÷ 前收盤（exright/），只有 RSI 用得到。"""
         self.seq += 1
+        factors = factors or {}
         out = {}
         for code, close in closes.items():
             state = self.codes.get(code)
@@ -187,15 +196,52 @@ class MaTracker:
                          "runs": [None] * len(MA_WINDOWS),
                          "days": 0,          # 連續有收盤價的天數，EMA 夠不夠熟看它
                          "ema": None,        # (快線 EMA, 慢線 EMA, 訊號線 DEA)
-                         "cross": None}      # MACD 柱在同一側連續幾天
+                         "cross": None,      # MACD 柱在同一側連續幾天
+                         "prev": None,       # 前一天收盤，RSI 算漲跌用
+                         "rsi": None,        # (平均漲幅, 平均跌幅, 已經走了幾天)
+                         "rsiRuns": [None] * len(RSI_LEVELS)}
                 self.codes[code] = state
             state["seq"] = self.seq
             state["closes"].append(close)
-            out[code] = self._step(state, close)
+            out[code] = self._step(state, close, factors.get(code, 1.0))
         return out
 
-    def _step(self, state, close) -> dict:
-        return {**self._moving_averages(state, close), **self._macd(state, close)}
+    def _step(self, state, close, factor) -> dict:
+        return {**self._moving_averages(state, close), **self._macd(state, close),
+                **self._rsi(state, close, factor)}
+
+    def _rsi(self, state, close, factor) -> dict:
+        """存的是 [平均漲幅%, 平均跌幅%, 70 線、50 線、30 線各自在同一側幾天]。
+
+        存平均漲跌幅而不是 RSI 本身：前端有了這兩個數才解得出「明天收在多少會穿過 70」。
+        穿越天數與 ma 同一套約定：正＝在線上第幾天（1 是今天剛上穿），負＝在線下，null＝資料不足。
+        RSI 剛好等於門檻算在線下那一側。
+        """
+        prev, state["prev"] = state["prev"], close
+        if prev is None:
+            return {}
+        ratio = close / (prev * factor)
+        # 漲跌停是 ±10%，超過 ±20% 的是分割、減資這類 exright/ 沒寫到的事件，跟 gooaye.Prices 一樣當成沒漲跌
+        ch = (ratio - 1) * 100 if 0.8 < ratio < 1.25 else 0.0
+        up, dn = max(ch, 0.0), max(-ch, 0.0)
+        u, d, k = state["rsi"] or (0.0, 0.0, 0)
+        k += 1
+        if k <= RSI_N:                    # 前 14 天用簡單平均起頭
+            u, d = u + up / RSI_N, d + dn / RSI_N
+        else:
+            u, d = (u * (RSI_N - 1) + up) / RSI_N, (d * (RSI_N - 1) + dn) / RSI_N
+        state["rsi"] = (u, d, k)
+        if k < RSI_WARMUP:
+            state["rsiRuns"] = [None] * len(RSI_LEVELS)
+            return {}
+        value = 100.0 if d == 0 else 100 - 100 / (1 + u / d)
+        runs = []
+        for i, level in enumerate(RSI_LEVELS):
+            run = state["rsiRuns"][i]
+            run = run_days(run, 1 if value > level else -1, run is not None)
+            state["rsiRuns"][i] = run
+            runs.append(run_value(run))
+        return {"rsi": [round(u, 4), round(d, 4), *runs]}
 
     def _macd(self, state, close) -> dict:
         """DIF＝快線 EMA − 慢線 EMA，DEA＝DIF 的 EMA，柱＝DIF − DEA。
@@ -249,6 +295,16 @@ class MaTracker:
             "ma": status,
             "mav": [None if a is None else round(a, 2) for a in averages],
         }
+
+
+def load_exright() -> dict:
+    """日期 -> {代號: 參考價 ÷ 前收盤}，exright/ 每年一個檔。"""
+    out = defaultdict(dict)
+    for path in sorted((twse.DATA_DIR / "exright").glob("*.json")):
+        for code, events in json.loads(path.read_text(encoding="utf-8")).items():
+            for date_iso, factor in events:
+                out[date_iso][code] = factor
+    return out
 
 
 def load_prices(date_iso: str, market: str):
@@ -309,7 +365,7 @@ def write_klines(market: str, series: dict, codes: set) -> tuple:
 
 
 # 這三個欄位由 stamp_ma 就地補進 daily 檔，算不出來就整個拿掉，不留半截舊值
-TECH_FIELDS = ("ma", "mav", "macd")
+TECH_FIELDS = ("ma", "mav", "macd", "rsi")
 
 
 def stamp_ma(payload, tech_today) -> bool:
@@ -322,6 +378,8 @@ def stamp_ma(payload, tech_today) -> bool:
 
     `macd` 是 [快線 EMA, 慢線 EMA, DEA, 交叉天數]：前三個給前端推「明天收在多少
     就會交叉」，第四個與 `ma` 同一套約定（正＝黃金交叉後第幾天、負＝死亡交叉）。
+
+    `rsi` 是 [平均漲幅%, 平均跌幅%, 70／50／30 三條線的穿越天數]，見 MaTracker._rsi。
     """
     changed = False
     for stock in payload["stocks"]:
@@ -364,6 +422,7 @@ def main() -> int:
     market_codes = {m: set() for m in ("twse", "tpex")}
     wanted_codes = structure.electronic_codes()
 
+    exright = load_exright()
     for day_index, date_iso in enumerate(dates):
         # 均線、MACD 與 K 線吃的都是全市場四價（docs/data/close/），跟排行的前 300 名無關
         tech_today = {}
@@ -372,7 +431,7 @@ def main() -> int:
             if prices is None:
                 tracker.reset()
                 continue
-            tech_today.update(tracker.feed({c: p[3] for c, p in prices.items()}))
+            tech_today.update(tracker.feed({c: p[3] for c, p in prices.items()}, exright.get(date_iso)))
             kline_days[market].append(date_iso)
             month = date_iso[:7]
             for code, price in prices.items():
