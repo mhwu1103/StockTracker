@@ -393,6 +393,8 @@ def main() -> int:
         message = build_message(payload, site_url, scope_name, total_label, insti_rows)
 
     if args.dry_run:
+        # Windows 主控台預設 cp950，印不出訊息裡的 emoji
+        sys.stdout.reconfigure(encoding="utf-8")
         print(message)
         print(f"\n(訊息長度 {len(message)} 字元，Telegram 上限 4096)")
         return 0
