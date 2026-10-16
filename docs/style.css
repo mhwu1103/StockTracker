@@ -904,6 +904,12 @@ select, input, button {
   font-variant-numeric: tabular-nums;
 }
 .f-in2 { font-weight: 500; opacity: .85; }
+/* 泡泡外面的名字與引線：一律畫在最上層，不擋點擊 */
+.f-names { pointer-events: none; }
+.f-out { transition: opacity .2s; }
+.f-out.dim, .f-lead.dim { opacity: .15; }
+.f-out.pin { font-weight: 700; }
+.f-lead { stroke: var(--muted); stroke-width: .8; opacity: .6; }
 .f-grid { stroke: var(--q-mesh); stroke-width: .6; opacity: .45; }
 .f-axis { stroke: var(--muted); stroke-width: 1; opacity: .55; }
 .f-corner { font-size: var(--q-fs, 10px); font-weight: 700; letter-spacing: 2px; opacity: .75; fill: currentColor; }

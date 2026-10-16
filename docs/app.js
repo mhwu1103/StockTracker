@@ -6345,8 +6345,9 @@ async function renderInstiFlow(view) {
         <span class="flow-date">${esc(days[at])}</span>
       </div>
       <p class="note">兩軸都是對數式刻度：零附近照實際比例，離零越遠越壓縮，一天進出幾百億的大族
-        跟幾千萬的小族才放得進同一張圖。泡泡裡寫的是近 5 日淨買賣；塞不下字的小泡泡，
-        只在旁邊標買最多與賣最多的各 ${FLOW_NAMED} 族，尾巴是它們前 ${FLOW_TRAIL} 天的位置。
+        跟幾千萬的小族才放得進同一張圖。泡泡裡寫的是近 5 日淨買賣；塞不下字的泡泡，
+        名字寫在旁邊的空位，離得遠的拉一條細線回去；太擠真的放不下的，滑過去或用上面的「選族群」少挑幾族就看得到。
+        買最多與賣最多的各 ${FLOW_NAMED} 族旁邊另外寫金額，尾巴是它們前 ${FLOW_TRAIL} 天的位置。
         點泡泡或下面的列可以釘選，其他族會淡掉；按 ▶ 從 ${esc(days[from])} 播到 ${esc(days[at])}。
         ${mode === 'industry' ? '' : '題材族群一檔可屬多族，重疊的股票兩邊都算。'}
         只算普通股（ETF 的買賣超大多是申購買回），上市櫃合計，不跟頂部的範圍切換。</p>
@@ -6736,6 +6737,7 @@ function flowSvg(rows, axes, w, h, isShown = () => true) {
       <polyline class="q-trail"/><circle class="f-halo"/><circle class="q-body"/>
       <text class="f-in f-in1" text-anchor="middle"></text><text class="f-in f-in2" text-anchor="middle"></text>
       <text class="q-name"></text><title></title></g>`).join('')}</g>
+    <g class="f-names" aria-hidden="true"></g>
     <text class="q-tick" x="${(Q.l - Q.small * 0.5).toFixed(1)}" y="${(cy + Q.small * 0.35).toFixed(1)}" text-anchor="end">0</text>
     ${yt.map((v) => `<text class="q-tick" x="${(Q.l - Q.small * 0.5).toFixed(1)}" y="${(py(v) + Q.small * 0.35).toFixed(1)}" text-anchor="end">${tickText(v)}</text>`).join('')}
     ${xt.map((v) => `<text class="q-tick" x="${px(v).toFixed(1)}" y="${(Q.h - Q.b + Q.small * 1.4).toFixed(1)}" text-anchor="middle">${tickText(v)}</text>`).join('')}
@@ -6758,6 +6760,7 @@ function flowSvg(rows, axes, w, h, isShown = () => true) {
     const order = now.slice().sort((a, b) => b.p[2] - a.p[2]).map((x) => x.g.name);
     const els = new Map();
     const inner = [];             // 想在泡泡裡寫字的，最後統一挑不重疊的
+    const dotsNow = [];           // 這一幀畫出來的每一顆，泡泡裡寫不下字的要在外面補名字
     rows.forEach((g) => {
       const el = layer.querySelector(`[data-g="${CSS.escape(g.name)}"]`);
       els.set(g.name, el);
@@ -6809,12 +6812,9 @@ function flowSvg(rows, axes, w, h, isShown = () => true) {
       }
       trail.push(`${x.toFixed(1)},${y.toFixed(1)}`);
       el.querySelector('.q-trail').setAttribute('points', show ? trail.join(' ') : '');
-      const name = el.querySelector('.q-name');
-      name.textContent = show && !inside ? `${g.name} ${flowOku(p[0])}` : '';
-      const right = x < Q.l + innerW * 0.7;
-      name.setAttribute('x', (right ? x + r + 3 * Q.u : x - r - 3 * Q.u).toFixed(1));
-      name.setAttribute('y', (y + Q.name * 0.35).toFixed(1));
-      name.setAttribute('text-anchor', right ? 'start' : 'end');
+      el.querySelector('.q-name').textContent = '';
+      dotsNow.push({ g, el, x, y, r, amt: flowOku(p[0]), prio: (pin ? 1e9 : 0) + (show ? 1e6 : 0) + Math.abs(p[0]),
+        full: show, insideRef: inside ? inner[inner.length - 1] : null });
       el.querySelector('title').textContent = `${g.name}｜${q}｜近 5 日 ${flowOku(p[0])}｜`
         + `日均差 ${flowOku(p[1])}/天｜20 日量 ${num(p[2], 0)} 億`;
     });
@@ -6832,7 +6832,69 @@ function flowSvg(rows, axes, w, h, isShown = () => true) {
       c.in2.setAttribute('x', c.x.toFixed(1));
       c.in2.setAttribute('y', (c.y + c.fs * 1.0).toFixed(1));
       c.in2.style.fontSize = `${(c.fs * 0.86).toFixed(1)}px`;
+      c.placed = true;
     });
+
+    /*
+     * 泡泡裡沒寫上字的，每一顆都在外面補名字：先試貼著泡泡的八個方位，再試外面一圈
+     * （拉一條引線回去）。字跟已經放好的字不能重疊；先找不壓到別顆泡泡的位置，
+     * 找不到才退一步壓在泡泡上（字有描邊，壓在泡泡上還讀得到）。真的放不下才不標，
+     * 滑過去的提示仍然有名字。買最多／賣最多與釘選的那幾族先放，旁邊多寫金額。
+     */
+    const fsN = Q.name;
+    const labels = [];
+    const plotBox = (b) => b.x1 >= Q.l + 2 && b.x2 <= Q.w - Q.r - 2 && b.y1 >= Q.t + 2 && b.y2 <= Q.h - Q.b - 2;
+    const hitsText = (b) => taken.some((t) => b.x1 < t.x2 && b.x2 > t.x1 && b.y1 < t.y2 && b.y2 > t.y1);
+    const hitsDot = (b, self) => dotsNow.some((d) => {
+      if (d === self) return false;
+      const nx = Math.max(b.x1, Math.min(d.x, b.x2));
+      const ny = Math.max(b.y1, Math.min(d.y, b.y2));
+      return (nx - d.x) ** 2 + (ny - d.y) ** 2 < d.r * d.r;
+    });
+    const spots = (d, w) => {
+      const out = [];
+      // 由近到遠五圈、每圈十六個方位；越外圈越要靠引線才找得回是哪一顆
+      [0, 1.6, 3.4, 5.6, 8.2].forEach((far, ring) => {
+        const k = d.r + 3 * Q.u + fsN * far;
+        // 先試正右、正左、正上、正下，再試斜角：橫著貼最好讀
+        [0, 8, 4, 12, 2, 6, 10, 14, 1, 7, 9, 15, 3, 5, 11, 13].forEach((i) => {
+          const a = (i * Math.PI) / 8;
+          const dx = Math.cos(a) * k;
+          const dy = -Math.sin(a) * k;
+          const anchor = Math.abs(dx) < k * 0.3 ? 'middle' : dx > 0 ? 'start' : 'end';
+          const tx = d.x + dx;
+          // 字的基線：上方的往上推、下方的往下推，左右的跟圓心對齊
+          const ty = d.y + dy + (dy < -k * 0.3 ? -fsN * 0.2 : dy > k * 0.3 ? fsN * 0.85 : fsN * 0.35);
+          const x1 = anchor === 'start' ? tx : anchor === 'end' ? tx - w : tx - w / 2;
+          out.push({ tx, ty, anchor, lead: ring > 0, dx, dy,
+            box: { x1: x1 - 2, x2: x1 + w + 2, y1: ty - fsN * 0.95, y2: ty + fsN * 0.3 } });
+        });
+      });
+      return out;
+    };
+    dotsNow.filter((d) => !(d.insideRef && d.insideRef.placed))
+      .sort((a, b) => b.prio - a.prio)
+      .forEach((d) => {
+        const text = d.full ? `${d.g.name} ${d.amt}` : d.g.name;
+        const cands = spots(d, emWidth(text) * fsN).filter((c) => plotBox(c.box) && !hitsText(c.box));
+        const pick = cands.find((c) => !hitsDot(c.box, d)) || cands[0];
+        if (!pick) return;
+        taken.push(pick.box);
+        // 外面的名字畫在最上面一層：放在各自的 <g> 裡的話，後畫的泡泡會把前面的字蓋掉
+        const mood = d.el.classList.contains('dim') ? ' dim' : d.el.classList.contains('pin') ? ' pin' : '';
+        if (pick.lead) {
+          // 引線從泡泡邊緣拉到字旁邊，不穿過字
+          const len = Math.hypot(pick.dx, pick.dy) || 1;
+          const ux = pick.dx / len;
+          const uy = pick.dy / len;
+          labels.push(`<line class="f-lead${mood}" x1="${(d.x + ux * d.r).toFixed(1)}" y1="${(d.y + uy * d.r).toFixed(1)}"
+            x2="${(pick.tx - ux * 3 * Q.u).toFixed(1)}" y2="${(pick.ty - fsN * 0.35 - uy * 3 * Q.u).toFixed(1)}"/>`);
+        }
+        labels.push(`<text class="q-name f-out${mood}" x="${pick.tx.toFixed(1)}" y="${pick.ty.toFixed(1)}"
+          text-anchor="${pick.anchor}">${esc(text)}</text>`);
+      });
+    const nameLayer = document.querySelector('.flow-box .f-names');
+    if (nameLayer) nameLayer.innerHTML = labels.join('');
     const top = order.filter((n) => pinned.has(n) || named.has(n));
     [...order.filter((n) => !top.includes(n)), ...top].forEach((n) => layer.appendChild(els.get(n)));
   };
