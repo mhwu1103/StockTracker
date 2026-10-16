@@ -138,14 +138,15 @@ def _record(ok: bool) -> None:
 
 def extract_one(ep: int, model: str, until: datetime | None) -> str:
     out = EPISODES / f"EP{ep:04d}.json"
-    if out.exists():
+    meta, body = read_episode(ep)
+    asr = "machine" in meta.get("transcription_review_status", "")
+    # 原本用語音辨識稿抽的，逐字稿換成校對版之後要重抽
+    if out.exists() and not (not asr and json.loads(out.read_text(encoding="utf-8")).get("asr")):
         return f"EP{ep:04d} 已有，跳過"
     if until and datetime.now() >= until:
         return f"EP{ep:04d} 過了截止時間，留給下一批"
     if _halt.is_set():
         return f"EP{ep:04d} 連續失敗已暫停，留給下一批"
-    meta, body = read_episode(ep)
-    asr = "machine" in meta.get("transcription_review_status", "")
     note = ("（注意：這份是沒有人工校對的語音辨識稿，同音錯字很多，公司名、人名、代號常常寫錯。"
             "請照上下文還原成正確的名稱；拿不準是哪一家的就不要寫進 views。）") if asr else ""
     prompt = f"以下是 EP{ep}（{meta.get('episode_date', '')}）〈{meta.get('title', '')}〉的逐字稿{note}：\n\n{body}"
