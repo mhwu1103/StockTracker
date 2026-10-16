@@ -5581,7 +5581,7 @@ function groupingNote(mode, topCount, ungrouped) {
     ? `今日榜上 ${topCount} 檔中還有 ${ungrouped} 檔沒歸類。`
     : `今日榜上 ${topCount} 檔都已歸類。`;
   return mode === 'theme'
-    ? `題材族群是人工維護的供應鏈視角（<code>data/themes.json</code>${state.themesUpdated ? `，維護於 ${esc(state.themesUpdated)}` : ''}），
+    ? `題材族群是供應鏈視角，熱門股人工歸類、其餘依細產業自動補進（<code>data/themes.json</code>${state.themesUpdated ? `，維護於 ${esc(state.themesUpdated)}` : ''}），
        一檔可以同時屬於多個族群，所以各族群佔比加總會超過 100%。${coverage}`
     : '產業別採證交所的官方分類，跟著上市櫃公司基本資料自動更新，不會漏掉任何一檔；'
       + '但它與市場口中的題材族群對不起來時，切到「題材族群」看。分類取自最新一次抓取的結果，並回頭套用到歷史日期。';
