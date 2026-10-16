@@ -120,6 +120,7 @@ const state = {
   flowGroup: 'industry', // 「動向」分頁的分類：industry 官方產業／theme 題材大類／sub 題材細項
   flowSpan: 20,        // 「動向」分頁回放幾個交易日
   flowPin: new Set(),  // 「動向」分頁釘選的族群（其他族會淡掉）；不記，換頁就清空
+  flowHide: { industry: new Set(), theme: new Set(), sub: new Set() }, // 「動向」分頁藏起來的族群，三種分類各記各的
   period: 'w',         // 「週月」分頁看週還是月（PERIODS 的 value）
   daily: new Map(),    // date -> Promise<payload>
   history: new Map(),  // year -> Promise<payload>
@@ -6227,6 +6228,8 @@ const FLOW_GROUPS = [
   { value: 'sub', label: '題材細項' },
 ];
 const FLOW_GROUP_KEY = 'stocktracker.flowgroup';
+// 記的是「藏起來的」而不是「要看的」：之後新開的族群預設就看得到，不必回來勾
+const FLOW_HIDE_KEY = 'stocktracker.flowhide';
 const FLOW_SPANS = [
   { value: 10, label: '回放 10 日' },
   { value: 20, label: '回放 20 日' },
@@ -6309,6 +6312,7 @@ async function renderInstiFlow(view) {
   }
   const from = Math.max(0, at - state.flowSpan + 1);
   const pinned = state.flowPin;
+  const hidden = state.flowHide[mode];
 
   const list = rows
     .map((g) => ({ g, p: g.pts[who][at] }))
@@ -6317,7 +6321,8 @@ async function renderInstiFlow(view) {
   const listRows = list.map(({ g, p }) => {
     const q = flowQuad(p);
     return `
-    <div class="row row--flow ${pinned.has(g.name) ? 'pin' : ''}" data-flowpin="${esc(g.name)}" role="button" tabindex="0">
+    <div class="row row--flow ${pinned.has(g.name) ? 'pin' : ''}" data-flowpin="${esc(g.name)}" role="button" tabindex="0"
+         ${hidden.has(g.name) ? 'hidden' : ''}>
       <div class="tag ${flowCls(q)}"><span class="mark">${q}</span></div>
       <div class="ident"><span class="name">${esc(g.name)}</span>
         <span class="code">${g.n} 檔 · 20 日量 ${num(p[2], 0)} 億</span></div>
@@ -6328,6 +6333,7 @@ async function renderInstiFlow(view) {
 
   view.innerHTML = `${controls}
     ${instiFlowSay(rows, at, who, state.date)}
+    ${flowPicker(rows, list, mode)}
     <section class="card flow-card">
       <h2>族群法人四象限 <small>越右＝這週買越多，越上＝這週比這個月更積極，泡泡越大＝近 20 日進出越多</small></h2>
       <div class="map-box"><div class="quad-box flow-box"></div></div>
@@ -6346,13 +6352,14 @@ async function renderInstiFlow(view) {
         只算普通股（ETF 的買賣超大多是申購買回），上市櫃合計，不跟頂部的範圍切換。</p>
     </section>
     <section class="card">
-      <h2>這週法人買賣 <small>依近 5 日淨買賣排序 · ${list.length} 族</small></h2>
+      <h2>這週法人買賣 <small>依近 5 日淨買賣排序 · <span class="flow-shown"></span></small></h2>
       ${listRows || '<p class="hint">這一天沒有算得出來的族群。</p>'}
+      <p class="hint flow-none" hidden>一族都沒選，在上面的「選族群」挑幾族。</p>
     </section>
     <section class="card">
       <h2>回測 <small>2021-10 ~ 2026-10 · 族內等權、對全體普通股</small></h2>
       <p class="note rsi-bt"><b>同一天加碼 − 減碼</b>　之後 20 日 +0.26%（官方產業，t 2.4），
-        2022 空頭時 +0.02%；題材大類 +0.36%（t 1.7）。比一趟來回成本 0.585% 還小。</p>
+        2022 空頭時 +0.02%；題材大類 +0.46%（t 2.8）。比一趟來回成本 0.585% 還小。</p>
       <p class="note rsi-bt rsi-bt--down"><b>剛進加碼 − 剛進減碼</b>　之後 20 日 −0.36%（官方產業，t −2.1）：
         翻進加碼象限的那一天不是買點，反而比較差。</p>
       <p class="note rsi-bt"><b>縱軸</b>　加碼跟買盤收斂之後的表現幾乎一樣，賣壓收斂跟減碼也一樣——
@@ -6360,7 +6367,138 @@ async function renderInstiFlow(view) {
       <p class="note">所以這張圖是用來看「錢這週往哪裡跑」，不是用來挑族群。題材細項沒有回測。細節見 BACKTEST.md。</p>
     </section>`;
 
-  mountFlowChart(view, rows, who, days, from, at);
+  const repaint = mountFlowChart(view, rows, who, days, from, at, (name) => !hidden.has(name));
+  wireFlowPicker(view, list, mode, repaint);
+}
+
+/* ---------- 選族群 ---------- */
+/*
+ * 題材細項有七十幾族，全擠在一張圖上什麼都讀不到，所以讓人挑要看哪幾族。
+ * 快速鍵挑的是「當天」的狀態（淨買、淨賣、量最大），挑完就是一份固定名單，回放時不會跟著變。
+ * 不用 .pill：#view 上的委派會把 .pill 的點擊當成換條件、整頁重畫。
+ */
+const FLOW_PICKS = [
+  { value: 'all', label: '全選' },
+  { value: 'none', label: '全不選' },
+  { value: 'buy', label: '只看淨買' },
+  { value: 'sell', label: '只看淨賣' },
+  { value: 'big', label: '量最大 10 族' },
+];
+
+function saveFlowHide() {
+  try {
+    const out = {};
+    for (const [k, v] of Object.entries(state.flowHide)) out[k] = [...v];
+    localStorage.setItem(FLOW_HIDE_KEY, JSON.stringify(out));
+  } catch (err) {
+    /* 記不住就算了，下次回到全選 */
+  }
+}
+
+/** 題材細項依大類分段，大類的標題本身就是「整段勾／整段取消」的鈕；其他兩種分類只有一段。 */
+function flowPicker(rows, list, mode) {
+  const hidden = state.flowHide[mode];
+  const live = new Set(list.map((x) => x.g.name));
+  const chip = (name) => `<button type="button" class="fchip" data-fchip="${esc(name)}"
+      aria-pressed="${!hidden.has(name)}" ${live.has(name) ? '' : 'disabled title="這一天算不出來"'}>${esc(name)}</button>`;
+  let body;
+  if (mode === 'sub' && state.themes.length) {
+    const names = new Set(rows.map((g) => g.name));
+    const seen = new Set();
+    const parts = state.themes.map((t) => {
+      const subs = t.subs.map((s) => s.name).filter((n) => names.has(n));
+      subs.forEach((n) => seen.add(n));
+      if (!subs.length) return '';
+      return `<div class="fpick-sec"><button type="button" class="fpick-head" data-fsec="${esc(t.name)}"
+          data-fnames="${esc(JSON.stringify(subs))}">${esc(t.name)}</button>
+        <div class="fpick-chips">${subs.map(chip).join('')}</div></div>`;
+    });
+    const rest = rows.map((g) => g.name).filter((n) => !seen.has(n));
+    body = parts.join('') + (rest.length ? `<div class="fpick-chips">${rest.map(chip).join('')}</div>` : '');
+  } else {
+    body = `<div class="fpick-chips">${rows.map((g) => chip(g.name)).join('')}</div>`;
+  }
+  return `<section class="card flow-pick">
+      <h2>選族群 <small class="flow-shown"></small></h2>
+      <div class="fpick-bar">${FLOW_PICKS.map((o) =>
+        `<button type="button" class="fquick" data-fpick="${o.value}">${o.label}</button>`).join('')}</div>
+      <details class="fpick-more">
+        <summary>逐一挑選${mode === 'sub' ? '（點大類名稱可整段勾選）' : ''}</summary>
+        <input type="search" class="fpick-q" id="flow-pick-q" placeholder="搜尋族群名稱" aria-label="搜尋族群名稱">
+        <div class="fpick-list">${body}</div>
+      </details>
+    </section>`;
+}
+
+function wireFlowPicker(view, list, mode, repaint) {
+  const card = $('.flow-pick', view);
+  if (!card) return;
+  const hidden = state.flowHide[mode];
+  const all = list.map((x) => x.g.name);
+
+  const apply = () => {
+    saveFlowHide();
+    card.querySelectorAll('.fchip').forEach((b) => b.setAttribute('aria-pressed', String(!hidden.has(b.dataset.fchip))));
+    card.querySelectorAll('.fpick-head').forEach((b) => {
+      const ns = JSON.parse(b.dataset.fnames);
+      const on = ns.filter((n) => !hidden.has(n)).length;
+      b.dataset.state = on === ns.length ? 'all' : on ? 'some' : 'none';
+    });
+    let shown = 0;
+    view.querySelectorAll('.row--flow').forEach((r) => {
+      const off = hidden.has(r.dataset.flowpin);
+      r.hidden = off;
+      if (!off) shown += 1;
+    });
+    view.querySelectorAll('.flow-shown').forEach((el) => { el.textContent = `顯示 ${shown} / ${all.length} 族`; });
+    const none = $('.flow-none', view);
+    if (none) none.hidden = shown > 0 || !all.length;
+    if (repaint) repaint();
+  };
+  const only = (keep) => {
+    hidden.clear();
+    for (const n of all) if (!keep.has(n)) hidden.add(n);
+    apply();
+  };
+
+  card.addEventListener('click', (e) => {
+    const quick = e.target.closest('[data-fpick]');
+    if (quick) {
+      const k = quick.dataset.fpick;
+      if (k === 'all') only(new Set(all));
+      else if (k === 'none') only(new Set());
+      else if (k === 'buy') only(new Set(list.filter((x) => x.p[0] > 0).map((x) => x.g.name)));
+      else if (k === 'sell') only(new Set(list.filter((x) => x.p[0] < 0).map((x) => x.g.name)));
+      else if (k === 'big') only(new Set(list.slice().sort((a, b) => b.p[2] - a.p[2]).slice(0, 10).map((x) => x.g.name)));
+      return;
+    }
+    const head = e.target.closest('[data-fsec]');
+    if (head) {
+      const ns = JSON.parse(head.dataset.fnames);
+      const turnOn = ns.some((n) => hidden.has(n));
+      ns.forEach((n) => (turnOn ? hidden.delete(n) : hidden.add(n)));
+      apply();
+      return;
+    }
+    const c = e.target.closest('[data-fchip]');
+    if (c && !c.disabled) {
+      const n = c.dataset.fchip;
+      if (hidden.has(n)) hidden.delete(n);
+      else hidden.add(n);
+      apply();
+    }
+  });
+
+  const q = $('.fpick-q', card);
+  q.addEventListener('input', () => {
+    const s = q.value.trim().toLowerCase();
+    card.querySelectorAll('.fchip').forEach((b) => { b.hidden = !!s && !b.dataset.fchip.toLowerCase().includes(s); });
+    card.querySelectorAll('.fpick-sec').forEach((sec) => {
+      sec.hidden = !!s && !sec.querySelector('.fchip:not([hidden])');
+    });
+  });
+
+  apply();
 }
 
 /* ---------- 四象限 + 回放 ---------- */
@@ -6421,12 +6559,13 @@ function flowPoint(g, who, frame) {
   return pa.map((v, k) => v + (pb[k] - v) * t);
 }
 
-function mountFlowChart(view, rows, who, days, from, at) {
+function mountFlowChart(view, rows, who, days, from, at, isShown = () => true) {
   const box = $('.flow-box', view);
   const range = $('.flow-range', view);
   const btn = $('.flow-btn', view);
   const dateEl = $('.flow-date', view);
-  if (!box) return;
+  if (!box) return null;
+  // 座標軸拿全部的族算、不跟著勾選變：挑掉幾族圖就縮放的話，同一個點換個勾選就跑位
   const axes = flowAxes(rows, who, from, at);
   let frame = at;
   let paint = null;
@@ -6434,7 +6573,7 @@ function mountFlowChart(view, rows, who, days, from, at) {
   const build = () => {
     const { width, height } = box.getBoundingClientRect();
     if (!width || !height) return;
-    const svg = flowSvg(rows, axes, width, height);
+    const svg = flowSvg(rows, axes, width, height, isShown);
     box.innerHTML = svg.html;
     paint = svg.paint;
     paint(who, frame, state.flowPin);
@@ -6516,6 +6655,7 @@ function mountFlowChart(view, rows, who, days, from, at) {
     });
     chartObserver.observe(box);
   }
+  return () => { if (paint) paint(who, frame, state.flowPin); };
 }
 
 /** 刻度：從一串好讀的金額裡挑，畫在圖上彼此至少隔 gap px。 */
@@ -6538,7 +6678,7 @@ function flowTicks(c, m, span, gap) {
  * 畫一次骨架（底板、軸、刻度、四象限的底色、每族一組泡泡），回傳 paint(who, frame, pinned)：
  * 回放時只改座標、半徑、字與 class，不重建 DOM。
  */
-function flowSvg(rows, axes, w, h) {
+function flowSvg(rows, axes, w, h, isShown = () => true) {
   const Q = quadGeom(w, h);
   Q.l = Math.round(Q.small * 4);       // 縱軸刻度是「−200」這種寬度，比流向頁的百分比寬
   const innerW = Q.w - Q.r - Q.l;
@@ -6607,7 +6747,8 @@ function flowSvg(rows, axes, w, h) {
   const paint = (who, frame, pinned) => {
     const layer = document.querySelector('.flow-box .f-dots');
     if (!layer) return;
-    const now = rows.map((g) => ({ g, p: flowPoint(g, who, frame) })).filter((x) => x.p);
+    const pointOf = (g) => (isShown(g.name) ? flowPoint(g, who, frame) : null);
+    const now = rows.map((g) => ({ g, p: pointOf(g) })).filter((x) => x.p);
     const byBuy = now.slice().sort((a, b) => b.p[0] - a.p[0]);
     const named = new Set([
       ...byBuy.slice(0, FLOW_NAMED).filter((x) => x.p[0] > 0),
@@ -6620,7 +6761,7 @@ function flowSvg(rows, axes, w, h) {
     rows.forEach((g) => {
       const el = layer.querySelector(`[data-g="${CSS.escape(g.name)}"]`);
       els.set(g.name, el);
-      const p = flowPoint(g, who, frame);
+      const p = pointOf(g);
       el.style.display = p ? '' : 'none';
       if (!p) return;
       const x = px(p[0]);
@@ -7923,6 +8064,14 @@ async function start() {
     if (FLOW_WHO.some((o) => o.value === flowWho)) state.flowWho = flowWho;
     const flowGroup = localStorage.getItem(FLOW_GROUP_KEY);
     if (FLOW_GROUPS.some((o) => o.value === flowGroup)) state.flowGroup = flowGroup;
+    try {
+      const flowHide = JSON.parse(localStorage.getItem(FLOW_HIDE_KEY) || '{}');
+      for (const k of Object.keys(state.flowHide)) {
+        if (Array.isArray(flowHide[k])) state.flowHide[k] = new Set(flowHide[k].map(String));
+      }
+    } catch (err) {
+      /* 存壞了就當全選，不要拖累後面幾項的讀取 */
+    }
     const lots = Number(localStorage.getItem(HOLDER_LOTS_KEY));
     if (HOLDER_LOTS.some((o) => o.value === lots)) state.holderLots = lots;
     const instiMin = Number(localStorage.getItem(INSTI_MIN_KEY));

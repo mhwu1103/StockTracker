@@ -943,6 +943,51 @@ select, input, button {
 .row--flow { cursor: pointer; }
 .row--flow .tag { text-align: center; font-size: 12px; font-weight: 600; line-height: 1.25; }
 .row--flow.pin { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.row--flow[hidden] { display: none; }
+
+/* 動向頁的「選族群」。快速鍵一排，細的挑選收在 details 裡；題材細項七十幾族，攤開會把圖推到很下面 */
+.flow-pick .fpick-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 10px; }
+.flow-pick .fquick,
+.flow-pick .fchip,
+.flow-pick .fpick-head {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.flow-pick .fquick { min-height: 36px; padding: 6px 14px; }
+.flow-pick .fquick:hover,
+.flow-pick .fchip:hover,
+.flow-pick .fpick-head:hover { border-color: var(--accent); }
+.flow-pick button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.flow-pick .fpick-more { padding: 0 14px 12px; }
+.flow-pick .fpick-more > summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0 8px; }
+.flow-pick .fpick-q { width: 100%; max-width: 320px; margin-bottom: 10px; }
+.flow-pick .fpick-list { display: flex; flex-direction: column; gap: 10px; }
+.flow-pick .fpick-sec { display: flex; flex-direction: column; gap: 6px; }
+.flow-pick .fpick-head {
+  align-self: flex-start;
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-weight: 600;
+  background: transparent;
+}
+.flow-pick .fpick-head[data-state="none"] { color: var(--muted); font-weight: 400; }
+.flow-pick .fpick-head[data-state="some"]::after { content: " ·部分"; color: var(--muted); font-weight: 400; font-size: 12px; }
+.flow-pick .fpick-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.flow-pick .fchip { min-height: 32px; padding: 4px 11px; color: var(--muted); }
+.flow-pick .fchip[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  border-color: var(--accent);
+  color: var(--text);
+}
+.flow-pick .fchip:disabled { opacity: .45; cursor: not-allowed; }
+.flow-pick .fchip[hidden],
+.flow-pick .fpick-sec[hidden] { display: none; }
 
 :root[data-theme="dark"] .q-body {
   filter: drop-shadow(0 0 4px color-mix(in srgb, currentColor 55%, transparent));
