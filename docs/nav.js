@@ -63,7 +63,8 @@ window.StockNav = (function () {
     { key: 'rule', label: '紀律', views: [
       { v: 'rule', label: '紀律', href: 'rule.html' },
       { v: 'value', label: '價值', href: 'value.html' },
-      { v: 'gooaye', label: 'MK', href: 'gooaye.html' }] },
+      { v: 'gooaye', label: 'MK', href: 'gooaye.html' },
+      { v: 'strategy', label: '策略', href: 'strategy.html' }] },
   ];
 
   /*

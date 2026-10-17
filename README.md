@@ -435,6 +435,20 @@ openapi 的 t187ap05 只給最新一個月，而「成長有沒有在加速」�
 
 清單的算式跟回測共用 `scripts/gooaye.py`，網站列的就是回測測的那個東西。
 
+### 第十頁：策略
+
+`strategy.html`，入口在「紀律 → 策略」。一套固定、照做就好的規則：收盤（還原）創 60 日新高＋最新月營收創
+12 個月新高、在成交值前 300 的常客裡，隔天開盤買（開盤漲停的跳過），抱 20 個交易日，最多同時 10 檔，
+閒錢放 0050。它是排列組合挖掘（`mine_strategies.py`）、動能出場比較（`backtest_momentum_exit.py`）與
+壓力測試（`backtest_strategy.py`）一路收斂出來的，數字與限制在 BACKTEST.md「動能 ＋ 營收創新高」。
+
+- **今天**：今天收盤後的訊號，照 20 日漲幅排，標出明天開盤依空位會買的那幾檔；實盤追蹤的持股
+- **績效**：實盤追蹤（2026-10-19 開盤起，回測沒看過的資料）與近一年照同一套規則跑的淨值，都跟 0050 並排
+- **規則**：規則本身、5 年回測的範圍（30 種挑股順序的中位數）、它在哪幾年輸 0050
+
+算式在 `scripts/strategy.py`，網站與回測共用。網站只留兩年資料，實盤追蹤要從 2026-10-19 前 60 個交易日起的
+資料，大約 2028-07 會被修剪掉，到那之前要改成把已出場的交易寫進檔案、接著算。
+
 ### 三種寬度，三種版面
 
 同一份 DOM，三層：
@@ -588,6 +602,14 @@ scripts/
                     初領失業金、CPI 年增
   backtest_gooaye*.py MK 規則的回測（月頻、日頻、大盤與總經），只印表，結論在 BACKTEST.md
   backtest_rsi.py   RSI 的回測：單獨當訊號（反轉還是動能）、當營收創高與突破的濾網、0050 的 RSI
+  strategy.py       共用：策略頁與它的回測共用的規則與算式（訊號、照規則逐日模擬、淨值）
+  build_strategy.py 策略頁 → docs/data/strategy.json（今天的訊號、實盤追蹤、近一年淨值）。
+                    排在資料都更新完之後
+  backtest_strategy.py 策略的回測與壓力測試（漲停買不到、晚進場、持有天數、檔數、逐年、隨機選股）
+  mine_strategies.py 排列組合挖掘：72 個原子條件的 1～3 個交集，發現期挑、驗證期考、股票對調當雜訊對照
+  backtest_momentum_exit.py 動能進場 × 出場方式（跌破 5／10／20 日線、固定抱 20 天）
+  study_monster.py  妖股（60 日內翻倍）起漲前的條件與抓到之後怎麼抱
+  study_sector_wave.py 族群大波段（記憶體、被動元件那種）起漲前，族群層級的哪些指標先動
   gooaye_brain.py   MK 逐字稿逐集抽取與彙整（本機，claude -p），結果在 data/gooaye/（不進 git）
   gooaye_ask.py     查 MK 大腦：某檔的立場時間軸、最近在盯什麼、某主題的原則
   fetch_taiex.py    抓加權指數每日收盤（證交所 FMTQIK）→ docs/data/taiex.json。
@@ -626,6 +648,8 @@ docs/               GitHub Pages 網站根目錄
                     判斷全在 build_value.py，這支只畫
   gooaye.html gooaye.js 「MK 大腦」——MK 講過、回測站得住的規則今天挑出誰，入口在
                     「紀律 → MK」。判斷全在 build_gooaye.py，這支只畫
+  strategy.html strategy.js 「策略」——動能 ＋ 營收創新高、抱 20 天的每日訊號與實盤追蹤，入口在
+                    「紀律 → 策略」。判斷全在 build_strategy.py，這支只畫
   cycle.html cycle.js 「景氣循環」——用月營收找循環股與它們在循環的哪一段，入口在
                     「環境 → 景氣」。判斷全在 build_cycle.py，這支只畫
   jp.html kr.html    「日股 × 台股族群」與「韓股 × 台股族群」，入口在「日股」「韓股」。
@@ -681,6 +705,8 @@ docs/               GitHub Pages 網站根目錄
     macro.json      總經 {vix, brent, us10y, usd, icsa（四週平均）, cpi（年增 %）: {d, v}}，最近三年
     gooaye.json     MK 頁：market（taiex／margin／macro）、lists（六份清單；drift 每列帶 rsi）、rules（記分板）、rsiFilter
     gooaye_stocks.json 每一檔的檢核表，欄位寫在檔案的 fields
+    strategy.json   策略頁：signals（今天的訊號，buy＝明天開盤會買）、free（空位）、live（實盤追蹤：
+                    holdings、trades、stats、curve）、year（近一年同樣的欄位）、rule、research（5 年回測摘要）
     rule.json       紀律頁直接讀的表：stocks 是代號 -> [簡稱, 收, 漲跌%, 10／20／60／240
                     日線, 10／20／60 日線連續站上（正）跌破（負）天數, 多頭排列, 外資連買天數]，
                     另帶整份 taiex。判斷規則不在檔案裡，在 docs/rule.js

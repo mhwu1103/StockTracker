@@ -247,6 +247,12 @@ jobs:
         continue-on-error: true
         run: python scripts/build_gooaye.py
 
+      # 策略頁：今天的訊號、實盤追蹤（2026-10-19 起）與近一年照規則跑的淨值。
+      # 讀 close/、daily/、exright/、value/rev/，跟 MK 頁一樣排在資料都更新完之後。
+      - name: 重算策略頁
+        continue-on-error: true
+        run: python scripts/build_strategy.py
+
       - name: 提交資料變更
         run: |
           git config user.name "github-actions[bot]"
