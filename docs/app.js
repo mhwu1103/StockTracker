@@ -7157,6 +7157,53 @@ function marginVerdict(x) {
     （融資 ${MARGIN_WIN} 日增幅減掉指數漲幅，落在過去的前 ${MARGIN_HOT * 100}%）。`;
 }
 
+/**
+ * 「20 日變化」那張圖的用法。只有紅線＋虛線（追價過快）是 walk-forward 驗證過的，
+ * 其餘幾種狀況是描述——表上要把這個分別寫出來，不然四列看起來份量一樣。
+ * 今天落在哪一列由 marginModel 的數字判斷，標「← 現在」。
+ */
+function marginGuideCard(x) {
+  const ixc = x.ixChg[x.n];
+  const mt = x.mt[x.n];
+  const broke = mt < MARGIN_FLOOR || x.now <= MARGIN_DROP;
+  const now = x.hot ? 'hot'
+    : (x.now < 0 && ixc !== null && ixc < 0) ? (broke ? 'broke' : 'down')
+      : 'normal';
+  const rows = [
+    { key: 'hot', tag: '驗證過',
+      when: '紅線在虛線上（追價過快）',
+      means: '一個月內急跌 8% 以上的機率約是平常的三倍（walk-forward 29% 對 10%）；平均報酬沒有比較差',
+      act: '不再加槓桿、不追高；新部位縮小、停損拉近；獲利多的先收一部分' },
+    { key: 'normal', tag: '',
+      when: '紅線在虛線下（含兩線一起往上）',
+      means: '散戶跟著行情進出，正常狀態',
+      act: '照平常的節奏操作' },
+    { key: 'down', tag: '描述',
+      when: '橘、藍兩線一起往下',
+      means: '去槓桿中，常常還有下一段',
+      act: '先別急著接，等殺完' },
+    { key: 'broke', tag: '描述',
+      when: `兩線深跌，且維持率 < ${MARGIN_FLOOR}% 或融資 ${MARGIN_WIN} 日減 ${-MARGIN_DROP}% 以上`,
+      means: '斷頭潮，過去在底部附近（只有 2022、2025 兩段）',
+      act: '可以留意、分批，不重押' },
+  ];
+  const body = rows.map((r) => `<tr><th>${r.key === now ? '<b>' : ''}${esc(r.when)}${
+    r.key === now ? '</b> ← 現在' : ''}${r.tag ? ` <small>（${r.tag}）</small>` : ''}</th>
+      <td>${esc(r.means)}</td><td>${esc(r.act)}</td></tr>`).join('');
+  return `<section class="card">
+    <h2>怎麼用這張圖 <small>大盤風險的背景燈號</small></h2>
+    <p class="lede">每天看三件事：<b>紅線在不在虛線上</b>；紅線是不是正在往虛線靠近；
+      紅線變高是因為橘線往上衝（散戶加碼），還是藍線往下掉、橘線沒跟著掉（散戶逢低接，更危險）。</p>
+    <div class="tbl-wrap"><table class="tbl tbl--text">
+      <thead><tr><th>狀況</th><th>代表</th><th>波段操作上可以</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>
+    <p class="note"><b>不要這樣用：</b>看到紅線越過虛線就放空——觸發後平均還是漲的，完整走完的 7 段裡 4 段照漲，
+      提高的是急跌的機率、不是方向；拿來挑個股——這是全市場的融資與指數；只看一天——剛碰到又掉下去的參考價值低，
+      連著幾天站在虛線上比較可靠。比較期間換成 10、15 日結果差不多，5 日太吵、40 日以上太慢。</p>
+  </section>`;
+}
+
 const corrText = (v) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}`);
 const pctCell = (v) => (v === null ? '—' : `<b class="${trend(v)}">${signedPct(v, 2)}</b>`);
 const rateCell = (v) => (v === null ? '—' : `${v.toFixed(0)}%`);
@@ -7232,7 +7279,8 @@ async function renderMarginBox(box) {
       <div class="chart-box"><canvas id="c-margin-chg"></canvas></div>
       <p class="note">紅線＝融資減指數的差距；灰色虛線＝追價過快的門檻（當天以前所有日子的前
         ${MARGIN_HOT * 100}%，所以會隨時間移動）。紅線越過虛線就是追價過快，回到虛線下就解除。</p>
-    </section>` : ''}
+    </section>
+    ${marginGuideCard(x)}` : ''}
     <section class="card">
       <h2>大盤融資維持率 <small>%</small></h2>
       <div class="chart-box"><canvas id="c-margin-mt"></canvas></div>

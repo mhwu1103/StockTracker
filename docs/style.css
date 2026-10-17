@@ -408,6 +408,11 @@ select, input, button {
   white-space: nowrap;
 }
 
+/* 整張都是文字的表（例如融資「怎麼用這張圖」）：靠左、列頭可以換行 */
+.tbl--text th,
+.tbl--text td { text-align: left; }
+.tbl--text tbody th { white-space: normal; min-width: 9em; }
+
 .tbl tbody tr:last-child th,
 .tbl tbody tr:last-child td { border-bottom: 0; }
 
