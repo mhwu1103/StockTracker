@@ -116,6 +116,7 @@ const state = {
   quoteSeries: new Map(),// 品類 -> Promise<quotes/series/{cat}.json|null>
   entry: null,         // Promise<entry.json>，進到「後續」頁才載
   sectorFlow: null,    // Promise<sector_flow.json>，進到「動向」頁才載
+  margin: null,        // Promise<[margin.json, taiex.json|null]>，進到「大盤」頁才載
   flowWho: '三大',     // 「動向」分頁看哪一方法人：三大／外資／投信
   flowGroup: 'industry', // 「動向」分頁的分類：industry 官方產業／theme 題材大類／sub 題材細項
   flowSpan: 20,        // 「動向」分頁回放幾個交易日
@@ -6989,7 +6990,8 @@ async function renderMarket(view) {
       <h2>資金集中度 <small>前 N 大佔大盤成交值的比重</small></h2>
       <div class="chart-box"><canvas id="c-share"></canvas></div>
       <p class="note">往上代表錢集中到少數幾檔，往下代表資金擴散到更多股票。</p>
-    </section>`;
+    </section>
+    <div id="margin-box"></div>`;
 
   try {
     const Chart = await loadChartJs();
@@ -7004,6 +7006,225 @@ async function renderMarket(view) {
   } catch (err) {
     document.querySelectorAll('.chart-box').forEach((box) => {
       box.innerHTML = `<p class="hint">${esc(err.message)}</p>`;
+    });
+  }
+
+  await renderMarginBox($('#margin-box'));
+}
+
+// --------------------------------------------------------------------------
+// 大盤頁下半：融資（上市＋上櫃）
+//
+// 2021-10 起的資料看下來（BACKTEST.md「融資與大盤」），融資是跟著大盤走的：
+// 20 日變化同期相關 +0.67，指數先動之後融資跟 +0.36，融資先動之後指數 −0.01。
+// 「融資暴增＝過熱」在這段期間不成立。只有兩件事值得標出來：
+//   斷頭區  維持率 < 145% 或融資 20 日減 15% 以上 —— 之後 20 日 +6.6%～+7.5%，但只有兩段
+//   背離    指數 20 日漲、融資 20 日減 —— 之後 20 日偏弱（只是傾向）
+// 關係那張表是在瀏覽器裡用選定日以前的資料現算的，不寫死數字：資料長了結論會跟著動。
+// --------------------------------------------------------------------------
+const MARGIN_WIN = 20;          // 變化與「之後」都看 20 個交易日（約一個月）
+const MARGIN_FLOOR = 145;       // 維持率低於這個算斷頭區
+const MARGIN_DROP = -15;        // 融資 20 日減少超過這個百分比也算斷頭區
+const MLINE = { margin: '#f79009', taiex: '#2f6fed', mt: '#7b61ff' };
+
+function loadMargin() {
+  if (!state.margin) {
+    state.margin = Promise.all([
+      getJSON(`${DATA}/margin.json`).catch(() => null),
+      getJSON(`${DATA}/taiex.json`).catch(() => null),
+    ]);
+  }
+  return state.margin;
+}
+
+/** 皮爾森相關係數；樣本太少（< 30）時不給，免得兩三個點畫出一個像樣的數字。 */
+function pearson(pairs) {
+  if (pairs.length < 30) return null;
+  const n = pairs.length;
+  const ma = pairs.reduce((s, p) => s + p[0], 0) / n;
+  const mb = pairs.reduce((s, p) => s + p[1], 0) / n;
+  let cov = 0;
+  let va = 0;
+  let vb = 0;
+  for (const [a, b] of pairs) {
+    cov += (a - ma) * (b - mb);
+    va += (a - ma) ** 2;
+    vb += (b - mb) ** 2;
+  }
+  return va && vb ? cov / Math.sqrt(va * vb) : null;
+}
+
+/** 截到 upto 為止的融資序列，加上 20 日變化、指數對照與四種情況之後的報酬。百分比都已乘 100。 */
+function marginModel(m, t, upto) {
+  let n = m.d.length - 1;
+  while (n >= 0 && m.d[n] > upto) n -= 1;
+  if (n < MARGIN_WIN) return null;
+  const d = m.d.slice(0, n + 1);
+  const amt = d.map((_, i) => m.amt_tw[i] + m.amt_tp[i]);
+  const tx = new Map(t ? t.d.map((day, i) => [day, t.c[i]]) : []);
+  const ix = d.map((day) => tx.get(day) ?? null);
+  const sb = d.map((_, i) => (m.sb ? m.sb[i] ?? null : null));
+  const back = (arr, i) => (i >= MARGIN_WIN && arr[i] && arr[i - MARGIN_WIN]
+    ? (arr[i] / arr[i - MARGIN_WIN] - 1) * 100 : null);
+  const chg = d.map((_, i) => back(amt, i));
+  const ixChg = d.map((_, i) => back(ix, i));
+  const fwd = d.map((_, i) => (i + MARGIN_WIN <= n && ix[i] && ix[i + MARGIN_WIN]
+    ? (ix[i + MARGIN_WIN] / ix[i] - 1) * 100 : null));
+
+  const quads = [
+    { key: 'upUp', label: '指數漲、融資增（一起追）', rs: [] },
+    { key: 'upDown', label: '指數漲、融資減（散戶下車）', rs: [] },
+    { key: 'downUp', label: '指數跌、融資增（散戶接刀）', rs: [] },
+    { key: 'downDown', label: '指數跌、融資減（去槓桿）', rs: [] },
+  ];
+  const quadOf = (ixc, mgc) => quads[(ixc > 0 ? 0 : 2) + (mgc > 0 ? 0 : 1)];
+  const rel = { same: [], ixLead: [], mgLead: [] };
+  const all = [];
+  for (let i = MARGIN_WIN; i <= n; i += 1) {
+    if (chg[i] === null || ixChg[i] === null) continue;
+    rel.same.push([chg[i], ixChg[i]]);
+    if (fwd[i] !== null) {
+      rel.mgLead.push([chg[i], fwd[i]]);
+      quadOf(ixChg[i], chg[i]).rs.push(fwd[i]);
+      all.push(fwd[i]);
+    }
+    if (i + MARGIN_WIN <= n) rel.ixLead.push([ixChg[i], (amt[i + MARGIN_WIN] / amt[i] - 1) * 100]);
+  }
+  const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  const upRate = (xs) => (xs.length ? (xs.filter((v) => v > 0).length / xs.length) * 100 : null);
+  quads.forEach((q) => { q.avg = avg(q.rs); q.up = upRate(q.rs); });
+
+  const now = chg[n];
+  const known = chg.filter((v) => v !== null);
+  return {
+    d, n, amt, ix, chg, ixChg, now,
+    mt: m.mt.slice(0, n + 1),
+    sr: m.sr[n],
+    sbChg: back(sb, n),
+    pct: now !== null && known.length ? (known.filter((v) => v <= now).length / known.length) * 100 : null,
+    corr: { same: pearson(rel.same), ixLead: pearson(rel.ixLead), mgLead: pearson(rel.mgLead) },
+    quads,
+    current: ixChg[n] !== null && now !== null ? quadOf(ixChg[n], now).key : null,
+    base: { avg: avg(all), up: upRate(all), n: all.length },
+    hasIndex: rel.same.length > 0,
+  };
+}
+
+function marginVerdict(x) {
+  const mt = x.mt[x.n];
+  const ixc = x.ixChg[x.n];
+  if (mt < MARGIN_FLOOR || x.now <= MARGIN_DROP) {
+    return `<b>落在斷頭區</b>：維持率 ${num(mt)}%、融資 ${MARGIN_WIN} 日 ${tint(x.now, signedPct(x.now))}。
+      過去這種時候多半在底部附近，之後一個月偏強——但五年裡只有 2022、2025 兩段，次數很少。`;
+  }
+  if (ixc !== null && ixc > 0 && x.now < 0) {
+    return `<b>背離</b>：指數 ${MARGIN_WIN} 日 ${tint(ixc, signedPct(ixc))}，融資卻 ${tint(x.now, signedPct(x.now))}——
+      漲是法人在拉、散戶在下車。過去這種時候之後一個月偏弱（只是傾向，不是訊號）。`;
+  }
+  const ixText = ixc === null ? '' : `指數 ${MARGIN_WIN} 日 ${tint(ixc, signedPct(ixc))}、`;
+  return `沒有特別的訊號：${ixText}融資 ${tint(x.now, signedPct(x.now))}，維持率 ${num(mt)}%。
+    融資跟著大盤走，本身不預測漲跌；要留意的是斷頭區（維持率跌破 ${MARGIN_FLOOR}%）與「指數漲、融資減」的背離。`;
+}
+
+const corrText = (v) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}`);
+const pctCell = (v) => (v === null ? '—' : `<b class="${trend(v)}">${signedPct(v, 2)}</b>`);
+const rateCell = (v) => (v === null ? '—' : `${v.toFixed(0)}%`);
+
+function marginRelationCard(x) {
+  if (!x.hasIndex) return '';
+  const rows = [
+    ['同期：融資增減 vs 指數漲跌', x.corr.same, '一起動'],
+    ['指數先動 → 之後融資', x.corr.ixLead, '散戶跟著價格進出'],
+    ['融資先動 → 之後指數', x.corr.mgLead, '接近 0 就是沒有預測力'],
+  ];
+  const quad = x.quads.map((q) => {
+    const now = q.key === x.current;
+    return `<tr><th>${now ? '<b>' : ''}${esc(q.label)}${now ? '</b> ← 現在' : ''}</th>
+      <td>${q.rs.length}</td><td>${pctCell(q.avg)}</td><td>${rateCell(q.up)}</td></tr>`;
+  }).join('');
+  return `<section class="card">
+    <h2>融資和大盤的關係 <small>${esc(x.d[0])} ~ ${esc(x.d[x.n])} · ${MARGIN_WIN} 日</small></h2>
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>誰跟著誰</th><th>相關係數</th><th>讀法</th></tr></thead>
+      <tbody>${rows.map(([a, v, b]) => `<tr><th>${a}</th><td><b>${corrText(v)}</b></td><td>${b}</td></tr>`).join('')}</tbody>
+    </table></div>
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>過去 ${MARGIN_WIN} 日的狀況</th><th>天數</th><th>之後 ${MARGIN_WIN} 日指數</th><th>上漲比例</th></tr></thead>
+      <tbody>${quad}<tr><th>全部日子</th><td>${x.base.n}</td><td>${pctCell(x.base.avg)}</td><td>${rateCell(x.base.up)}</td></tr></tbody>
+    </table></div>
+    <p class="note">用選定日以前的資料現算。「之後 ${MARGIN_WIN} 日」是收盤到收盤、不含息；天數是重疊的日子，
+      實際上獨立的段落少很多（每組大約十到三十段）。這段期間大多是多頭、空頭只有 2022 年，
+      所以這張表是描述，不是買賣訊號。</p>
+  </section>`;
+}
+
+async function renderMarginBox(box) {
+  if (!box) return;
+  const [m, t] = await loadMargin();
+  const x = m && marginModel(m, t, state.date);
+  if (!x) {
+    box.innerHTML = '<section class="card"><p class="hint">融資資料還沒有（scripts/fetch_margin.py、build_margin.py）。</p></section>';
+    return;
+  }
+  const from = Math.max(0, x.n + 1 - state.span);
+  const labels = x.d.slice(from);
+  const cut = (arr) => arr.slice(from, x.n + 1);
+  const rebase = (arr) => {
+    const first = arr.find((v) => v);
+    return arr.map((v) => (v && first ? Math.round((v / first) * 1000) / 10 : null));
+  };
+  const round1 = (arr) => arr.map((v) => (v === null ? null : Math.round(v * 10) / 10));
+  const mt = x.mt[x.n];
+
+  box.innerHTML = `
+    <section class="card">
+      <h2>融資 <small>${esc(x.d[x.n])} · 上市＋上櫃</small></h2>
+      <p class="lede">${marginVerdict(x)}</p>
+      <div class="stat-grid">
+        <div class="stat"><b>${num(x.amt[x.n], 0)} 億</b><span>融資餘額</span></div>
+        <div class="stat"><b class="${trend(x.now)}">${signedPct(x.now)}</b><span>${MARGIN_WIN} 日變化（第 ${x.pct === null ? '—' : x.pct.toFixed(0)} 百分位）</span></div>
+        <div class="stat"><b class="${mt < MARGIN_FLOOR ? 'down' : ''}">${num(mt)}%</b><span>大盤融資維持率</span></div>
+        <div class="stat"><b>${num(x.sr, 2)}%</b><span>券資比</span></div>
+        ${x.sbChg === null ? '' : `<div class="stat"><b class="${trend(x.sbChg)}">${signedPct(x.sbChg)}</b><span>借券賣出 ${MARGIN_WIN} 日（張數）</span></div>`}
+      </div>
+      <p class="note">百分位是跟 ${esc(x.d[0])} 以來每一天的 ${MARGIN_WIN} 日變化比。維持率官方沒有公布，這裡是
+        Σ（各檔融資餘額 × 收盤）÷ 融資金額；剛買進時約 166%，130% 附近開始追繳、斷頭。
+        ${state.scope === 'all' ? '' : '融資一律是上市＋上櫃合計，不跟著上面的範圍切換。'}</p>
+    </section>
+    ${x.hasIndex ? `<section class="card">
+      <h2>融資 vs 加權指數 <small>期間第一天 = 100</small></h2>
+      <div class="chart-box"><canvas id="c-margin-rel"></canvas></div>
+      <p class="note">兩條線一起走是常態；指數往上、融資往下（或反過來）才是值得看的背離。</p>
+    </section>
+    <section class="card">
+      <h2>${MARGIN_WIN} 日變化 <small>%</small></h2>
+      <div class="chart-box"><canvas id="c-margin-chg"></canvas></div>
+    </section>` : ''}
+    <section class="card">
+      <h2>大盤融資維持率 <small>%</small></h2>
+      <div class="chart-box"><canvas id="c-margin-mt"></canvas></div>
+      <p class="note">低於 ${MARGIN_FLOOR}% 算斷頭區。五年內最低是 2025-04 的 130%，2022 年兩次低點都在 139% 上下。</p>
+    </section>
+    ${marginRelationCard(x)}`;
+
+  try {
+    const Chart = await loadChartJs();
+    if (x.hasIndex) {
+      drawLine(Chart, $('#c-margin-rel'), labels, [
+        { data: rebase(cut(x.amt)), color: MLINE.margin, label: '融資餘額' },
+        { data: rebase(cut(x.ix)), color: MLINE.taiex, label: '加權指數' },
+      ], { emptyText: '無資料' });
+      drawLine(Chart, $('#c-margin-chg'), labels, [
+        { data: round1(cut(x.chg)), color: MLINE.margin, label: `融資 ${MARGIN_WIN} 日` },
+        { data: round1(cut(x.ixChg)), color: MLINE.taiex, label: `指數 ${MARGIN_WIN} 日` },
+      ], { suffix: '%', emptyText: '無資料' });
+    }
+    drawLine(Chart, $('#c-margin-mt'), labels, [
+      { data: cut(x.mt), color: MLINE.mt, label: '維持率' },
+    ], { suffix: '%', emptyText: '無資料' });
+  } catch (err) {
+    box.querySelectorAll('.chart-box').forEach((el) => {
+      el.innerHTML = `<p class="hint">${esc(err.message)}</p>`;
     });
   }
 }

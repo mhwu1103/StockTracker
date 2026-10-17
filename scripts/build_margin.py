@@ -7,6 +7,7 @@
                         跌到 130% 附近開始有追繳、斷頭賣壓
     券資比（%）         融券餘額 ÷ 融資餘額（張）
     融資餘額（張）
+    借券賣出餘額（張）  上市＋上櫃。2024-10 才開始抓，之前的日子是 null
 
 原始檔只留兩年（prune_data.py），但這份序列要看長期的位置（例如「融資餘額跌回兩千億」），
 所以舊的日子沿用 margin.json 裡已經算好的值，只重算還有原始檔的日子。
@@ -24,7 +25,7 @@ import twse
 
 DAILY = twse.DATA_DIR / "margin" / "daily"
 OUT = twse.DATA_DIR / "margin.json"
-KEYS = ("amt_tw", "amt_tp", "mt_tw", "mt_tp", "mt", "sr", "sh")
+KEYS = ("amt_tw", "amt_tp", "mt_tw", "mt_tp", "mt", "sr", "sh", "sb")
 
 
 def closes(day: str, mk: str, extra: Path | None) -> dict:
@@ -53,6 +54,7 @@ def one(path: Path, extra) -> dict | None:
     sh = x["tw"][1] + x["tp"][1]
     out["sr"] = round((x["tw"][2] + x["tp"][2]) / sh * 100, 2) if sh else None
     out["sh"] = sh
+    out["sb"] = int(x["bw"]) + int(x["bp"]) if "bw" in x and "bp" in x else None
     return out
 
 
@@ -65,7 +67,8 @@ def main() -> int:
     rows = {}
     if old:
         for i, d in enumerate(old["d"]):
-            rows[d] = {k: old[k][i] for k in KEYS}
+            # 後來才加的欄位（例如 sb）舊檔沒有，先補 null，有原始檔的日子下面會重算
+            rows[d] = {k: old[k][i] if k in old else None for k in KEYS}
     n = 0
     for p in sorted(DAILY.glob("*.json")):
         r = one(p, args.close_dir)
