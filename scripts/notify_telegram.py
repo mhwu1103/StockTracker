@@ -7,7 +7,8 @@
     SITE_URL   有設定的話，訊息末端會附上網站連結
     WATCHLIST  逗號分隔的代號（例如 2330,2454）。有設定時只推這幾檔的動態
                （進出榜 + 跌破／站回 5、10 日線 + 逐檔的籌碼動靜），
-               不再推全市場的新進榜清單。
+               不再推全市場的新進榜清單。自選模式每天發兩則：分段版與族群版
+               （族群依網站題材分類自動判斷，secret 只放代號）。
                **檔數沒有上限** —— 排程本來就對全市場算一次，選幾檔不影響成本。
                網站上的自選股存在瀏覽器裡，不會自動同步到這裡，要自己把清單設成
                secret（刻意不寫進 repo：那會讓「誰在看哪幾檔」永久留在 git 歷史裡）。
@@ -353,7 +354,89 @@ def watch_ma_lines(events: dict) -> list:
 
 
 def parse_watchlist(raw: str) -> list:
-    return [c.strip() for c in str(raw or "").replace("\n", ",").split(",") if c.strip()]
+    """自選代號，去重並保留順序。"""
+    return list(dict.fromkeys(
+        c.strip() for c in str(raw or "").replace("\n", ",").split(",") if c.strip()))
+
+
+# --------------------------------------------------------------------------- #
+# 族群版：自選股自動分組
+# --------------------------------------------------------------------------- #
+# 族群取自 themes.json 的題材細項。一檔常常掛好幾個細項（台積電掛了 8 個），
+# 這裡要挑一個「它本業是什麼」的：
+#   1. 跨族群的熱門題材（下面這份）只在沒有本業細項時才用 —— 鴻海是 ODM，
+#      不是 Google TPU；台積電是晶圓代工，不是 CoPoS
+#   2. 剩下的挑這檔排得最前面的細項（名單是依代表性排的），同名次挑名單較長的
+# 都不在題材名單裡的，退回官方產業別。
+OVERLAY_SUBS = {"Google TPU", "BBU 備援電池", "矽光子", "CoWoS", "CoPoS", "FOPLP 面板級封裝",
+                "儲能系統", "固態電池", "低軌衛星", "國防軍工", "人形機器人"}
+THEMES_PATH = twse.DATA_DIR / "themes.json"
+INDUSTRY_PATH = twse.DATA_DIR / "industry.json"
+
+
+def auto_groups(codes: list) -> list:
+    """自選代號 -> [(族群大類, [代號, ...])]，依 themes.json 的大類順序，產業別退路排最後。
+
+    挑的是細項，分組用細項所屬的大類 —— 細項太細，37 檔會分成二十幾組、大半只有一檔。
+    """
+    themes = (_json_or_none(THEMES_PATH) or {}).get("groups") or []
+    subs = [(g["name"], s) for g in themes for s in g["subs"]]
+    industry = (_json_or_none(INDUSTRY_PATH) or {}).get("map") or {}
+    order = {g["name"]: i for i, g in enumerate(themes)}
+    picked = defaultdict(list)
+    for code in codes:
+        cand = [(g, s) for g, s in subs if code in s["codes"]]
+        base = [(g, s) for g, s in cand if s["name"] not in OVERLAY_SUBS] or cand
+        if base:
+            group, _ = min(base, key=lambda gs: (gs[1]["codes"].index(code), -len(gs[1]["codes"])))
+            picked[group].append(code)
+        else:
+            picked[industry.get(code) or "未分類"].append(code)
+    return sorted(picked.items(), key=lambda kv: order.get(kv[0], len(order)))
+
+
+def build_group_message(payload: dict, prev: dict, groups: list, site_url: str = "",
+                        scope_name: str = "", insti_events=None, ma_events=None) -> str:
+    """族群版：照 auto_groups() 分的組排，一檔一行，進出榜、均線穿越、籌碼事件都寫在同一行。
+
+    組標題的平均漲跌是組內各檔的簡單平均，不加權。漲跌取自 rule.json（全市場），
+    它與這一封不是同一天的話整欄留空，不拿別天的數字充數。
+    """
+    date_iso = payload["date"]
+    today = {s["code"]: s for s in payload["stocks"] if s["rank"] <= twse.STREAK_RANK}
+    before = {s["code"] for s in (prev or {}).get("stocks", []) if s["rank"] <= twse.STREAK_RANK}
+    rule = _json_or_none(RULE_PATH) or {}
+    stocks = (rule.get("stocks") or {}) if rule.get("date") == date_iso else {}
+    names = {c: row[0] for c, row in (rule.get("stocks") or {}).items()}
+    insti_events = insti_events or {}
+    ma_events = ma_events or {}
+
+    lines = [f"<b>🗂 自選股依族群{scope_name} · {date_iso}</b>"]
+    for group, codes in groups:
+        moves = [stocks[c][2] for c in codes if c in stocks and stocks[c][2] is not None]
+        avg = f" 平均 {sum(moves) / len(moves):+.2f}%" if moves else ""
+        lines += ["", f"<b>【{escape(group)}】{avg}</b>"]
+        for code in codes:
+            row = stocks.get(code)
+            parts = [f"{escape(names.get(code) or code)} {code}"]
+            if row and row[2] is not None:
+                parts.append(f"{row[2]:+.2f}%")
+            if code in today:
+                parts.append(f"#{today[code]['rank']}" + (" 🆕" if today[code].get("streak") == 1 else ""))
+            elif code in before:
+                parts.append("掉出榜")
+            tags = [("🔻" if "跌破" in e else "🔺") + e.split("（")[0]
+                    for e in ma_events.get(code, (None, None, None, []))[3]]
+            tags += insti_events.get(code, (None, None, None, []))[3]
+            line = " ".join(parts)
+            if tags:
+                line += "　" + "、".join(escape(t) for t in tags)
+            lines.append(line)
+
+    lines += ["", "<i>🔻🔺 均線為還原除權息後的收盤均價；#n 為成交值排名；法人金額為估算。</i>"]
+    if site_url:
+        lines += ["", f'<a href="{escape(site_url)}">看完整排行</a>']
+    return "\n".join(lines)
 
 
 def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = "",
@@ -480,16 +563,24 @@ def main() -> int:
             return 0
         if not ranked:
             print(f"自選股沒有進出榜，但有 {len(events)} 檔籌碼動靜、{len(crosses)} 檔均線穿越，照發。")
-        message = build_watch_message(payload, prev, codes, site_url, scope_name,
-                                      total_label, events, crosses)
+        # 兩則：先發原本的分段版，再發族群版。兩種都在試用，用一陣子再決定留哪一種。
+        messages = [
+            build_watch_message(payload, prev, codes, site_url, scope_name,
+                                total_label, events, crosses),
+            build_group_message(payload, prev, auto_groups(codes), site_url, scope_name,
+                                events, crosses),
+        ]
     else:
-        message = build_message(payload, site_url, scope_name, total_label, insti_rows)
+        messages = [build_message(payload, site_url, scope_name, total_label, insti_rows)]
 
     if args.dry_run:
         # Windows 主控台預設 cp950，印不出訊息裡的 emoji
         sys.stdout.reconfigure(encoding="utf-8")
-        print(message)
-        print(f"\n(訊息長度 {len(message)} 字元，Telegram 上限 4096)")
+        for k, message in enumerate(messages, 1):
+            if len(messages) > 1:
+                print(f"===== 第 {k} 則 =====")
+            print(message)
+            print(f"\n(訊息長度 {len(message)} 字元，Telegram 上限 4096)\n")
         return 0
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -498,8 +589,9 @@ def main() -> int:
         print("未設定 TELEGRAM_BOT_TOKEN／TELEGRAM_CHAT_ID，略過推播。")
         return 0
 
-    send(token, chat_id, message)
-    print(f"已推播 {date_iso} 的新進榜清單（{len(message)} 字元）")
+    for message in messages:
+        send(token, chat_id, message)
+    print(f"已推播 {date_iso} 的 {len(messages)} 則訊息（{'、'.join(str(len(m)) for m in messages)} 字元）")
     return 0
 
 
