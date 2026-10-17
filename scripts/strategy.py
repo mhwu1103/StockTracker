@@ -41,6 +41,7 @@ RULE = {
     "limit": 1.095,      # 開盤 ≥ 前收 × limit 視為開盤漲停，跳過
     "cost": 0.00585,     # 個股來回成本
 }
+MAXHOLD = 250            # 出場規則沒有固定天數時，最長抱幾天
 
 
 def nextm(m: str) -> str:
@@ -141,6 +142,16 @@ class Data:
         c5 = np.array([P.C["0050"].get(i, np.nan) / P.cum["0050"][i] for i in range(T)])
         self.b_open = ffill(o5[:, None])[:, 0]
         self.b_close = ffill(c5[:, None])[:, 0]
+        self._ma = {}
+
+    def ma(self, n):
+        """還原收盤的 n 日均線（停牌日沿用前一天的價），算過就記住"""
+        if n not in self._ma:
+            c = np.cumsum(self.ACf, 0)
+            out = np.full_like(self.ACf, np.nan)
+            out[n - 1:] = (c[n - 1:] - np.vstack([np.zeros((1, self.N)), c[:-n]])) / n
+            self._ma[n] = out
+        return self._ma[n]
 
     def rev_info(self, k, i):
         """第 i 天生效中的營收：(月份, 營收, 年增率)"""
@@ -158,8 +169,17 @@ def signals(D: Data):
 
 
 def simulate(D: Data, sig, start: int, end: int | None = None, hold=None, K=None, delay=0,
-             order="ret20", skip_limit=True, seed=None, rand_n=None):
+             order="ret20", skip_limit=True, seed=None, rand_n=None, exit=None):
     """從第 start 天開盤開始照規則操作（start−1−delay 天的訊號），到第 end−1 天收盤。
+
+    exit 是出場規則（不給就是定案的「抱 hold 天」）。每天收盤後判斷，成立就隔天開盤賣：
+      hold   固定抱幾天就賣（None 表示不設上限，最長 MAXHOLD 天）
+      min    至少抱幾天，下面的 ma／trail／take 才開始算
+      ma     收盤跌破 n 日均線
+      trail  從持有期間最高收盤回落這個比例
+      take   漲到這個比例停利
+      stop   跌到這個比例停損（不受 min 限制）
+      renew  抱滿 hold 天那天如果又出現新訊號，再抱 hold 天
 
     回傳 dict：
       eq      每天收盤的淨值（start 之前是 nan；起點 = 1）
@@ -170,6 +190,7 @@ def simulate(D: Data, sig, start: int, end: int | None = None, hold=None, K=None
     rand_n 不是 None 時是隨機對照：每天在流動池裡隨機挑 rand_n[s] 檔當訊號。
     """
     hold = hold or RULE["hold"]
+    ex = {"hold": hold, **(exit or {})}
     K = K or RULE["slots"]
     T = D.T if end is None else end
     cost = RULE["cost"]
@@ -213,10 +234,26 @@ def simulate(D: Data, sig, start: int, end: int | None = None, hold=None, K=None
                 if units * bo < amt * 0.999:
                     break
                 units -= amt / bo
-                pos.append({"k": k, "s": s, "e": t, "x": t + hold, "amt": amt})
+                x = t + ex["hold"] if ex["hold"] else t + MAXHOLD
+                pos.append({"k": k, "s": s, "e": t, "x": x, "amt": amt, "peak": D.AOf[t, k]})
                 held.add(k)
         eq[t] = units * D.b_close[t] + sum(p["amt"] * D.ACf[t, p["k"]] / D.AOf[p["e"], p["k"]] for p in pos)
         bench[t] = D.b_close[t] / D.b_open[start]
+        if exit:                                          # 收盤後判斷要不要明天開盤賣
+            for p in pos:
+                k, c = p["k"], D.ACf[t, p["k"]]
+                p["peak"] = max(p["peak"], c)
+                r = c / D.AOf[p["e"], k] - 1
+                d = t - p["e"] + 1
+                sell = ex.get("stop") is not None and r <= -ex["stop"]
+                if d >= ex.get("min", 0):
+                    sell |= ex.get("ma") is not None and c < D.ma(ex["ma"])[t, k]
+                    sell |= ex.get("trail") is not None and c < p["peak"] * (1 - ex["trail"])
+                    sell |= ex.get("take") is not None and r >= ex["take"]
+                if sell:
+                    p["x"] = min(p["x"], t + 1)
+                elif ex.get("renew") and p["x"] == t + 1 and sig[t, k]:
+                    p["x"] = t + 1 + ex["hold"]
     return {"eq": eq, "bench": bench, "trades": trades, "open": pos, "cash": units * D.b_close[T - 1]}
 
 
