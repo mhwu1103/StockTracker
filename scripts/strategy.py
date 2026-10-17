@@ -12,6 +12,8 @@
 - 抱 20 個交易日，第 21 天開盤賣
 - 最多同時 10 檔，每檔投入當下淨值的 1/10；訊號多於空位時先買 20 日漲幅大的
 - 沒用到的錢放 0050（0050 的進出不計成本）；個股來回扣 0.585%（手續費 0.1425% × 2 ＋ 證交稅 0.3%）
+- 多空（2026-10-18 加入）：0050（還原）收盤在 120 日線之下是空頭——空頭時不買新股（手上的照抱滿 20 天）、
+  閒錢放現金；站回 120 日線恢復。t 日收盤判斷、t+1 開盤照做。回測在 BACKTEST.md「多頭與空頭用不同做法」
 
 ## 淨值怎麼算
 
@@ -40,6 +42,9 @@ RULE = {
     "slots": 10,         # 最多同時幾檔
     "limit": 1.095,      # 開盤 ≥ 前收 × limit 視為開盤漲停，跳過
     "cost": 0.00585,     # 個股來回成本
+    "regime_ma": 120,    # 0050 收盤在幾日線之下算空頭
+    "bear_slots": 0,     # 空頭時最多持有幾檔才繼續買（0 = 不買新股）
+    "bear_idle": "cash", # 空頭時閒錢放哪
 }
 MAXHOLD = 250            # 出場規則沒有固定天數時，最長抱幾天
 
@@ -297,6 +302,13 @@ def regime_ma(D: Data, n: int):
     m = np.convolve(c, np.ones(n) / n, "full")[:len(c)]
     m[:n - 1] = np.nan
     return c > m
+
+
+def run(D: Data, sig, start: int, **kw):
+    """照定案的規則（含多空切換）跑。網站與回測都用這個，壓力測試再用 kw 改其中一項"""
+    opts = {"regime": regime_ma(D, RULE["regime_ma"]), "K_bear": RULE["bear_slots"],
+            "bear_idle": RULE["bear_idle"], **kw}
+    return simulate(D, sig, start, **opts)
 
 
 def max_drawdown(x):

@@ -5,6 +5,7 @@
 規則與算式在 scripts/strategy.py（回測 backtest_strategy.py 用同一份）。這支只讀網站上的資料
 （docs/data，只留兩年），所以：
 
+- 多空：0050 收盤在 120 日線之下時，明天開盤不買新股、閒錢放現金（規則在 strategy.py）
 - **實盤追蹤**從 LIVE_FROM 那天開盤開始，之後每一天都是回測沒看過的資料。每天整段重算——規則固定、
   資料不回頭改，重算的結果跟昨天那一段一樣
 - **近一年**是最近 YEAR 個交易日照同一套規則跑一次，讓頁面在實盤累積起來之前也有東西看；它每天往前滾，
@@ -36,20 +37,23 @@ TPE = timezone(timedelta(hours=8))
 RESEARCH = {
     "period": "2022-04 ～ 2026-10",
     "rows": [
-        {"k": "前段 2022-04 ～ 2024-06", "s": 63, "lo": 35, "hi": 93, "b": 52, "win": 67},
-        {"k": "後段 2024-07 ～ 2026-10", "s": 166, "lo": 116, "hi": 207, "b": 143, "win": 70},
+        {"k": "前段 2022-04 ～ 2024-06", "s": 109, "lo": 81, "hi": 143, "b": 52, "win": 100},
+        {"k": "後段 2024-07 ～ 2026-10", "s": 232, "lo": 140, "hi": 273, "b": 143, "win": 87},
     ],
-    "rand": {"a": 25, "b": 40, "win": "7～13"},
+    "mdd": -29, "bmdd": -27,
+    "old": {"a": 55, "b": 158, "wa": 60, "wb": 63, "mdd": -35},       # 不分多空（2026-10-18 以前的版本）
+    "rand": {"a": 41, "b": 65, "wa": 30, "wb": 3},                    # 同一套規則（含多空）改成隨機選股
     "years": [
-        {"y": "2022", "win": 0, "pt": -15}, {"y": "2023", "win": 97, "pt": 27}, {"y": "2024", "win": 60, "pt": 3},
-        {"y": "2025", "win": 47, "pt": -2}, {"y": "2026", "win": 80, "pt": 27},
+        {"y": "2022", "win": 100, "pt": 10}, {"y": "2023", "win": 100, "pt": 25}, {"y": "2024", "win": 33, "pt": -8},
+        {"y": "2025", "win": 67, "pt": 14}, {"y": "2026", "win": 93, "pt": 48},
     ],
-    "trade": {"win": 48, "n": 486},
+    "trade": {"win": 55},
     "notes": [
-        "「營收創新高」這個條件是從 2024-06 以前的資料挖出來的，後段才是沒參與挑選的考試——而後段是 AI 多頭",
-        "2022 空頭那一年，30 種挑股順序全部輸 0050（中位數少 15 個百分點）；2025 年大約五五波",
-        "每筆勝率不到一半，賺在少數大漲的股票；抱 10 天或 60 天都會輸 0050，20 天附近才成立",
-        "同一套進出規則改成隨機選股，只有 7～13% 的路徑贏 0050——差別在選股條件，不是剛好買了小型股",
+        "「營收創新高」是從 2024-06 以前的資料挖出來的；「空頭停手」是看過 2022 才加的——5 年裡只有這一次空頭，它只在這一次上驗證過",
+        "後段是 AI 多頭；2024 年是弱點，只有三分之一的路徑贏 0050（中位數少 8 個百分點）",
+        "選股管多頭、停手管空頭：同一套規則改成隨機選股，2022 一樣贏（停手的功勞），後段卻只有 3% 的路徑贏 0050",
+        "每筆勝率約一半出頭，賺在少數大漲的股票；均線出場、移動停利、停利在空頭都更差",
+        "組合的結果有路徑依賴：同一套規則只是挑股順序不同，兩年報酬就能差 10～15 個百分點以上",
     ],
 }
 
@@ -104,7 +108,7 @@ def main() -> int:
     live = {"from": LIVE_FROM, "started": li is not None}
     staying = set()
     if li is not None:
-        res = S.simulate(D, sig, li)
+        res = S.run(D, sig, li)
         stay = [p for p in res["open"] if p["x"] > T]               # 明天開盤還不用賣的
         staying = {p["k"] for p in stay}
         live.update({
@@ -113,7 +117,19 @@ def main() -> int:
             "stats": stats(res, li), "curve": curve(res, li),
             "cash": round(float(res["cash"] / res["eq"][last]) * 100, 1),
         })
-    free = S.RULE["slots"] - len(staying)
+    # 多空：0050（還原）收盤在 120 日線之下是空頭，明天開盤不買新股、閒錢放現金
+    n = S.RULE["regime_ma"]
+    reg = S.regime_ma(D, n)
+    bull = bool(reg[last])
+    ma_now = float(np.mean(D.b_close[last - n + 1:last + 1]))
+    flip = next((i for i in range(last, 0, -1) if reg[i - 1] != reg[i]), 0)
+    regime = {
+        "bull": bull, "ma": n, "since": dates[flip],
+        "gap": pct(D.b_close[last] / ma_now - 1),
+        "close": D.P.C["0050"].get(last),
+    }
+    cap = S.RULE["slots"] if bull else S.RULE["bear_slots"]
+    free = max(0, cap - len(staying))
 
     # 今天收盤後的訊號：照 20 日漲幅排，明天開盤依空位依序買（開盤漲停的跳過，得等開盤才知道）
     cand = sorted(np.nonzero(sig[last])[0], key=lambda k: -np.nan_to_num(D.ret20[last, k]))
@@ -131,7 +147,7 @@ def main() -> int:
 
     # 近一年
     ys = max(70, T - YEAR)
-    yr = S.simulate(D, sig, ys)
+    yr = S.run(D, sig, ys)
     year = {
         "from": dates[ys], "stats": stats(yr, ys), "curve": curve(yr, ys),
         "holdings": [holding(p) for p in sorted(yr["open"], key=lambda p: p["e"])],
@@ -142,7 +158,7 @@ def main() -> int:
         "updated": datetime.now(TPE).isoformat(timespec="seconds"),
         "d": dates[last],
         "rule": S.RULE,
-        "signals": signals, "free": free,
+        "signals": signals, "free": free, "regime": regime,
         "live": live, "year": year, "research": RESEARCH,
     }
     with open(OUT, "w", encoding="utf-8") as f:
@@ -151,6 +167,7 @@ def main() -> int:
     print(f"{dates[last]}：訊號 {len(signals)} 檔，明天空位 {free}、要買 {n_buy} 檔；"
           f"實盤{'自 ' + LIVE_FROM if li is not None else '尚未開始（' + LIVE_FROM + ' 起）'}"
           f"{'，' + str(ls.get('ret')) + '% vs 0050 ' + str(ls.get('bret')) + '%' if ls else ''}；"
+          f"{'多頭' if bull else '空頭'}（0050 距 {n} 日線 {regime['gap']}%）；"
           f"近一年 {year['stats']['ret']}% vs 0050 {year['stats']['bret']}% -> {os.path.relpath(OUT)}")
     return 0
 

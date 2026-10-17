@@ -439,10 +439,11 @@ openapi 的 t187ap05 只給最新一個月，而「成長有沒有在加速」�
 
 `strategy.html`，入口在「紀律 → 策略」。一套固定、照做就好的規則：收盤（還原）創 60 日新高＋最新月營收創
 12 個月新高、在成交值前 300 的常客裡，隔天開盤買（開盤漲停的跳過），抱 20 個交易日，最多同時 10 檔，
-閒錢放 0050。它是排列組合挖掘（`mine_strategies.py`）、動能出場比較（`backtest_momentum_exit.py`）與
+閒錢放 0050；0050 跌到 120 日線之下時不買新股、閒錢轉現金。它是排列組合挖掘（`mine_strategies.py`）、動能出場比較（`backtest_momentum_exit.py`）與
 壓力測試（`backtest_strategy.py`）一路收斂出來的，數字與限制在 BACKTEST.md「動能 ＋ 營收創新高」。
 
-- **今天**：今天收盤後的訊號，照 20 日漲幅排，標出明天開盤依空位會買的那幾檔；實盤追蹤的持股
+- **今天**：多空狀態（0050 距 120 日線）、今天收盤後的訊號，照 20 日漲幅排，標出明天開盤依空位會買的那幾檔；
+  實盤追蹤的持股
 - **績效**：實盤追蹤（2026-10-19 開盤起，回測沒看過的資料）與近一年照同一套規則跑的淨值，都跟 0050 並排
 - **規則**：規則本身、5 年回測的範圍（30 種挑股順序的中位數）、它在哪幾年輸 0050
 
@@ -705,7 +706,7 @@ docs/               GitHub Pages 網站根目錄
     macro.json      總經 {vix, brent, us10y, usd, icsa（四週平均）, cpi（年增 %）: {d, v}}，最近三年
     gooaye.json     MK 頁：market（taiex／margin／macro）、lists（六份清單；drift 每列帶 rsi）、rules（記分板）、rsiFilter
     gooaye_stocks.json 每一檔的檢核表，欄位寫在檔案的 fields
-    strategy.json   策略頁：signals（今天的訊號，buy＝明天開盤會買）、free（空位）、live（實盤追蹤：
+    strategy.json   策略頁：signals（今天的訊號，buy＝明天開盤會買）、free（空位）、regime（多空）、live（實盤追蹤：
                     holdings、trades、stats、curve）、year（近一年同樣的欄位）、rule、research（5 年回測摘要）
     rule.json       紀律頁直接讀的表：stocks 是代號 -> [簡稱, 收, 漲跌%, 10／20／60／240
                     日線, 10／20／60 日線連續站上（正）跌破（負）天數, 多頭排列, 外資連買天數]，

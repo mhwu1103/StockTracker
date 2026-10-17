@@ -1,8 +1,9 @@
 /*
  * 策略（strategy.html）：動能 ＋ 營收創新高、抱 20 天。
  *
- *   今天   今天收盤後的訊號（明天開盤照空位依序買）與實盤追蹤的持股
- *   績效   實盤追蹤（2026-10-19 起）與近一年照同一套規則跑的淨值，都跟 0050 並排
+ *   今天   多空狀態（0050 對 120 日線）、今天收盤後的訊號（明天開盤照空位依序買）與實盤追蹤的持股
+ *   績效   實盤追蹤（2026-10-19 起）與近一年照同一套規則跑的淨值，都跟 0050 並排；
+ *          空頭時閒錢是現金，淨值在空頭期間不跟著 0050 動
  *   規則   規則本身、5 年回測的範圍，與它在哪些地方會輸
  *
  * 訊號、持股與淨值全在 scripts/build_strategy.py 算好（算式跟回測共用 scripts/strategy.py），這裡只畫。
@@ -111,13 +112,23 @@ function todayView() {
   const rest = d.signals.filter((s) => !s.buy);
   const sigRow = (s) => stockRow(s, pct(s.r20, 1), dir(s.r20), '20 日漲幅',
     `${s.m ? `${esc(s.m)} 營收 YoY ${pct(s.yoy)}` : '營收創新高'}${s.held ? ' · 已持有' : ''}`);
-  return `<section class="card">
-    <h2>明天開盤要買 <small>${d.d} 收盤後 · 空位 ${d.free}/${d.rule.slots}</small></h2>
+  const R = d.regime;
+  const regime = R ? `<section class="card">
+    <p class="rule-level rule-level--${R.bull ? 'ok' : 'warn'}">
+      <b>${R.bull ? '多頭：照常買進' : '空頭：明天不買新股，閒錢放現金'}</b>
+      <span>0050 收盤 ${fmt(R.close)}，距 ${R.ma} 日線 ${pct(R.gap, 1)}。${esc(R.since)} 起${R.bull ? '站在線上' : '跌破'}。
+        ${R.bull ? `跌破 ${R.ma} 日線就停止買新股、閒錢轉現金。` : `手上的股票照原規則抱滿 ${d.rule.hold} 天；站回 ${R.ma} 日線才恢復買進。`}</span>
+    </p></section>` : '';
+  const bear = R && !R.bull;
+  return `${regime}<section class="card">
+    <h2>${bear ? '今天的訊號（空頭，不買）' : '明天開盤要買'} <small>${d.d} 收盤後 · 空位 ${d.free}/${d.rule.slots}</small></h2>
     <p class="note">收盤創 60 日新高、最新月營收創 12 個月新高、在成交值前 300 的常客。照 20 日漲幅排，有空位就依序買；
       開盤就漲停的跳過、換下一檔（得等開盤才知道）。每檔投入淨值的 1/${d.rule.slots}，抱 ${d.rule.hold} 個交易日。</p>
-    ${listMore('buy', buys, sigRow, d.signals.length ? '今天有訊號，但空位都滿了。' : '今天沒有同時符合兩個條件的股票。')}
+    ${bear
+      ? listMore('buy', d.signals, sigRow, '今天沒有同時符合兩個條件的股票。')
+      : listMore('buy', buys, sigRow, d.signals.length ? '今天有訊號，但空位都滿了。' : '今天沒有同時符合兩個條件的股票。')}
   </section>
-  ${rest.length ? `<section class="card"><h2>其他訊號 <small>${rest.length} 檔 · 沒有空位或已持有</small></h2>
+  ${rest.length && !bear ? `<section class="card"><h2>其他訊號 <small>${rest.length} 檔 · 沒有空位或已持有</small></h2>
     ${listMore('rest', rest, sigRow, '')}</section>` : ''}
   <section class="card">
     <h2>實盤持股 <small>${L.started ? `${esc(L.from)} 起` : `${esc(L.from)} 開盤開始`}</small></h2>
@@ -167,8 +178,10 @@ function rulesView() {
       <li><b>進場</b><span>收盤（還原除權息）創 ${u.high} 個交易日新高，而且最新已公布的月營收創 ${u.rev} 個月新高
         （m 月營收從 m+1 月 ${u.rev_day} 日起才算）。隔天開盤買；開盤就漲停的跳過。</span></li>
       <li><b>出場</b><span>抱 ${u.hold} 個交易日，第 ${u.hold + 1} 天開盤賣。中間不停損、不停利。</span></li>
+      <li><b>多空</b><span>0050（還原）收盤在 ${u.regime_ma} 日線之下是空頭：不買新股（手上的照抱滿 ${u.hold} 天），
+        閒錢放現金；站回 ${u.regime_ma} 日線恢復。收盤判斷，隔天開盤照做。</span></li>
       <li><b>資金</b><span>最多同時 ${u.slots} 檔，每檔投入當下淨值的 1/${u.slots}；訊號多於空位時先買 20 日漲幅大的。
-        沒用到的錢放 0050。個股來回扣 ${(u.cost * 100).toFixed(3)}%。</span></li>
+        多頭時沒用到的錢放 0050。個股來回扣 ${(u.cost * 100).toFixed(3)}%。</span></li>
     </ul>
   </section>
   <section class="card">
@@ -176,13 +189,15 @@ function rulesView() {
     <ul class="rule-rules">
       ${R.rows.map((r) => `<li><b>${esc(r.k)}</b><span>策略 ${pct(r.s)}（${pct(r.lo)} ～ ${pct(r.hi)}），0050 ${pct(r.b)}；
         ${r.win}% 的路徑贏 0050。</span></li>`).join('')}
-      <li><b>同一套進出規則改成隨機選股</b><span>前段 ${pct(R.rand.a)}、後段 ${pct(R.rand.b)}；只有 ${esc(R.rand.win)}% 的路徑贏 0050。</span></li>
+      <li><b>最大回落</b><span>中位數 ${R.mdd}%，0050 ${R.bmdd}%。</span></li>
+      <li><b>舊版：不分多空</b><span>前段 ${pct(R.old.a)}（${R.old.wa}% 贏）、後段 ${pct(R.old.b)}（${R.old.wb}% 贏），回落 ${R.old.mdd}%。</span></li>
+      <li><b>同一套規則改成隨機選股</b><span>前段 ${pct(R.rand.a)}（${R.rand.wa}% 贏）、後段 ${pct(R.rand.b)}（${R.rand.wb}% 贏）。</span></li>
     </ul>
     <div class="stat-grid">
       ${R.years.map((y) => `<div class="stat"><b class="${dir(y.pt)}">${y.pt > 0 ? '+' : ''}${y.pt} 點</b>
         <span>${esc(y.y)}（${y.win}% 的路徑贏）</span></div>`).join('')}
     </div>
-    <p class="note">每格是那一年策略減 0050 的中位數（百分點）。每筆勝率 ${R.trade.win}%（${R.trade.n} 筆）。</p>
+    <p class="note">每格是那一年策略減 0050 的中位數（百分點），30 種挑股順序。每筆勝率約 ${R.trade.win}%。</p>
     <h3 class="gy-sec">要知道的事</h3>
     <ul class="rule-rules">${R.notes.map((x) => `<li><span>${esc(x)}</span></li>`).join('')}</ul>
   </section>`;

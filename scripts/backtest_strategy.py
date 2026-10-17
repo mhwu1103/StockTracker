@@ -1,12 +1,12 @@
-"""策略頁那套規則（動能 ＋ 營收創新高，抱 20 天）的回測與壓力測試。
+"""策略頁那套規則（動能 ＋ 營收創新高、抱 20 天、空頭停手放現金）的回測與壓力測試。
 
     GOOAYE_DATA=<解壓後的長歷史 docs/data> python scripts/backtest_strategy.py
 
-只印表，不寫檔；結論整理在 BACKTEST.md。規則與算式都在 scripts/strategy.py，網站（build_strategy.py）
-用的是同一份。
+只印表，不寫檔；結論整理在 BACKTEST.md，策略頁「規則」分頁的數字（build_strategy.py 的 RESEARCH）也從這裡來。
+規則與算式都在 scripts/strategy.py，網站用的是同一份（strategy.run）。
 
-壓力測試：開盤漲停買不買得到、晚 1～2 天進場、持有天數、檔數、訊號多時怎麼挑、逐年對 0050、
-同一套機制改成隨機選股、跟 0050 各半
+組合的結果有路徑依賴（一筆不同，後面整串跟著變），所以主要的數字都報 SEEDS 種挑股順序
+（訊號多於空位時隨機挑）的中位數、10～90% 範圍與贏 0050 的比例，不報單一一條。
 """
 
 from __future__ import annotations
@@ -20,68 +20,70 @@ import strategy as S
 sys.stdout.reconfigure(encoding="utf-8")
 SPLIT = "2024-07-01"
 WARM = 130
+SEEDS = 30
 
 D = S.Data(S.stock_dirs())
 dates, T = D.dates, D.T
 sig = S.signals(D)
 i_split = next(i for i, d in enumerate(dates) if d >= SPLIT)
+YEARS = sorted({d[:4] for d in dates[WARM:]})
+YB = {y: (max(WARM, next(i for i, d in enumerate(dates) if d[:4] == y) - 1),
+          next((i for i, d in enumerate(dates) if d[:4] > y), T)) for y in YEARS}
 
 
 def seg(res, lo, hi):
-    """lo～hi（索引）這一段的報酬與最大回落：策略、0050"""
     e, b = res["eq"][lo:hi], res["bench"][lo:hi]
-    e, b = e / e[0], b / b[0]
-    return e[-1] - 1, b[-1] - 1, S.max_drawdown(e), S.max_drawdown(b)
+    return e[-1] / e[0] - 1, b[-1] / b[0] - 1
 
 
-def line(res, label):
-    a = seg(res, WARM, i_split + 1)
-    b = seg(res, i_split, T)
-    r = np.array([t["r"] for t in res["trades"]])
-    return (f"{label:<34} 前段 {a[0]*100:+6.0f}%（0050 {a[1]*100:+4.0f}%）回落 {a[2]*100:4.0f}%／{a[3]*100:4.0f}% ｜ "
-            f"後段 {b[0]*100:+6.0f}%（0050 {b[1]*100:+4.0f}%）回落 {b[2]*100:4.0f}%／{b[3]*100:4.0f}% ｜ "
-            f"{len(r)} 筆 勝率 {(r > 0).mean()*100:4.1f}%")
+def dist(label, fn):
+    """fn(seed) -> 模擬結果；印分布，回傳摘要"""
+    A, B, M, W, Y = [], [], [], [], {y: [] for y in YEARS}
+    for sd in range(SEEDS):
+        r = fn(sd)
+        a, bf = seg(r, WARM, i_split + 1)
+        b, bb = seg(r, i_split, T)
+        A.append(a)
+        B.append(b)
+        M.append(S.max_drawdown(r["eq"][WARM:]))
+        W.append(np.mean([t["r"] > 0 for t in r["trades"]]))
+        for y, (lo, hi) in YB.items():
+            s_, b_ = seg(r, lo, hi)
+            Y[y].append(s_ - b_)
+    A, B = np.array(A), np.array(B)
+    out = {
+        "front": (np.median(A), np.percentile(A, 10), np.percentile(A, 90), np.mean(A > bf), bf),
+        "back": (np.median(B), np.percentile(B, 10), np.percentile(B, 90), np.mean(B > bb), bb),
+        "mdd": np.median(M), "win": np.mean(W),
+        "years": {y: (np.median(v), np.mean(np.array(v) > 0)) for y, v in Y.items()},
+    }
+    f, b = out["front"], out["back"]
+    print(f"{label:<30} 前段 {f[0]*100:+5.0f}%（{f[1]*100:+4.0f}～{f[2]*100:+4.0f}，贏 0050 {f[3]*100:3.0f}%）｜ "
+          f"後段 {b[0]*100:+5.0f}%（{b[1]*100:+4.0f}～{b[2]*100:+4.0f}，{b[3]*100:3.0f}%）｜ 回落 {out['mdd']*100:4.0f}% "
+          f"每筆勝率 {out['win']*100:4.1f}%")
+    print("    逐年 中位超額（贏 0050 的比例）："
+          + " ".join(f"{y} {v[0]*100:+.0f} 點（{v[1]*100:.0f}%）" for y, v in out["years"].items()), flush=True)
+    return out
 
 
-print(f"資料 {dates[0]} ~ {dates[-1]}；從 {dates[WARM]} 開盤開始；前段 < {SPLIT} ≤ 後段；回落是 策略／0050")
-base = S.simulate(D, sig, WARM)
-print("\n一、規則本身")
-print(line(base, "定案的規則"))
+base = S.run(D, sig, WARM)
+print(f"資料 {dates[0]} ~ {dates[-1]}；從 {dates[WARM]} 開盤開始；前段 < {SPLIT} ≤ 後段；"
+      f"每種 {SEEDS} 種挑股順序；0050 回落 {S.max_drawdown(base['bench'][WARM:])*100:.0f}%")
+reg = S.regime_ma(D, S.RULE["regime_ma"])
+print(f"空頭天數（0050 在 {S.RULE['regime_ma']} 日線下）：{np.mean(~reg[WARM:])*100:.0f}%\n")
 
-print("\n二、壓力測試")
-for label, kw in (("不跳過開盤漲停（假設買得到）", {"skip_limit": False}),
-                  ("晚 1 天進場", {"delay": 1}), ("晚 2 天進場", {"delay": 2}),
-                  ("抱 10 天", {"hold": 10}), ("抱 40 天", {"hold": 40}), ("抱 60 天", {"hold": 60}),
-                  ("最多 5 檔", {"K": 5}), ("最多 20 檔", {"K": 20}),
-                  ("訊號多時隨機挑", {"order": "random", "seed": 1}),
-                  ("訊號多時挑最弱的", {"order": "weak"})):
-    print(line(S.simulate(D, sig, WARM, **kw), label))
-
-print("\n三、逐年（策略報酬／0050 報酬）")
-years = sorted({d[:4] for d in dates[WARM:]})
-cells = []
-for y in years:
-    lo = max(WARM, next(i for i, d in enumerate(dates) if d[:4] == y) - 1)
-    hi = next((i for i, d in enumerate(dates) if d[:4] > y), T)
-    s, b, _, _ = seg(base, lo, hi)
-    cells.append(f"{y} {s*100:+5.0f}%／{b*100:+4.0f}%")
-print("  ".join(cells))
-
-print("\n四、同一套機制改成隨機選股（每天在流動池隨機挑跟訊號一樣多檔，30 次）")
+print("一、定案的規則與對照")
+dist("定案（含空頭停手放現金）", lambda sd: S.run(D, sig, WARM, order="random", seed=sd))
+dist("不分多空（舊版）", lambda sd: S.simulate(D, sig, WARM, order="random", seed=sd))
 rand_n = sig.sum(1)
-ra, rb = [], []
-for sd in range(30):
-    r = S.simulate(D, sig, WARM, seed=sd, rand_n=rand_n)
-    ra.append(seg(r, WARM, i_split + 1)[0])
-    rb.append(seg(r, i_split, T)[0])
-ra.sort()
-rb.sort()
-print(f"隨機：前段 中位 {ra[15]*100:+.0f}%（最好 {ra[-1]*100:+.0f}%）｜ 後段 中位 {rb[15]*100:+.0f}%（最好 {rb[-1]*100:+.0f}%）")
+dist("同一套規則改成隨機選股", lambda sd: S.run(D, sig, WARM, seed=sd, rand_n=rand_n))
 
-print("\n五、跟 0050 各配一部分（每天再平衡，近似）")
-for w in (0.3, 0.5, 0.7):
-    rs = np.r_[0, base["eq"][WARM + 1:] / base["eq"][WARM:-1] - 1]
-    rb_ = np.r_[0, base["bench"][WARM + 1:] / base["bench"][WARM:-1] - 1]
-    mix = {"eq": np.full(T, np.nan), "bench": base["bench"], "trades": base["trades"]}
-    mix["eq"][WARM:] = np.cumprod(1 + w * rs + (1 - w) * rb_)
-    print(line(mix, f"策略 {int(w*100)}% ＋ 0050 {int((1-w)*100)}%"))
+print("\n二、壓力測試（定案規則，改其中一項）")
+for label, kw in (("不跳過開盤漲停（假設買得到）", {"skip_limit": False}),
+                  ("晚 1 天進場", {"delay": 1}),
+                  ("抱 40 天", {"exit": {"hold": 40}, "exit_bear": {"hold": 40}}),
+                  ("最多 5 檔", {"K": 5}), ("最多 20 檔", {"K": 20}),
+                  ("空頭閒錢留在 0050", {"bear_idle": "0050"}),
+                  ("多空改用 60 日線", {"regime": S.regime_ma(D, 60)}),
+                  ("多空改用 200 日線", {"regime": S.regime_ma(D, 200)})):
+    dist(label, lambda sd, kw=kw: S.run(D, sig, WARM, order="random", seed=sd, **kw))
