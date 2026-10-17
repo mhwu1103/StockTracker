@@ -5,10 +5,10 @@
     TELEGRAM_CHAT_ID
 選用：
     SITE_URL   有設定的話，訊息末端會附上網站連結
-    WATCHLIST  逗號分隔的代號（例如 2330,2454）。有設定時只推這幾檔的動態
-               （進出榜 + 跌破／站回 5、10 日線 + 逐檔的籌碼動靜），
-               不再推全市場的新進榜清單。自選模式每天發兩則：分段版與族群版
-               （族群依網站題材分類自動判斷，secret 只放代號）。
+    WATCHLIST  逗號分隔的代號（例如 2330,2454）。有設定時，全市場那一則之後
+               再多發兩則只講這幾檔的動態（進出榜 + 跌破／站回 5、10 日線 +
+               逐檔的籌碼動靜）：分段版與族群版（族群依網站題材分類自動判斷，
+               secret 只放代號）。自選股當天沒動靜就只發全市場那一則。
                **檔數沒有上限** —— 排程本來就對全市場算一次，選幾檔不影響成本。
                網站上的自選股存在瀏覽器裡，不會自動同步到這裡，要自己把清單設成
                secret（刻意不寫進 repo：那會讓「誰在看哪幾檔」永久留在 git 歷史裡）。
@@ -544,6 +544,9 @@ def main() -> int:
     if insti_rows is None:
         print(f"{date_iso} 還沒有法人資料，這一封不含籌碼異動那一段。")
 
+    # 全市場那一則每天都發；有自選股時再接在後面多發自選股的兩則。
+    messages = [build_message(payload, site_url, scope_name, total_label, insti_rows)]
+
     if codes:
         i = dates.index(date_iso)
         prev = (
@@ -559,19 +562,17 @@ def main() -> int:
         # 或跌破 5 日線、卻剛好沒進前 200 名時整封信都不會發，而那正是最該通知的情況。
         ranked = any(c in on_board or c in was_on for c in codes)
         if not ranked and not events and not crosses:
-            print(f"自選股（{len(codes)} 檔）在 {date_iso} 沒有進出榜、籌碼動靜或均線穿越，不發送。")
-            return 0
-        if not ranked:
-            print(f"自選股沒有進出榜，但有 {len(events)} 檔籌碼動靜、{len(crosses)} 檔均線穿越，照發。")
-        # 兩則：先發原本的分段版，再發族群版。兩種都在試用，用一陣子再決定留哪一種。
-        messages = [
-            build_watch_message(payload, prev, codes, site_url, scope_name,
-                                total_label, events, crosses),
-            build_group_message(payload, prev, auto_groups(codes), site_url, scope_name,
-                                events, crosses),
-        ]
-    else:
-        messages = [build_message(payload, site_url, scope_name, total_label, insti_rows)]
+            print(f"自選股（{len(codes)} 檔）在 {date_iso} 沒有進出榜、籌碼動靜或均線穿越，只發全市場那一則。")
+        else:
+            if not ranked:
+                print(f"自選股沒有進出榜，但有 {len(events)} 檔籌碼動靜、{len(crosses)} 檔均線穿越，照發。")
+            # 兩則：先發原本的分段版，再發族群版。兩種都在試用，用一陣子再決定留哪一種。
+            messages += [
+                build_watch_message(payload, prev, codes, site_url, scope_name,
+                                    total_label, events, crosses),
+                build_group_message(payload, prev, auto_groups(codes), site_url, scope_name,
+                                    events, crosses),
+            ]
 
     if args.dry_run:
         # Windows 主控台預設 cp950，印不出訊息裡的 emoji

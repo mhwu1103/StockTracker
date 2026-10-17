@@ -300,6 +300,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SITE_URL: ${{ steps.deployment.outputs.page_url }}
-          # 自選股清單（逗號分隔代號）。沒設這個 secret 就照舊推全市場的新進榜。
+          # 自選股清單（逗號分隔代號）。有設的話，全市場那一則之後再多發自選股的兩則。
           WATCHLIST: ${{ secrets.WATCHLIST }}
         run: python scripts/notify_telegram.py
