@@ -6,7 +6,8 @@
 選用：
     SITE_URL   有設定的話，訊息末端會附上網站連結
     WATCHLIST  逗號分隔的代號（例如 2330,2454）。有設定時只推這幾檔的動態
-               （進出榜 + 逐檔的籌碼動靜），不再推全市場的新進榜清單。
+               （進出榜 + 跌破／站回 5、10 日線 + 逐檔的籌碼動靜），
+               不再推全市場的新進榜清單。
                **檔數沒有上限** —— 排程本來就對全市場算一次，選幾檔不影響成本。
                網站上的自選股存在瀏覽器裡，不會自動同步到這裡，要自己把清單設成
                secret（刻意不寫進 repo：那會讓「誰在看哪幾檔」永久留在 git 歷史裡）。
@@ -261,13 +262,103 @@ def watch_insti_lines(events: dict) -> list:
     lines.append("<i>金額為估算（買賣超股數 × 收盤價），非官方數字。</i>")
     return lines
 
+# --------------------------------------------------------------------------- #
+# 自選股的均線穿越（5／10 日線）
+# --------------------------------------------------------------------------- #
+# 只在「穿越的那一天」通知：昨天收在線上、今天收在線下就是跌破，反過來是站回。
+# 一直待在線下的不會天天提醒 —— 那是狀態不是事件，看網站就好。
+#
+# 收盤價讀 close/（全市場），所以沒進成交值排行的自選股也算得到。均線區間裡碰到
+# 除權息的話，除權息前的收盤要乘上還原因子：不然殖利率 5% 的股票在除息那天
+# 一定「跌破」5 日線，那是發股利不是轉弱。
+# 區間裡任何一天沒有收盤（停牌、資料缺漏）就不算 —— 寧可漏報也不拿斷掉的序列湊。
+MA_WINDOWS = (5, 10)
+RULE_PATH = twse.DATA_DIR / "rule.json"
+
+
+def load_exright_factors(years: set) -> dict:
+    """{代號: {除權息日: 還原因子}}，只讀用得到的那幾年。"""
+    out = defaultdict(dict)
+    for year in years:
+        path = twse.DATA_DIR / "exright" / f"{year}.json"
+        for code, events in (_json_or_none(path) or {}).items():
+            for day, factor in events:
+                out[code][day] = factor
+    return out
+
+
+def ma_cross_events(date_iso: str, codes: list) -> dict:
+    """自選股這一天穿越 5／10 日線的事件 -> {代號: (簡稱, 收盤, 漲跌, [事件, ...])}。"""
+    need = max(MA_WINDOWS) + 1                     # 還要昨天的均線
+    dates = [d for d in sorted(set(twse.existing_close_dates("twse"))
+                               & set(twse.existing_close_dates("tpex")))
+             if d <= date_iso][-need:]
+    if len(dates) < need or dates[-1] != date_iso:
+        return {}
+
+    wanted = set(codes)
+    closes = []                                    # 由舊到新，每天 {代號: 收}
+    for day in dates:
+        merged = {}
+        for market in ("twse", "tpex"):
+            raw = _json_or_none(twse.close_path(day, market)) or {}
+            merged.update({c: v for c, v in (raw.get("c") or {}).items() if c in wanted})
+        closes.append(merged)
+
+    factors = load_exright_factors({d[:4] for d in dates})
+    names = {code: row[0] for code, row in
+             ((_json_or_none(RULE_PATH) or {}).get("stocks") or {}).items() if code in wanted}
+
+    out = {}
+    for code in codes:
+        series = [day.get(code) for day in closes]
+        if any(v is None for v in series):
+            continue
+        # 由新往舊累乘還原因子：除權息日之前的價格都要乘上那一次的因子
+        adj, scale = [], 1.0
+        for i in range(need - 1, -1, -1):
+            adj.append(series[i] * scale)
+            factor = factors.get(code, {}).get(dates[i])
+            if factor:
+                scale *= factor
+        adj.reverse()
+
+        close, prev = adj[-1], adj[-2]
+        events = []
+        for n in MA_WINDOWS:
+            ma_now = sum(adj[-n:]) / n
+            ma_prev = sum(adj[-n - 1:-1]) / n
+            if prev >= ma_prev and close < ma_now:
+                events.append(f"跌破 {n} 日線（{ma_now:,.2f}）")
+            elif prev < ma_prev and close >= ma_now:
+                events.append(f"站回 {n} 日線（{ma_now:,.2f}）")
+        if events:
+            moved = (close / prev - 1) * 100
+            out[code] = (names.get(code) or code, series[-1], moved, events)
+    return out
+
+
+def watch_ma_lines(events: dict) -> list:
+    """均線穿越那一段的訊息行，跌破排前面。沒有任何一檔穿越就整段不出現。"""
+    if not events:
+        return []
+    lines = ["", f"<b>〰️ 均線穿越（{len(events)} 檔）</b>"]
+    for code, (name, close, moved, items) in sorted(
+            events.items(), key=lambda kv: (not any("跌破" in e for e in kv[1][3]), kv[1][2])):
+        icon = "🔻" if any("跌破" in e for e in items) else "🔺"
+        lines.append(f"{icon} {escape(name)} {code} · {close:,.2f}（{moved:+.2f}%）· "
+                     + "、".join(escape(e) for e in items))
+    lines.append("<i>均線為還原除權息後的收盤均價；只在穿越當天通知。</i>")
+    return lines
+
+
 def parse_watchlist(raw: str) -> list:
     return [c.strip() for c in str(raw or "").replace("\n", ",").split(",") if c.strip()]
 
 
 def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = "",
                         scope_name: str = "", total_label: str = "大盤",
-                        insti_events=None) -> str:
+                        insti_events=None, ma_events=None) -> str:
     """只講自選股：今天在不在榜上、名次多少、是不是剛進榜或剛掉出榜。"""
     today = {s["code"]: s for s in payload["stocks"] if s["rank"] <= twse.STREAK_RANK}
     before = {s["code"]: s for s in (prev or {}).get("stocks", []) if s["rank"] <= twse.STREAK_RANK}
@@ -305,6 +396,7 @@ def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = 
 
     # 自選股那一封講的是**逐檔**的籌碼動靜，不是全市場的分組名單。進不進榜與有沒有
     # 籌碼異動是兩件事，所以這一段不受上面的「在榜上／掉出榜」影響，自選股全部都看。
+    lines += watch_ma_lines(ma_events or {})
     lines += watch_insti_lines(insti_events or {})
 
     if site_url:
@@ -378,17 +470,18 @@ def main() -> int:
         on_board = {s["code"] for s in payload["stocks"] if s["rank"] <= twse.STREAK_RANK}
         was_on = {s["code"] for s in (prev or {}).get("stocks", []) if s["rank"] <= twse.STREAK_RANK}
         events = insti_watch_events(date_iso, codes)
+        crosses = ma_cross_events(date_iso, codes)
         # 自選股完全沒動靜就別發，每天一封「今天沒事」只會讓人關掉通知。
-        # 但「沒動靜」要把籌碼算進去 —— 只看進出榜的話，自選股有土洋對作卻剛好沒進
-        # 前 200 名時整封信都不會發，而那正是最該通知的情況之一。
+        # 但「沒動靜」要把籌碼與均線穿越算進去 —— 只看進出榜的話，自選股有土洋對作
+        # 或跌破 5 日線、卻剛好沒進前 200 名時整封信都不會發，而那正是最該通知的情況。
         ranked = any(c in on_board or c in was_on for c in codes)
-        if not ranked and not events:
-            print(f"自選股（{len(codes)} 檔）在 {date_iso} 既沒有進出榜、也沒有籌碼動靜，不發送。")
+        if not ranked and not events and not crosses:
+            print(f"自選股（{len(codes)} 檔）在 {date_iso} 沒有進出榜、籌碼動靜或均線穿越，不發送。")
             return 0
         if not ranked:
-            print(f"自選股沒有進出榜，但有 {len(events)} 檔出現籌碼動靜，照發。")
+            print(f"自選股沒有進出榜，但有 {len(events)} 檔籌碼動靜、{len(crosses)} 檔均線穿越，照發。")
         message = build_watch_message(payload, prev, codes, site_url, scope_name,
-                                      total_label, events)
+                                      total_label, events, crosses)
     else:
         message = build_message(payload, site_url, scope_name, total_label, insti_rows)
 
