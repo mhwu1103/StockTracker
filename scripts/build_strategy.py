@@ -89,14 +89,39 @@ def main() -> int:
         k = t["k"]
         return row(k, {"sd": dates[t["s"]], "ed": dates[t["e"]], "xd": dates[t["x"]], "r": pct(t["r"])})
 
+    def risk(x, ds):
+        """一條淨值的近期表現與風險：近 20／60 日、距最高點、年化波動、夏普（不扣無風險利率）"""
+        r = np.diff(x) / x[:-1]
+        peak = int(np.argmax(x))
+        return {
+            "r20": pct(x[-1] / x[-21] - 1) if len(x) > 20 else None,
+            "r60": pct(x[-1] / x[-61] - 1) if len(x) > 60 else None,
+            "dd": pct(x[-1] / x[peak] - 1), "peak": ds[peak],
+            "vol": pct(r.std() * np.sqrt(245)) if len(r) > 20 else None,
+            "sharpe": round(float(r.mean() / r.std() * np.sqrt(245)), 2) if len(r) > 20 and r.std() > 0 else None,
+        }
+
+    def months(e, b, ds):
+        """每個月的報酬（上個月最後一天收盤 → 這個月最後一天收盤；第一個月從起點算）"""
+        out, prev = [], 0
+        ends = [i for i in range(len(ds)) if i == len(ds) - 1 or ds[i + 1][:7] != ds[i][:7]]
+        for i in ends:
+            base_e = e[prev] if prev else 1.0
+            base_b = b[prev] if prev else 1.0
+            out.append({"m": ds[i][:7], "s": pct(e[i] / base_e - 1), "b": pct(b[i] / base_b - 1)})
+            prev = i
+        return out
+
     def stats(res, start):
         e, b = res["eq"][start:], res["bench"][start:]
+        ds = dates[start:]
         r = [t["r"] for t in res["trades"]]
         return {
             "ret": pct(e[-1] - 1), "bret": pct(b[-1] - 1),
             "mdd": pct(S.max_drawdown(e)), "bmdd": pct(S.max_drawdown(b)),
             "n": len(r), "win": pct(np.mean([x > 0 for x in r])) if r else None,
             "avg": pct(np.mean(r)) if r else None,
+            "s": risk(e, ds), "b": risk(b, ds), "months": months(e, b, ds),
         }
 
     def curve(res, start):

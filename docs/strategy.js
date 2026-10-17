@@ -82,6 +82,50 @@ function statGrid(s) {
   </div>`;
 }
 
+// 策略 vs 0050：近期表現與風險。夏普不扣無風險利率，只拿來兩邊對照
+function riskTable(st) {
+  if (!st || !st.s) return '';
+  const S = st.s;
+  const B = st.b;
+  const cell = (v, digits = 1, color = true) => `<td><b class="${color ? dir(v) : ''}">${pct(v, digits)}</b></td>`;
+  const rows = [
+    ['總報酬', cell(st.ret), cell(st.bret)],
+    ['近 1 個月（20 個交易日）', cell(S.r20), cell(B.r20)],
+    ['近 3 個月（60 個交易日）', cell(S.r60), cell(B.r60)],
+    ['距最高點', `<td><b class="${dir(S.dd)}">${pct(S.dd, 1)}</b><span>${md(S.peak)} 高點</span></td>`,
+      `<td><b class="${dir(B.dd)}">${pct(B.dd, 1)}</b><span>${md(B.peak)} 高點</span></td>`],
+    ['最大回落', cell(st.mdd), cell(st.bmdd)],
+    ['年化波動', cell(S.vol, 0, false).replace('+', ''), cell(B.vol, 0, false).replace('+', '')],
+    ['夏普值', `<td><b>${S.sharpe ?? '—'}</b></td>`, `<td><b>${B.sharpe ?? '—'}</b></td>`],
+  ];
+  let read = '';
+  if (S.sharpe !== null && B.sharpe !== null) {
+    const gap = S.sharpe - B.sharpe;
+    read = Math.abs(gap) < 0.3
+      ? '風險算進去之後跟 0050 差不多：漲得多，也跌得多，像是加了槓桿的 0050。'
+      : gap > 0 ? '風險算進去之後也比 0050 好。' : '風險算進去之後比 0050 差。';
+  }
+  const beat = st.months.filter((m) => m.s > m.b).length;
+  return `<div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th></th><th>策略</th><th>0050</th></tr></thead>
+      <tbody>${rows.map(([k, a, b]) => `<tr><th>${k}</th>${a}${b}</tr>`).join('')}</tbody>
+    </table></div>
+    <p class="note">${read}${st.months.length > 1 ? ` ${st.months.length} 個月裡有 ${beat} 個月贏 0050。` : ''}
+      夏普值＝平均日報酬 ÷ 日報酬標準差 × √245，沒扣無風險利率，只拿來兩邊比。</p>`;
+}
+
+function monthTable(st) {
+  if (!st || !st.months || st.months.length < 2) return '';
+  return `<div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>月份</th><th>策略</th><th>0050</th><th>差</th></tr></thead>
+      <tbody>${[...st.months].reverse().map((m) => {
+        const g = m.s === null || m.b === null ? null : m.s - m.b;
+        return `<tr><th>${esc(m.m)}</th><td><b class="${dir(m.s)}">${pct(m.s, 1)}</b></td>
+          <td><b class="${dir(m.b)}">${pct(m.b, 1)}</b></td><td><b class="${dir(g)}">${pct(g, 1)}</b></td></tr>`;
+      }).join('')}</tbody>
+    </table></div>`;
+}
+
 function stockRow(r, main, cls, foot, sub) {
   return `<a class="row gy-row" href="index.html#/stock/${esc(r.c)}">
     <span class="ident">
@@ -149,6 +193,8 @@ function perfView() {
         <h2>實盤追蹤 <small>${esc(L.from)} 起 · 回測沒看過的資料</small></h2>
         ${statGrid(L.stats)}
         ${equityChart(L.curve, '實盤追蹤淨值與 0050')}
+        ${riskTable(L.stats)}
+        ${L.stats.months && L.stats.months.length > 1 ? `<h3 class="gy-sec">每個月</h3>${monthTable(L.stats)}` : ''}
         ${L.trades.length ? `<h3 class="gy-sec">已出場</h3>${listMore('ltr', L.trades, tradeRow, '')}` : ''}
       </section>`
     : `<section class="card"><h2>實盤追蹤 <small>${esc(L.from)} 開盤開始</small></h2>
@@ -158,8 +204,11 @@ function perfView() {
     <h2>近一年照規則跑 <small>${esc(Y.from)} 起 · 每天往前滾</small></h2>
     ${statGrid(Y.stats)}
     ${equityChart(Y.curve, '近一年淨值與 0050')}
+    ${riskTable(Y.stats)}
     <p class="note">同一套規則從一年前開始跑。這一年的資料，在決定用這套規則的時候已經看過（是回測的後段），
       所以只是讓你看規則長什麼樣子，不算考試；考試是上面的實盤追蹤。</p>
+    <h3 class="gy-sec">每個月</h3>
+    ${monthTable(Y.stats)}
     <h3 class="gy-sec">目前持股</h3>
     ${listMore('yhold', Y.holdings, holdingRow, '沒有持股。')}
     <h3 class="gy-sec">最近出場</h3>
