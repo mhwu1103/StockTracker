@@ -179,6 +179,7 @@ def simulate(D: Data, sig, start: int, end: int | None = None, hold=None, K=None
       trail  從持有期間最高收盤回落這個比例
       take   漲到這個比例停利
       stop   跌到這個比例停損（不受 min 限制）
+      ma_stop (n, loss)：收盤跌破 n 日均線「而且」虧損 ≥ loss 才賣（不受 min 限制）
       renew  抱滿 hold 天那天如果又出現新訊號，再抱 hold 天
 
     回傳 dict：
@@ -246,6 +247,9 @@ def simulate(D: Data, sig, start: int, end: int | None = None, hold=None, K=None
                 r = c / D.AOf[p["e"], k] - 1
                 d = t - p["e"] + 1
                 sell = ex.get("stop") is not None and r <= -ex["stop"]
+                if ex.get("ma_stop"):
+                    n, loss = ex["ma_stop"]
+                    sell |= c < D.ma(n)[t, k] and r <= -loss
                 if d >= ex.get("min", 0):
                     sell |= ex.get("ma") is not None and c < D.ma(ex["ma"])[t, k]
                     sell |= ex.get("trail") is not None and c < p["peak"] * (1 - ex["trail"])
