@@ -6,7 +6,8 @@
 
 時間軸：月營收最晚次月 10 日公布，所以「第 t 月底」能用的最新營收是 t−1 月。
 訊號在 t 月底成立，報酬＝t+1 月含息報酬（月底收盤 ÷ 上月底收盤 ÷ 當月除權息因子）。
-超額＝個股報酬 − 同月全體普通股等權平均；「贏中位」＝報酬高於同月中位數的比例（50% 是沒有鑑別力）。每個月先算訊號股的平均超額，再對各月做 t 檢定
+超額＝個股報酬 − 同月全體普通股等權平均；「贏中位」＝報酬高於同月中位數的比例（50% 是沒有鑑別力）；
+「勝率」＝下個月賺錢（含息報酬 > 0）的比例，「贏大盤」＝超額 > 0 的比例，兩個都先算每月、再對各月平均。每個月先算訊號股的平均超額，再對各月做 t 檢定
 （同月事件高度相關，不能把每一筆當獨立樣本）。另外報 3 個月（t+1～t+3 連乘）供參考。
 沒有固定參數要學，所以不做 walk-forward；改成逐年拆開，2022 空頭要單獨站得住才算數。
 """
@@ -146,7 +147,7 @@ def main():
 
         def add(name, code):
             groups[name][t].append((exc[code][nxt(t, 1)], exc3(code, t), beat[code][nxt(t, 1)],
-                                    mexc[code][nxt(t, 1)]))
+                                    mexc[code][nxt(t, 1)], ret[code][nxt(t, 1)] > 0))
 
         for code, f in rows.items():
             add("全體（對照）", code)
@@ -189,7 +190,7 @@ def tstat(xs):
 
 def report(groups):
     years = ["2019", "2020", "2021", "2022", "2023", "2024", "2025", "2026"]
-    print(f"{'訊號':<44}{'月數':>5}{'平均檔':>7}{'1M超額':>8}{'t':>6}{'贏中位':>7}{'中位超額':>8}{'t':>6}{'3M超額':>8}  " +
+    print(f"{'訊號':<44}{'月數':>5}{'平均檔':>7}{'1M超額':>8}{'t':>6}{'贏中位':>7}{'勝率':>6}{'贏大盤':>6}{'中位超額':>8}{'t':>6}{'3M超額':>8}  " +
           "".join(f"{y:>7}" for y in years))
     for name in sorted(groups, key=lambda s: (s[:2], s)):
         g = groups[name]
@@ -200,13 +201,15 @@ def report(groups):
         m3 = [st.fmean(x[1] for x in g[m] if x[1] is not None) for m in ms
               if any(x[1] is not None for x in g[m])]
         beat = st.fmean(st.fmean(x[2] for x in g[m]) for m in ms)
+        win = st.fmean(st.fmean(x[4] for x in g[m]) for m in ms)
+        out = st.fmean(st.fmean(x[0] > 0 for x in g[m]) for m in ms)
         mm = [st.median(x[3] for x in g[m]) for m in ms]
         ny = {}
         for y in years:
             v = [a for m, a in zip(ms, m1) if m.startswith(y)]
             ny[y] = f"{st.fmean(v) * 100:+.2f}" if v else "—"
         print(f"{name:<44}{len(ms):>5}{st.fmean(len(g[m]) for m in ms):>7.0f}"
-              f"{st.fmean(m1) * 100:>+8.2f}{tstat(m1):>6.1f}{beat * 100:>6.0f}%"
+              f"{st.fmean(m1) * 100:>+8.2f}{tstat(m1):>6.1f}{beat * 100:>6.0f}%{win * 100:>5.0f}%{out * 100:>5.0f}%"
               f"{st.fmean(mm) * 100:>+8.2f}{tstat(mm):>6.1f}"
               f"{(st.fmean(m3) * 100 if m3 else float('nan')):>+8.2f}  " +
               "".join(f"{ny[y]:>7}" for y in years))

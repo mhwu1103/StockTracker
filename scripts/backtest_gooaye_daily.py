@@ -9,6 +9,7 @@
 
 - 進出場：訊號日隔天開盤進場，第 h 個交易日收盤出場；報酬用除權息因子還原（exright/）
 - 超額：減掉同一進出場的全體普通股等權平均；贏中位＝高於同日中位數的比例
+- 勝率：持有期間賺錢（還原後報酬 > 0）的筆數比例；贏大盤＝超額 > 0 的筆數比例
 - t 值：先算每個訊號日的平均超額，再做 Newey-West（lag = h−1）
 - 大盤：用還原後的 0050 當代理（taiex.json 只有最近一年多）
 - 產業用目前的 industry.json，有些許後見之明（下市、轉產業的股票對不上）
@@ -70,40 +71,43 @@ ROWS = []
 
 
 def evaluate(name, events, note=""):
-    """events: [(i, code)]。印出各持有期的平均超額、t、贏中位，以及 2022 與其後的分段。"""
+    """events: [(i, code)]。印出各持有期的平均超額、t、贏中位、勝率、贏大盤，以及 2022 與其後的分段。"""
     out = [name]
     byday = defaultdict(list)
     for i, code in events:
         byday[i].append(code)
     cells = []
     for h in HZ:
-        dm, beats, seg = [], [], defaultdict(list)
+        dm, beats, wins, outs, seg = [], [], [], [], defaultdict(list)
         for i in sorted(byday):
             if i not in bench[h]:
                 continue
-            xs = [(r - bench[h][i], r > bmed[h][i]) for c in byday[i] if (r := ret(c, i, h)) is not None]
+            xs = [(r - bench[h][i], r > bmed[h][i], r > 0) for c in byday[i] if (r := ret(c, i, h)) is not None]
             if not xs:
                 continue
             m = st.fmean(x[0] for x in xs)
             dm.append(m)
             beats += [x[1] for x in xs]
+            wins += [x[2] for x in xs]
+            outs += [x[0] > 0 for x in xs]
             seg["2022" if dates[i].startswith("2022") else ("≤2021" if dates[i] < "2022" else "2023+")].append(m)
         if not dm:
             cells.append(None)
             continue
         cells.append((st.fmean(dm), nw_t(dm, h - 1), st.fmean(beats), len(dm),
-                      {k: st.fmean(v) for k, v in seg.items()}))
+                      {k: st.fmean(v) for k, v in seg.items()}, st.fmean(wins), st.fmean(outs)))
     ROWS.append((name, len(events), cells, note))
 
 
 def print_rows(title):
     print(f"\n=== {title} ===")
-    print(f"{'訊號':<40}{'事件':>7}" + "".join(f"{f'{h}日超額':>10}{'t':>6}{'贏中位':>6}" for h in HZ)
+    print(f"{'訊號':<40}{'事件':>7}" + "".join(f"{f'{h}日超額':>10}{'t':>6}{'贏中位':>6}{'勝率':>5}{'贏大盤':>6}" for h in HZ)
           + f"{'20日：2022':>12}{'2023+':>8}")
     for name, n, cells, note in ROWS:
         s = f"{name:<40}{n:>7}"
         for c in cells:
-            s += f"{c[0] * 100:>+10.2f}{c[1]:>6.1f}{c[2] * 100:>5.0f}%" if c else f"{'—':>22}"
+            s += (f"{c[0] * 100:>+10.2f}{c[1]:>6.1f}{c[2] * 100:>5.0f}%{c[5] * 100:>4.0f}%{c[6] * 100:>5.0f}%"
+                  if c else f"{'—':>33}")
         c20 = cells[1]
         if c20:
             s += f"{c20[4].get('2022', float('nan')) * 100:>+12.2f}{c20[4].get('2023+', float('nan')) * 100:>+8.2f}"
