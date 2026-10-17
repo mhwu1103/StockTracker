@@ -2945,7 +2945,8 @@ function drawLine(Chart, canvas, labels, series, { reverse = false, suffix = '',
         data: s.data,
         borderColor: s.color,
         backgroundColor: `${s.color}22`,
-        borderWidth: 2,
+        borderWidth: s.thin ? 1.5 : 2,
+        borderDash: s.dash || [],
         pointRadius: 0,
         tension: 0.2,
         spanGaps: false,
@@ -7031,7 +7032,7 @@ const MARGIN_FLOOR = 145;       // 維持率低於這個算斷頭區
 const MARGIN_DROP = -15;        // 融資 20 日減少超過這個百分比也算斷頭區
 const MARGIN_HOT = 0.10;        // 追價過快：融資減指數的 20 日差，落在過去的前 10%
 const MARGIN_HOT_MIN = 250;     // 過去至少要有這麼多天才定得出門檻
-const MLINE = { margin: '#f79009', taiex: '#2f6fed', mt: '#7b61ff' };
+const MLINE = { margin: '#f79009', taiex: '#2f6fed', mt: '#7b61ff', spread: '#d92d20', hot: '#8a8f98' };
 
 function loadMargin() {
   if (!state.margin) {
@@ -7102,16 +7103,28 @@ function marginModel(m, t, upto) {
 
   const now = chg[n];
   const known = chg.filter((v) => v !== null);
-  // 追價過快的門檻只用今天以前的日子定，跟 walk-forward 驗證的做法一樣
-  const spread = (i) => (chg[i] === null || ixChg[i] === null ? null : chg[i] - ixChg[i]);
+  // 追價過快：每一天的門檻只用那一天以前的日子定，跟 walk-forward 驗證的做法一樣，
+  // 所以圖上的門檻線會隨時間移動。past 維持排序，逐日用二分插入。
+  const spread = d.map((_, i) => (chg[i] === null || ixChg[i] === null ? null : chg[i] - ixChg[i]));
+  const hotLine = new Array(n + 1).fill(null);
   const past = [];
-  for (let i = 0; i < n; i += 1) if (spread(i) !== null) past.push(spread(i));
-  past.sort((a, b) => a - b);
-  const hotLine = past.length >= MARGIN_HOT_MIN ? past[past.length - Math.ceil(past.length * MARGIN_HOT)] : null;
+  for (let i = 0; i <= n; i += 1) {
+    if (past.length >= MARGIN_HOT_MIN) hotLine[i] = past[past.length - Math.ceil(past.length * MARGIN_HOT)];
+    if (spread[i] === null) continue;
+    let lo = 0;
+    let hi = past.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (past[mid] < spread[i]) lo = mid + 1; else hi = mid;
+    }
+    past.splice(lo, 0, spread[i]);
+  }
   return {
-    spread: spread(n),
-    hotLine,
-    hot: hotLine !== null && spread(n) !== null && spread(n) >= hotLine,
+    spreads: spread,
+    hotLines: hotLine,
+    spread: spread[n],
+    hotLine: hotLine[n],
+    hot: hotLine[n] !== null && spread[n] !== null && spread[n] >= hotLine[n],
     d, n, amt, ix, chg, ixChg, now,
     mt: m.mt.slice(0, n + 1),
     sr: m.sr[n],
@@ -7217,6 +7230,8 @@ async function renderMarginBox(box) {
     <section class="card">
       <h2>${MARGIN_WIN} 日變化 <small>%</small></h2>
       <div class="chart-box"><canvas id="c-margin-chg"></canvas></div>
+      <p class="note">紅線＝融資減指數的差距；灰色虛線＝追價過快的門檻（當天以前所有日子的前
+        ${MARGIN_HOT * 100}%，所以會隨時間移動）。紅線越過虛線就是追價過快，回到虛線下就解除。</p>
     </section>` : ''}
     <section class="card">
       <h2>大盤融資維持率 <small>%</small></h2>
@@ -7235,6 +7250,8 @@ async function renderMarginBox(box) {
       drawLine(Chart, $('#c-margin-chg'), labels, [
         { data: round1(cut(x.chg)), color: MLINE.margin, label: `融資 ${MARGIN_WIN} 日` },
         { data: round1(cut(x.ixChg)), color: MLINE.taiex, label: `指數 ${MARGIN_WIN} 日` },
+        { data: round1(cut(x.spreads)), color: MLINE.spread, label: '差距（融資 − 指數）' },
+        { data: round1(cut(x.hotLines)), color: MLINE.hot, label: '追價過快門檻', dash: [6, 4], thin: true },
       ], { suffix: '%', emptyText: '無資料' });
     }
     drawLine(Chart, $('#c-margin-mt'), labels, [
