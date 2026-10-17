@@ -45,11 +45,17 @@ def escape(text: str) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def is_stock(code: str) -> bool:
+    """普通股：4 碼數字、不是 0 開頭。跟 sector_flow.common() 同一個判斷。"""
+    return len(code) == 4 and code.isdigit() and not code.startswith("0")
+
+
 def build_message(payload: dict, site_url: str = "", scope_name: str = "",
                   total_label: str = "大盤", insti_rows=None, flow_lines=None) -> str:
     by_streak = defaultdict(list)
     for stock in payload["stocks"]:
-        if stock.get("streak") in STREAK_GROUPS:
+        # 進榜清單只列個股：ETF（0 開頭）與特別股（5 碼）會把債券 ETF 這類東西擠進新進榜
+        if stock.get("streak") in STREAK_GROUPS and is_stock(stock["code"]):
             by_streak[stock["streak"]].append(stock)
 
     lines = [
@@ -221,14 +227,15 @@ def value_flow_lines(payload: dict, prev: dict) -> list:
 
     def line(shift, name, flow, chg):
         price = "" if chg is None else f" · 加權 {chg:+.2f}%"
-        return f"{escape(name)} {flow / 1e8:+,.0f} 億（{shift:+.2f}pp）{price}"
+        return f"{escape(name)} {shift:+.2f}pp（成交值 {flow / 1e8:+,.0f} 億）{price}"
 
     inflow = [r for r in rows if r[0] > 0][:FLOW_TOP]
     outflow = [r for r in reversed(rows) if r[0] < 0][:FLOW_TOP]
     lines = ["", f"<b>💰 資金流向 · 成交值（前 {twse.STREAK_RANK} 名，比昨天）</b>"]
-    lines += ["流入："] + [line(*r) for r in inflow] if inflow else []
-    lines += ["流出："] + [line(*r) for r in outflow] if outflow else []
-    lines.append("<i>依佔榜上成交值的比重變化（pp）排序，已扣掉大盤整體放量或縮量。</i>")
+    lines += ["比重上升："] + [line(*r) for r in inflow] if inflow else []
+    lines += ["比重下降："] + [line(*r) for r in outflow] if outflow else []
+    lines.append("<i>pp＝佔榜上成交值的比重變化，已扣掉大盤整體放量或縮量；"
+                 "比重上升但成交值減少，代表縮得比大盤少。</i>")
     return lines
 
 
