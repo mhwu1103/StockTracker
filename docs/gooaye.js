@@ -3,7 +3,7 @@
  *
  *   今天   只列回測成立的規則挑出來的股票（營收創高後的漂移、突破＋營收加速、整理後突破），
  *          營收創高那一份可以再加 RSI 濾網（要不要加由使用者選，記在 localStorage），
- *          以及回測說要避開的（強勢股剛破季線、創一年新低、低基期的高 YoY）
+ *          以及回測說要避開的（強勢股剛破季線、創一年新低、大盤創新高時的落後股、低基期的高 YoY）
  *   大盤   加權指數相對季線、年線的位置，照他的原話跑出來的「持有／空手」；融資水位與維持率；
  *          VIX、油價、初領失業金
  *   規則   他講過的每一條規則與回測結論：成立、只在多頭、只能控風險、證據不足、推翻
@@ -135,7 +135,7 @@ function listCard(key, { title, small, ruleKey, avoid = false, row, empty, keep,
 // --------------------------------------------------------------------------
 const LIST_LABEL = {
   drift: '營收創新高之後', accel: '突破＋營收加速', base: '整理後突破',
-  hotbreak: '強勢股剛破季線', newlow: '創一年新低', lowbase: '低基期的高 YoY',
+  hotbreak: '強勢股剛破季線', newlow: '創一年新低', laggard: '大盤創高時落後', lowbase: '低基期的高 YoY',
 };
 
 function findStock(q) {
@@ -180,7 +180,7 @@ function checkList(code, v) {
   const vix = mk.macro?.vix;
   const revOk = lowBase ? false : (streak >= 1 && yoy > 20) || accel ? true : (yoy !== null && yoy < 0 ? false : null);
   const priceOk = above60 === null ? null : Boolean(above60 && (fromHi === null || fromHi > -10)) && !lists.includes('newlow');
-  const exitWarn = lists.includes('hotbreak') || above60 === 0;
+  const exitWarn = lists.includes('hotbreak') || lists.includes('laggard') || above60 === 0;
   const steps = [
     { q: '看得懂嗎？', ok: null, a: `${esc(ind || '—')}。這一步只有你能回答：講不出它的故事、算不出估值，就跳過。` },
     { q: '題材是真的嗎？營收有沒有進來', ok: revOk,
@@ -197,6 +197,7 @@ function checkList(code, v) {
       a: `單一個股他在 10～30% 之間依行情調整，越不懂放越小。${mg ? `大盤融資維持率 ${fmt(mg.mt, 1)}%、融資 20 日 ${pct(mg.chg20, 1)}。` : ''}` },
     { q: '什麼時候走？', ok: exitWarn ? false : null,
       a: (lists.includes('hotbreak') ? '<b class="rule-bad">強勢股剛跌破季線：回測 5 日 −0.72%。</b>' : '')
+        + (lists.includes('laggard') ? '<b class="rule-bad">大盤創新高時它近 20 天沒創新高：回測 20 日輸大盤 0.78%，他說先減碼。</b>' : '')
         + '買進理由消失、大黑 K 或跌破均線、資訊優勢消失、漲超過原定比例就減回去；減碼不賣光。' },
     { q: '情緒怎麼看？', ok: null,
       a: `${vix ? `VIX ${fmt(vix.v, 1)}${vix.v >= 30 ? '（30 以上：回測是買點）' : ''}。` : ''}過熱：開戶排隊、大家問怎麼開槓桿；冰點：沒人想討論盤面。` },
@@ -297,6 +298,7 @@ function todayView() {
       }),
       empty: '最近 5 天沒有股票創一年新低。',
     }),
+    laggardCard(),
     listCard('lowbase', {
       title: 'YoY 好看但只是低基期',
       ruleKey: 'lowbase',
@@ -307,6 +309,26 @@ function todayView() {
       empty: '最新一個月沒有 YoY >30% 但營收離高點還遠的公司。',
     }),
   ].join('');
+}
+
+
+// 大盤創新高那天沒跟上的：清單很長，破底的排前面；手上的股票可以在上面的「看一檔」查
+function laggardCard() {
+  const L = state.data.lists.laggard;
+  if (!L) return '';
+  const brk = L.nbrk ?? 0;
+  return listCard('laggard', {
+    title: '大盤創新高時沒跟上的',
+    small: L.mkt ? `${L.mkt} 大盤創新高後第 ${L.rows[0]?.day ?? '—'} 天${brk ? ` · 當天破底 ${brk} 檔排前面` : ''}` : '',
+    ruleKey: 'laggard',
+    avoid: true,
+    row: (r) => ({
+      main: r.r === null ? '今天' : pct(r.r, 1), cls: r.r === null ? '' : dir(r.r),
+      foot: r.r === null ? '明天開盤才算' : `第 ${r.day} 天`,
+      sub: `近 20 天沒創新高，離 20 日高 ${pct(r.hi, 1)}${r.brk ? ' · 當天創 20 日新低' : ''}`,
+    }),
+    empty: L.mkt ? '大盤創新高那天，所有股票近 20 天都創過新高。' : '最近 20 個交易日大盤（0050）沒有創一年新高，這份清單只在那之後出現。',
+  });
 }
 
 

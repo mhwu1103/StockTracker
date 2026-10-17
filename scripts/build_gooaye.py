@@ -1,6 +1,6 @@
 """MK 頁（gooaye.html）-> docs/data/gooaye.json。
 
-把 MK 693 集裡講過的規則，拿網站的資料一條一條驗過（BACKTEST.md 的三節「MK 的……」），
+把 MK 703 集裡講過的規則，拿網站的資料一條一條驗過（BACKTEST.md 的三節「MK 的……」），
 這一頁只做兩件事：
 
 1. **大盤溫度計**：加權指數相對季線、年線的位置（照他的原話跑一遍狀態），融資水位、維持率、券資比，
@@ -52,6 +52,11 @@ RULES = [
     {"k": "hotbreak", "era": "2025–26", "rule": "熱門股一次殺破季線就先閃", "verdict": "ok",
      "stat": "60 日漲幅前 10%、連 40 天在季線上，第一次跌破：5 日超額 −0.72%（t −2.5）、20 日 −1.15%",
      "note": "短線成立，60 日之後就沒差"},
+    {"k": "laggard", "era": "2025–26", "rule": "大盤創新高時，手上沒跟著創新高的先減碼", "verdict": "ok",
+     "stat": "0050 創一年新高的日子，近 20 天沒創 20 日新高的個股：20 日超額 −0.78%（t −3.6）、60 日 −1.96%；"
+             "當天也創 20 日新高的 +1.72%",
+     "note": "平常日子的落後股只有 −0.32%，大盤創高時落後輸得多一倍；2024～2026 每年都成立，"
+             "但只有 2023 以後的多頭能測。是相對大盤，落後股自己未必會跌"},
     {"k": "ma60", "era": "2022", "rule": "大盤跌破季線就不做多，季線轉正才回來", "verdict": "risk",
      "stat": "加權指數 2000 年起：最大回落 −58% → −27%，但年化 8.98% → 7.72%",
      "note": "是風控、不是賺錢工具；2009 年以後兩段都輸買進持有"},
@@ -285,7 +290,30 @@ def main() -> int:
     new_low.sort(key=lambda r: r["d"], reverse=True)
     hb.sort(key=lambda r: (r["d"], r["r60"]), reverse=True)
 
-    # ---------- 6. 低基期的高 YoY ----------
+    # ---------- 6. 大盤（0050）創一年新高時的落後股（H16），訊號日起 20 個交易日 ----------
+    laggard, mkt_hi = [], None
+    x50 = P.adj("0050")
+    r50 = roll_prev(x50, 250)
+    for i in range(today, max(250, today - DRIFT_DAYS) - 1, -1):
+        if x50[i] and r50[i][2] >= 200 and x50[i] > r50[i][0]:
+            mkt_hi = i
+            break
+    if mkt_hi is not None:
+        i = mkt_hi
+        for c in commons:
+            xs = P.adj(c)
+            if not xs[i] or not xs[today]:
+                continue
+            hi20, lo20 = roll_prev(xs[:i + 1], 20), roll_prev(xs[:i + 1], 20, -1)
+            # 近 20 天（含當天）都沒創 20 日新高
+            if any(hi20[k][2] < 18 or (xs[k] and xs[k] > hi20[k][0]) for k in range(i - 19, i + 1)):
+                continue
+            laggard.append({**base(c), "d": dates[i], "brk": int(xs[i] < lo20[i][0]),
+                            "hi": round((xs[i] / max(v for v in xs[i - 19:i + 1] if v) - 1) * 100, 1),
+                            "day": today - i, "r": since(c, i)})
+    laggard.sort(key=lambda r: (-r["brk"], r["hi"]))
+
+    # ---------- 7. 低基期的高 YoY ----------
     low_base = []
     for c, rs in rev.items():
         if not rs:
@@ -299,10 +327,10 @@ def main() -> int:
             low_base.append({**base(c), "m": L, "yoy": yoy, "vs_hi": round((cur / max(prior) - 1) * 100)})
     low_base.sort(key=lambda r: -r["yoy"])
 
-    # ---------- 7. 每一檔的檢核表（查詢用，另存一份，前端查的時候才載） ----------
+    # ---------- 8. 每一檔的檢核表（查詢用，另存一份，前端查的時候才載） ----------
     member = {}
     for key, rows in (("drift", drift), ("accel", accel), ("base", base_brk),
-                      ("hotbreak", hb), ("newlow", new_low), ("lowbase", low_base)):
+                      ("hotbreak", hb), ("newlow", new_low), ("laggard", laggard), ("lowbase", low_base)):
         for r in rows:
             member.setdefault(r["c"], set()).add(key)
     stocks = {}
@@ -344,13 +372,15 @@ def main() -> int:
             "drift": cap(drift, 400),           # 前端可以只看 RSI ≥ 70，篩之前不能先截
             "accel": cap(accel), "base": cap(base_brk),
             "hotbreak": cap(hb), "newlow": cap(new_low), "lowbase": cap(low_base),
+            "laggard": {**cap(laggard), "mkt": dates[mkt_hi] if mkt_hi is not None else None,
+                        "nbrk": sum(r["brk"] for r in laggard)},
         },
         "rules": RULES,
         "rsiFilter": {"cut": RSI_HOT, "stat": RSI_STAT},
     }
     changed = twse.write_if_changed(OUT, payload)
     print(f"{dates[today]}：營收漂移 {len(drift)}、突破加速 {len(accel)}、整理後突破 {len(base_brk)}、"
-          f"強勢破季線 {len(hb)}、創新低 {len(new_low)}、低基期 {len(low_base)}"
+          f"強勢破季線 {len(hb)}、創新低 {len(new_low)}、大盤新高落後 {len(laggard)}、低基期 {len(low_base)}"
           f"{'，已更新' if changed else '，沒有變化'}")
     return 0
 
