@@ -1,4 +1,4 @@
-"""把當日的新進榜／連續進榜清單與籌碼異動推播到 Telegram。
+"""把當日的新進榜／連續進榜清單、籌碼異動與資金流向推播到 Telegram。
 
 需要兩個環境變數（請在 GitHub 設成 repository secret，不要寫進程式碼或 commit）：
     TELEGRAM_BOT_TOKEN
@@ -46,7 +46,7 @@ def escape(text: str) -> str:
 
 
 def build_message(payload: dict, site_url: str = "", scope_name: str = "",
-                  total_label: str = "大盤", insti_rows=None) -> str:
+                  total_label: str = "大盤", insti_rows=None, flow_lines=None) -> str:
     by_streak = defaultdict(list)
     for stock in payload["stocks"]:
         if stock.get("streak") in STREAK_GROUPS:
@@ -73,6 +73,7 @@ def build_message(payload: dict, site_url: str = "", scope_name: str = "",
             lines.append(f"…另有 {len(group) - MAX_PER_GROUP} 檔未列出")
 
     lines += insti_lines(insti_rows)
+    lines += flow_lines or []
 
     if site_url:
         lines += ["", f'<a href="{escape(site_url)}">看完整排行</a>']
@@ -163,6 +164,103 @@ def insti_lines(groups, min_oku: float = INSTI_MIN_OKU, only: set = None) -> lis
         return []
     # 金額是估算的這件事每次都要講，不然這幾個數字看起來像官方數字
     lines.append("<i>金額為估算（買賣超股數 × 收盤價），非官方數字。</i>")
+    return lines
+
+# --------------------------------------------------------------------------- #
+# 資金流向（依題材大類）
+# --------------------------------------------------------------------------- #
+# 兩種錢分開講，因為它們回答的是不同的問題：
+#   成交值  網站「流向」分頁的口徑：榜上前 200 名依題材大類加總，跟昨天比。排序用
+#           佔比變化（pp）而不是金額 —— 大盤整體縮量時金額會全部是負的，看不出錢
+#           從哪一族轉到哪一族。附成交值加權漲跌，分得出是買上去還是砍下來。
+#   法人    網站「資金 → 動向」的口徑：sector_flow.json 的三大法人近 5 日淨買賣，
+#           日均差的正負號就是四象限的縱軸（加速或收斂）。
+# 一檔可以屬於好幾個大類（題材本來就重疊），所以各族加總會大於榜上總額；分母一律
+# 用榜上總額，每檔只算一次，跟網站一致。
+# 兩段都是描述：回測顯示法人加碼的族之後並沒有值得交易的超額報酬（BACKTEST.md 2026-10-15）。
+FLOW_TOP = 5                # 流入、流出各列幾族
+SECTOR_FLOW_PATH = twse.DATA_DIR / "sector_flow.json"
+
+
+def theme_members(codes: set) -> dict:
+    """{題材大類: {代號}}，只留 codes 裡有的；一檔可以屬於好幾個大類。"""
+    themes = (_json_or_none(THEMES_PATH) or {}).get("groups") or []
+    out = {}
+    for g in themes:
+        members = {c for s in g["subs"] for c in s["codes"] if c in codes}
+        if members:
+            out[g["name"]] = members
+    return out
+
+
+def value_flow_lines(payload: dict, prev: dict) -> list:
+    """成交值流向那一段：佔比增加最多、減少最多的大類。"""
+    if not prev:
+        return []
+    top = lambda p: {s["code"]: s for s in p["stocks"] if s["rank"] <= twse.STREAK_RANK}
+    today, before = top(payload), top(prev)
+    total = sum(s["value"] for s in today.values())
+    base_total = sum(s["value"] for s in before.values())
+    if not total or not base_total:
+        return []
+    now_groups, base_groups = theme_members(set(today)), theme_members(set(before))
+
+    rows = []
+    for name in now_groups.keys() | base_groups.keys():
+        cs, bs = now_groups.get(name, set()), base_groups.get(name, set())
+        value = sum(today[c]["value"] for c in cs)
+        base = sum(before[c]["value"] for c in bs)
+        shift = (value / total - base / base_total) * 100
+        priced = [today[c] for c in cs if today[c].get("changePct") is not None]
+        weight = sum(s["value"] for s in priced)
+        chg = sum(s["value"] * s["changePct"] for s in priced) / weight if weight else None
+        rows.append((shift, name, value - base, chg))
+    if not rows:
+        return []
+    rows.sort(reverse=True)
+
+    def line(shift, name, flow, chg):
+        price = "" if chg is None else f" · 加權 {chg:+.2f}%"
+        return f"{escape(name)} {flow / 1e8:+,.0f} 億（{shift:+.2f}pp）{price}"
+
+    inflow = [r for r in rows if r[0] > 0][:FLOW_TOP]
+    outflow = [r for r in reversed(rows) if r[0] < 0][:FLOW_TOP]
+    lines = ["", f"<b>💰 資金流向 · 成交值（前 {twse.STREAK_RANK} 名，比昨天）</b>"]
+    lines += ["流入："] + [line(*r) for r in inflow] if inflow else []
+    lines += ["流出："] + [line(*r) for r in outflow] if outflow else []
+    lines.append("<i>依佔榜上成交值的比重變化（pp）排序，已扣掉大盤整體放量或縮量。</i>")
+    return lines
+
+
+def insti_flow_lines(date_iso: str, who: str = "三大") -> list:
+    """法人資金動向那一段：近 5 日淨買、淨賣最多的大類，標加速或收斂。"""
+    data = _json_or_none(SECTOR_FLOW_PATH) or {}
+    days = data.get("days") or []
+    # 不是同一天的就不放 —— 拿前一天的數字配今天的標題會誤導
+    if not days or days[-1] != date_iso:
+        return []
+    rows = []
+    for g in (data.get("groups") or {}).get("theme") or []:
+        pt = (g["pts"].get(who) or [None])[-1]
+        if pt:
+            rows.append((pt[0], pt[1], g["name"]))
+    if not rows:
+        return []
+    rows.sort(reverse=True)
+
+    def line(net, diff, name):
+        if net > 0:
+            mood = "加碼中" if diff > 0 else "買盤收斂"
+        else:
+            mood = "賣壓收斂" if diff > 0 else "減碼中"
+        return f"{escape(name)} {net:+,.1f} 億 · {mood}"
+
+    buys = [r for r in rows if r[0] > 0][:FLOW_TOP]
+    sells = [r for r in reversed(rows) if r[0] < 0][:FLOW_TOP]
+    lines = ["", f"<b>🏦 法人資金動向 · {who}法人近 5 日淨買賣</b>"]
+    lines += ["淨買："] + [line(*r) for r in buys] if buys else []
+    lines += ["淨賣："] + [line(*r) for r in sells] if sells else []
+    lines.append("<i>加碼／收斂看近 5 日日均比近 20 日日均多或少。只講錢往哪裡跑，不是買賣訊號。</i>")
     return lines
 
 # --------------------------------------------------------------------------- #
@@ -544,15 +642,20 @@ def main() -> int:
     if insti_rows is None:
         print(f"{date_iso} 還沒有法人資料，這一封不含籌碼異動那一段。")
 
+    i = dates.index(date_iso)
+    prev = (
+        json.loads(twse.daily_path(dates[i - 1], args.scope).read_text(encoding="utf-8"))
+        if i > 0 else None
+    )
+    # 法人那一段是全市場算的，只推上市或上櫃時不放，免得標題說上櫃、數字卻含上市
+    flow = value_flow_lines(payload, prev)
+    if args.scope == "all":
+        flow += insti_flow_lines(date_iso)
+
     # 全市場那一則每天都發；有自選股時再接在後面多發自選股的兩則。
-    messages = [build_message(payload, site_url, scope_name, total_label, insti_rows)]
+    messages = [build_message(payload, site_url, scope_name, total_label, insti_rows, flow)]
 
     if codes:
-        i = dates.index(date_iso)
-        prev = (
-            json.loads(twse.daily_path(dates[i - 1], args.scope).read_text(encoding="utf-8"))
-            if i > 0 else None
-        )
         on_board = {s["code"] for s in payload["stocks"] if s["rank"] <= twse.STREAK_RANK}
         was_on = {s["code"] for s in (prev or {}).get("stocks", []) if s["rank"] <= twse.STREAK_RANK}
         events = insti_watch_events(date_iso, codes)
