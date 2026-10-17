@@ -169,7 +169,8 @@ def signals(D: Data):
 
 
 def simulate(D: Data, sig, start: int, end: int | None = None, hold=None, K=None, delay=0,
-             order="ret20", skip_limit=True, seed=None, rand_n=None, exit=None):
+             order="ret20", skip_limit=True, seed=None, rand_n=None, exit=None,
+             regime=None, exit_bear=None, K_bear=None, bear_idle="0050"):
     """從第 start 天開盤開始照規則操作（start−1−delay 天的訊號），到第 end−1 天收盤。
 
     exit 是出場規則（不給就是定案的「抱 hold 天」）。每天收盤後判斷，成立就隔天開盤賣：
@@ -182,39 +183,57 @@ def simulate(D: Data, sig, start: int, end: int | None = None, hold=None, K=None
       ma_stop (n, loss)：收盤跌破 n 日均線「而且」虧損 ≥ loss 才賣（不受 min 限制）
       renew  抱滿 hold 天那天如果又出現新訊號，再抱 hold 天
 
+    多空切換（regime 不給就是一律多頭）：regime[t] 是 t 日收盤後判斷的「多頭」，影響 t+1 開盤的動作——
+      exit_bear  空頭時買進的那一筆用這套出場（一筆的出場規則在買進那天就定了）
+      K_bear     空頭時最多持有幾檔才繼續買（0 = 空頭不買新股；已經在手上的照原規則出場）
+      bear_idle  空頭時閒錢放哪：「0050」或「cash」（現金，不計利息）
+
     回傳 dict：
       eq      每天收盤的淨值（start 之前是 nan；起點 = 1）
       bench   同期 0050（start 開盤 = 1）
       trades  已出場：[{k, s, e, x, r}]（訊號日、進場日、出場日的索引，r 已扣成本）
       open    還在手上：[{k, s, e, x, amt}]（x 可能 ≥ T，表示還沒到出場日）
-      cash    最後一天收盤時放在 0050 的金額
+      cash    最後一天收盤時的閒錢（0050 或現金）
     rand_n 不是 None 時是隨機對照：每天在流動池裡隨機挑 rand_n[s] 檔當訊號。
     """
     hold = hold or RULE["hold"]
-    ex = {"hold": hold, **(exit or {})}
+    ex_bull = {"hold": hold, **(exit or {})}
+    ex_bear = {"hold": hold, **(exit_bear if exit_bear is not None else (exit or {}))}
+    rules = bool(exit) or bool(exit_bear)
     K = K or RULE["slots"]
     T = D.T if end is None else end
     cost = RULE["cost"]
     rng = random.Random(seed)
-    units = 1.0 / D.b_open[start]                      # 起點全部放 0050
+    units, cashv = 1.0 / D.b_open[start], 0.0           # 起點全部放 0050
     pos, trades, held = [], [], set()
     eq = np.full(D.T, np.nan)
     bench = np.full(D.T, np.nan)
     for t in range(start, T):
         bo = D.b_open[t]
+        bull = True if regime is None or t == 0 else bool(regime[t - 1])
+        in_cash = not bull and bear_idle == "cash"
+        if in_cash and units:                              # 轉進現金
+            cashv, units = cashv + units * bo, 0.0
+        elif not in_cash and cashv:                        # 轉回 0050
+            units, cashv = units + cashv / bo, 0.0
         keep = []
         for p in pos:
             if t >= p["x"]:
                 r = D.AOf[t, p["k"]] / D.AOf[p["e"], p["k"]] - 1 - cost
-                units += p["amt"] * (1 + r) / bo
+                if in_cash:
+                    cashv += p["amt"] * (1 + r)
+                else:
+                    units += p["amt"] * (1 + r) / bo
                 trades.append({**p, "x": t, "r": r})
                 held.discard(p["k"])
             else:
                 keep.append(p)
         pos = keep
-        mark = units * bo + sum(p["amt"] * D.AOf[t, p["k"]] / D.AOf[p["e"], p["k"]] for p in pos)
+        idle = units * bo + cashv
+        mark = idle + sum(p["amt"] * D.AOf[t, p["k"]] / D.AOf[p["e"], p["k"]] for p in pos)
+        cap = K if bull or K_bear is None else K_bear
         s = t - 1 - delay
-        if s >= 0:
+        if s >= 0 and len(pos) < cap:
             if rand_n is not None:
                 pool = list(np.nonzero(D.LIQ[s])[0])
                 cand = rng.sample(pool, min(int(rand_n[s]), len(pool)))
@@ -226,22 +245,28 @@ def simulate(D: Data, sig, start: int, end: int | None = None, hold=None, K=None
                     rng.shuffle(cand)
                 elif order == "weak":
                     cand.sort(key=lambda k: np.nan_to_num(D.ret20[s, k]))
+            ex = ex_bull if bull else ex_bear
             for k in cand:
-                if len(pos) >= K:
+                if len(pos) >= cap:
                     break
                 if k in held or np.isnan(D.AO[t, k]) or (skip_limit and D.LIMIT_OPEN[t, k]):
                     continue
                 amt = mark / K
-                if units * bo < amt * 0.999:
+                if idle < amt * 0.999:
                     break
-                units -= amt / bo
+                if in_cash:
+                    cashv -= amt
+                else:
+                    units -= amt / bo
+                idle -= amt
                 x = t + ex["hold"] if ex["hold"] else t + MAXHOLD
-                pos.append({"k": k, "s": s, "e": t, "x": x, "amt": amt, "peak": D.AOf[t, k]})
+                pos.append({"k": k, "s": s, "e": t, "x": x, "amt": amt, "peak": D.AOf[t, k], "ex": ex})
                 held.add(k)
-        eq[t] = units * D.b_close[t] + sum(p["amt"] * D.ACf[t, p["k"]] / D.AOf[p["e"], p["k"]] for p in pos)
+        eq[t] = units * D.b_close[t] + cashv + sum(p["amt"] * D.ACf[t, p["k"]] / D.AOf[p["e"], p["k"]] for p in pos)
         bench[t] = D.b_close[t] / D.b_open[start]
-        if exit:                                          # 收盤後判斷要不要明天開盤賣
+        if rules:                                          # 收盤後判斷要不要明天開盤賣
             for p in pos:
+                ex = p["ex"]
                 k, c = p["k"], D.ACf[t, p["k"]]
                 p["peak"] = max(p["peak"], c)
                 r = c / D.AOf[p["e"], k] - 1
@@ -258,7 +283,20 @@ def simulate(D: Data, sig, start: int, end: int | None = None, hold=None, K=None
                     p["x"] = min(p["x"], t + 1)
                 elif ex.get("renew") and p["x"] == t + 1 and sig[t, k]:
                     p["x"] = t + 1 + ex["hold"]
-    return {"eq": eq, "bench": bench, "trades": trades, "open": pos, "cash": units * D.b_close[T - 1]}
+    for p in pos:
+        p.pop("ex", None)
+    for tr in trades:
+        tr.pop("ex", None)
+    return {"eq": eq, "bench": bench, "trades": trades, "open": pos,
+            "cash": units * D.b_close[T - 1] + cashv}
+
+
+def regime_ma(D: Data, n: int):
+    """0050（還原）收盤在 n 日均線之上 = 多頭。t 日收盤後就知道，用在 t+1 開盤"""
+    c = D.b_close
+    m = np.convolve(c, np.ones(n) / n, "full")[:len(c)]
+    m[:n - 1] = np.nan
+    return c > m
 
 
 def max_drawdown(x):
