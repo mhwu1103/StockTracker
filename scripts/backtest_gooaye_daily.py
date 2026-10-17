@@ -1,5 +1,5 @@
 """回測 MK 的價格類假說（日頻）：族群同步突破、大跌後最先站回前高、熱門股殺破季線、
-大盤濾網、整理後突破、營收公布前先反映、投信族群連買。
+大盤濾網、整理後突破、營收公布前先反映、投信族群連買、大盤創新高時的落後股。
 
     python scripts/backtest_gooaye_daily.py                     用 docs/data（網站只留兩年）
     GOOAYE_DATA=<解壓後的 docs/data> python scripts/backtest_gooaye_daily.py   用長歷史（2021-10 起）
@@ -432,6 +432,49 @@ def h_sbl():
     evaluate("H15 對照：借券賣出 20 天內減半（回補 ≥0.5 億）", down)
 
 
+def h16_laggard():
+    """大盤（0050）收盤創 250 日新高的日子，個股分三組：當天也創 20 日新高（跟上）、
+    近 20 天都沒創過 20 日新高（落後）、落後而且當天創 20 日新低（落後又破底）。
+    對照組：不管大盤，所有日子的同樣分組——看「大盤新高」這個條件有沒有多出東西。"""
+    x = AC["0050"]
+    rmx = roll_prev(x, 250)
+    mkt = {i for i in range(250, N) if x[i] and rmx[i][2] >= 200 and x[i] > rmx[i][0]}
+    first = {i for i in mkt if not any(k in mkt for k in range(i - 20, i))}
+    grp = {k: [] for k in ("up", "lag", "lagbrk", "up_all", "lag_all", "lagbrk_all", "up_1st", "lag_1st", "lagbrk_1st")}
+    for c in COMMONS:
+        xs = AC[c]
+        hi20, lo20 = roll_prev(xs, 20), roll_prev(xs, 20, -1)
+        last_hi = -999
+        for i in range(40, N):
+            if not xs[i] or hi20[i][2] < 18:
+                continue
+            is_hi = xs[i] > hi20[i][0]
+            if is_hi:
+                last_hi = i
+            if is_hi:
+                g = "up"
+            elif i - last_hi >= 20:
+                g = "lagbrk" if xs[i] < lo20[i][0] else "lag"
+            else:
+                continue
+            grp[g + "_all"].append((i, c))
+            if i in mkt:
+                grp[g].append((i, c))
+            if i in first:
+                grp[g + "_1st"].append((i, c))
+    lag_any = lambda k: grp[f"lag{k}"] + grp[f"lagbrk{k}"]
+    note = f"大盤新高 {len(mkt)} 天"
+    evaluate("H16 大盤新高日：個股也創 20 日新高（跟上）", grp["up"], note)
+    evaluate("H16 大盤新高日：近 20 天沒創 20 日新高（落後）", lag_any(""))
+    evaluate("H16 大盤新高日：落後＋當天創 20 日新低（破底）", grp["lagbrk"])
+    evaluate("H16 隔 20 天第一次新高：跟上", grp["up_1st"], f"{len(first)} 次")
+    evaluate("H16 隔 20 天第一次新高：落後", lag_any("_1st"))
+    evaluate("H16 隔 20 天第一次新高：落後＋破底", grp["lagbrk_1st"])
+    evaluate("H16 對照（所有日子）：跟上", grp["up_all"])
+    evaluate("H16 對照（所有日子）：落後", lag_any("_all"))
+    evaluate("H16 對照（所有日子）：落後＋破底", grp["lagbrk_all"])
+
+
 if __name__ == "__main__":
     print(f"資料：{dates[0]} ~ {dates[-1]}，{N} 個交易日；目錄 {DIRS}")
     allb = h7_sync()
@@ -446,4 +489,6 @@ if __name__ == "__main__":
     h11_trust()
     h_sbl()
     print_rows("投信（20 日欄的 2022 ≈ ETF 熱潮前、2023+ ≈ ETF 熱潮後）")
+    h16_laggard()
+    print_rows("大盤創新高時的落後股")
     h10_filter(allb)
