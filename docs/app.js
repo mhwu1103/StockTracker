@@ -7138,21 +7138,42 @@ function marginModel(m, t, upto) {
   };
 }
 
+/** 今天的融資狀態。判讀句與「怎麼用這張圖」共用，兩邊的顏色與標記才會一致。 */
+function marginState(x) {
+  const ixc = x.ixChg[x.n];
+  if (x.mt[x.n] < MARGIN_FLOOR || x.now <= MARGIN_DROP) return 'broke';
+  if (x.hot) return 'hot';
+  if (x.now < 0 && ixc !== null && ixc < 0) return 'down';
+  return 'normal';
+}
+
+const MARGIN_STATES = {
+  hot: '追價過快',
+  normal: '正常',
+  down: '去槓桿',
+  broke: '斷頭區',
+};
+
+const mgPill = (key) => `<span class="mg-pill mg--${key}">${MARGIN_STATES[key]}</span>`;
+/** 文字裡提到圖上的線時，用跟圖一樣的顏色 */
+const mgLine = (name, color) => `<b class="mg-line" style="color:${color}">${name}</b>`;
+
 function marginVerdict(x) {
   const mt = x.mt[x.n];
   const ixc = x.ixChg[x.n];
-  if (mt < MARGIN_FLOOR || x.now <= MARGIN_DROP) {
-    return `<b>落在斷頭區</b>：維持率 ${num(mt)}%、融資 ${MARGIN_WIN} 日 ${tint(x.now, signedPct(x.now))}。
+  const state = marginState(x);
+  if (state === 'broke') {
+    return `${mgPill(state)}<b>落在斷頭區</b>：維持率 ${num(mt)}%、融資 ${MARGIN_WIN} 日 ${tint(x.now, signedPct(x.now))}。
       過去這種時候多半在底部附近，之後一個月偏強——但五年裡只有 2022、2025 兩段，次數很少。`;
   }
-  if (x.hot) {
-    return `<b>融資追價過快</b>：融資 ${MARGIN_WIN} 日 ${tint(x.now, signedPct(x.now))}、指數只有
+  if (state === 'hot') {
+    return `${mgPill(state)}<b>融資追價過快</b>：融資 ${MARGIN_WIN} 日 ${tint(x.now, signedPct(x.now))}、指數只有
       ${tint(ixc, signedPct(ixc))}，差 ${num(x.spread)} 個百分點，落在過去的前 ${MARGIN_HOT * 100}%
       （門檻 ${num(x.hotLine)} 個百分點）。walk-forward 驗證過：這種時候之後一個月內急跌 8% 以上的機率
       約是平常的三倍——但平均報酬沒有比較差，講的是風險升高，不是會跌。`;
   }
   const ixText = ixc === null ? '' : `指數 ${MARGIN_WIN} 日 ${tint(ixc, signedPct(ixc))}、`;
-  return `沒有特別的訊號：${ixText}融資 ${tint(x.now, signedPct(x.now))}，維持率 ${num(mt)}%。
+  return `${mgPill(state)}沒有特別的訊號：${ixText}融資 ${tint(x.now, signedPct(x.now))}，維持率 ${num(mt)}%。
     融資跟著大盤走，本身不預測漲跌；要留意的是斷頭區（維持率跌破 ${MARGIN_FLOOR}%）與融資追價過快
     （融資 ${MARGIN_WIN} 日增幅減掉指數漲幅，落在過去的前 ${MARGIN_HOT * 100}%）。`;
 }
@@ -7163,44 +7184,52 @@ function marginVerdict(x) {
  * 今天落在哪一列由 marginModel 的數字判斷，標「← 現在」。
  */
 function marginGuideCard(x) {
-  const ixc = x.ixChg[x.n];
-  const mt = x.mt[x.n];
-  const broke = mt < MARGIN_FLOOR || x.now <= MARGIN_DROP;
-  const now = x.hot ? 'hot'
-    : (x.now < 0 && ixc !== null && ixc < 0) ? (broke ? 'broke' : 'down')
-      : 'normal';
+  const now = marginState(x);
   const rows = [
-    { key: 'hot', tag: '驗證過',
-      when: '紅線在虛線上（追價過快）',
-      means: '一個月內急跌 8% 以上的機率約是平常的三倍（walk-forward 29% 對 10%）；平均報酬沒有比較差',
-      act: '不再加槓桿、不追高；新部位縮小、停損拉近；獲利多的先收一部分' },
+    { key: 'hot', tag: 'ok',
+      when: '紅線在虛線上',
+      means: '一個月內急跌 8% 以上的機率約是平常的<b>三倍</b>（walk-forward 29% 對 10%）；平均報酬沒有比較差',
+      act: '<b>不再加槓桿、不追高</b>；新部位縮小、停損拉近；獲利多的先收一部分' },
     { key: 'normal', tag: '',
       when: '紅線在虛線下（含兩線一起往上）',
       means: '散戶跟著行情進出，正常狀態',
       act: '照平常的節奏操作' },
-    { key: 'down', tag: '描述',
+    { key: 'down', tag: 'desc',
       when: '橘、藍兩線一起往下',
       means: '去槓桿中，常常還有下一段',
       act: '先別急著接，等殺完' },
-    { key: 'broke', tag: '描述',
-      when: `兩線深跌，且維持率 < ${MARGIN_FLOOR}% 或融資 ${MARGIN_WIN} 日減 ${-MARGIN_DROP}% 以上`,
+    { key: 'broke', tag: 'desc',
+      when: `兩線深跌，且維持率 &lt; ${MARGIN_FLOOR}% 或融資 ${MARGIN_WIN} 日減 ${-MARGIN_DROP}% 以上`,
       means: '斷頭潮，過去在底部附近（只有 2022、2025 兩段）',
-      act: '可以留意、分批，不重押' },
+      act: '可以留意、分批，<b>不重押</b>' },
   ];
-  const body = rows.map((r) => `<tr><th>${r.key === now ? '<b>' : ''}${esc(r.when)}${
-    r.key === now ? '</b> ← 現在' : ''}${r.tag ? ` <small>（${r.tag}）</small>` : ''}</th>
-      <td>${esc(r.means)}</td><td>${esc(r.act)}</td></tr>`).join('');
+  const tag = { ok: '<span class="mg-tag mg-tag--ok">驗證過</span>', desc: '<span class="mg-tag">描述</span>' };
+  const body = rows.map((r) => `<tr class="mg--${r.key}${r.key === now ? ' is-now' : ''}">
+      <th>${mgPill(r.key)}${r.key === now ? '<span class="mg-now">現在</span>' : ''}${r.tag ? tag[r.tag] : ''}
+        <span class="mg-when">${r.when}</span></th>
+      <td>${r.means}</td><td>${r.act}</td></tr>`).join('');
+  const red = mgLine('紅線', MLINE.spread);
   return `<section class="card">
     <h2>怎麼用這張圖 <small>大盤風險的背景燈號</small></h2>
-    <p class="lede">每天看三件事：<b>紅線在不在虛線上</b>；紅線是不是正在往虛線靠近；
-      紅線變高是因為橘線往上衝（散戶加碼），還是藍線往下掉、橘線沒跟著掉（散戶逢低接，更危險）。</p>
-    <div class="tbl-wrap"><table class="tbl tbl--text">
+    <div class="lede">每天看三件事：
+      <ol class="mg-steps">
+        <li>${red}在不在${mgLine('虛線', MLINE.hot)}上</li>
+        <li>${red}是不是正在往虛線靠近</li>
+        <li>${red}變高是因為${mgLine('橘線', MLINE.margin)}往上衝（散戶加碼），還是${mgLine('藍線', MLINE.taiex)}往下掉、橘線沒跟著掉（散戶逢低接，<b>更危險</b>）</li>
+      </ol>
+    </div>
+    <div class="tbl-wrap"><table class="tbl tbl--text tbl--guide">
       <thead><tr><th>狀況</th><th>代表</th><th>波段操作上可以</th></tr></thead>
       <tbody>${body}</tbody>
     </table></div>
-    <p class="note"><b>不要這樣用：</b>看到紅線越過虛線就放空——觸發後平均還是漲的，完整走完的 7 段裡 4 段照漲，
-      提高的是急跌的機率、不是方向；拿來挑個股——這是全市場的融資與指數；只看一天——剛碰到又掉下去的參考價值低，
-      連著幾天站在虛線上比較可靠。比較期間換成 10、15 日結果差不多，5 日太吵、40 日以上太慢。</p>
+    <div class="mg-dont"><b>不要這樣用</b>
+      <ul>
+        <li><b>看到紅線越過虛線就放空</b>：觸發後平均還是漲的，完整走完的 7 段裡 4 段照漲，提高的是急跌的機率、不是方向</li>
+        <li><b>拿來挑個股</b>：這是全市場的融資與指數</li>
+        <li><b>只看一天</b>：剛碰到又掉下去的參考價值低，連著幾天站在虛線上比較可靠</li>
+      </ul>
+    </div>
+    <p class="note">比較期間換成 10、15 日結果差不多，5 日太吵、40 日以上太慢。</p>
   </section>`;
 }
 

@@ -413,6 +413,69 @@ select, input, button {
 .tbl--text td { text-align: left; }
 .tbl--text tbody th { white-space: normal; min-width: 9em; }
 
+/* --------------------------------------------------------------------------
+ * 融資狀態（資金 → 大盤）：四種狀態各一個顏色，判讀句的標籤與「怎麼用這張圖」共用。
+ * 紅＝追價過快（風險，跟圖上的紅線同色系）、琥珀＝去槓桿、藍＝斷頭區、灰藍＝正常。
+ * 刻意不用綠色當「正常」：這個站的綠色是「跌」。
+ * -------------------------------------------------------------------------- */
+.mg--hot { --mg: var(--qd-add); }
+.mg--normal { --mg: var(--qd-calm); }
+.mg--down { --mg: var(--qd-ease); }
+.mg--broke { --mg: var(--accent); }
+
+.mg-pill {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--mg);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.6;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+
+.mg-tag,
+.mg-now {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.mg-tag--ok { border-color: var(--accent); color: var(--accent); }
+.mg-now { border-color: var(--mg); color: var(--mg); }
+.mg-when { display: block; margin-top: 4px; }
+
+.tbl--guide tbody th { border-left: 4px solid var(--mg); padding-left: 10px; }
+/* .tbl td b 是給數字表用的（一格一個大數字、獨佔一行），文字表裡的粗體要留在句子中 */
+.tbl--guide tbody td b { display: inline; font-size: inherit; color: var(--mg); }
+.tbl--guide tr.is-now { background: color-mix(in srgb, var(--mg) 10%, transparent); }
+.tbl--guide tr.is-now .mg-when { font-weight: 700; }
+
+.mg-steps { margin: 6px 0 0; padding-left: 1.4em; }
+.mg-steps li { margin: 2px 0; }
+
+.mg-dont {
+  margin: 12px 14px 0;
+  padding: 8px 12px;
+  border-left: 4px solid var(--qd-ease);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--qd-ease) 10%, transparent);
+  font-size: 12px;
+}
+.mg-dont > b { color: var(--qd-ease); }
+.mg-dont ul { margin: 4px 0 0; padding-left: 1.2em; }
+.mg-dont li { margin: 2px 0; }
+
 .tbl tbody tr:last-child th,
 .tbl tbody tr:last-child td { border-bottom: 0; }
 
