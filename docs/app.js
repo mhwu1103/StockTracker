@@ -7018,13 +7018,19 @@ async function renderMarket(view) {
 // 2021-10 起的資料看下來（BACKTEST.md「融資與大盤」），融資是跟著大盤走的：
 // 20 日變化同期相關 +0.67，指數先動之後融資跟 +0.36，融資先動之後指數 −0.01。
 // 「融資暴增＝過熱」在這段期間不成立。只有兩件事值得標出來：
-//   斷頭區  維持率 < 145% 或融資 20 日減 15% 以上 —— 之後 20 日 +6.6%～+7.5%，但只有兩段
-//   背離    指數 20 日漲、融資 20 日減 —— 之後 20 日偏弱（只是傾向）
+//   斷頭區      維持率 < 145% 或融資 20 日減 15% 以上 —— 之後 20 日偏強，但只有兩段，
+//               walk-forward 邊緣（平移 p≈0.07），當描述用
+//   追價過快    融資 20 日 − 指數 20 日落在「當天以前」的前 10% —— walk-forward
+//               （2023-10～2026-09）之後 20 日內跌超過 8% 的機率 29%，基準 10%（平移 p≈0.03）；
+//               平均報酬沒有比較差，所以講的是急跌風險，不是會跌
+// 原本的「指數漲、融資減」背離沒通過 walk-forward（之後跟基準差不多），只留在關係表裡當描述。
 // 關係那張表是在瀏覽器裡用選定日以前的資料現算的，不寫死數字：資料長了結論會跟著動。
 // --------------------------------------------------------------------------
 const MARGIN_WIN = 20;          // 變化與「之後」都看 20 個交易日（約一個月）
 const MARGIN_FLOOR = 145;       // 維持率低於這個算斷頭區
 const MARGIN_DROP = -15;        // 融資 20 日減少超過這個百分比也算斷頭區
+const MARGIN_HOT = 0.10;        // 追價過快：融資減指數的 20 日差，落在過去的前 10%
+const MARGIN_HOT_MIN = 250;     // 過去至少要有這麼多天才定得出門檻
 const MLINE = { margin: '#f79009', taiex: '#2f6fed', mt: '#7b61ff' };
 
 function loadMargin() {
@@ -7096,7 +7102,16 @@ function marginModel(m, t, upto) {
 
   const now = chg[n];
   const known = chg.filter((v) => v !== null);
+  // 追價過快的門檻只用今天以前的日子定，跟 walk-forward 驗證的做法一樣
+  const spread = (i) => (chg[i] === null || ixChg[i] === null ? null : chg[i] - ixChg[i]);
+  const past = [];
+  for (let i = 0; i < n; i += 1) if (spread(i) !== null) past.push(spread(i));
+  past.sort((a, b) => a - b);
+  const hotLine = past.length >= MARGIN_HOT_MIN ? past[past.length - Math.ceil(past.length * MARGIN_HOT)] : null;
   return {
+    spread: spread(n),
+    hotLine,
+    hot: hotLine !== null && spread(n) !== null && spread(n) >= hotLine,
     d, n, amt, ix, chg, ixChg, now,
     mt: m.mt.slice(0, n + 1),
     sr: m.sr[n],
@@ -7117,13 +7132,16 @@ function marginVerdict(x) {
     return `<b>落在斷頭區</b>：維持率 ${num(mt)}%、融資 ${MARGIN_WIN} 日 ${tint(x.now, signedPct(x.now))}。
       過去這種時候多半在底部附近，之後一個月偏強——但五年裡只有 2022、2025 兩段，次數很少。`;
   }
-  if (ixc !== null && ixc > 0 && x.now < 0) {
-    return `<b>背離</b>：指數 ${MARGIN_WIN} 日 ${tint(ixc, signedPct(ixc))}，融資卻 ${tint(x.now, signedPct(x.now))}——
-      漲是法人在拉、散戶在下車。過去這種時候之後一個月偏弱（只是傾向，不是訊號）。`;
+  if (x.hot) {
+    return `<b>融資追價過快</b>：融資 ${MARGIN_WIN} 日 ${tint(x.now, signedPct(x.now))}、指數只有
+      ${tint(ixc, signedPct(ixc))}，差 ${num(x.spread)} 個百分點，落在過去的前 ${MARGIN_HOT * 100}%
+      （門檻 ${num(x.hotLine)} 個百分點）。walk-forward 驗證過：這種時候之後一個月內急跌 8% 以上的機率
+      約是平常的三倍——但平均報酬沒有比較差，講的是風險升高，不是會跌。`;
   }
   const ixText = ixc === null ? '' : `指數 ${MARGIN_WIN} 日 ${tint(ixc, signedPct(ixc))}、`;
   return `沒有特別的訊號：${ixText}融資 ${tint(x.now, signedPct(x.now))}，維持率 ${num(mt)}%。
-    融資跟著大盤走，本身不預測漲跌；要留意的是斷頭區（維持率跌破 ${MARGIN_FLOOR}%）與「指數漲、融資減」的背離。`;
+    融資跟著大盤走，本身不預測漲跌；要留意的是斷頭區（維持率跌破 ${MARGIN_FLOOR}%）與融資追價過快
+    （融資 ${MARGIN_WIN} 日增幅減掉指數漲幅，落在過去的前 ${MARGIN_HOT * 100}%）。`;
 }
 
 const corrText = (v) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}`);
@@ -7194,7 +7212,7 @@ async function renderMarginBox(box) {
     ${x.hasIndex ? `<section class="card">
       <h2>融資 vs 加權指數 <small>期間第一天 = 100</small></h2>
       <div class="chart-box"><canvas id="c-margin-rel"></canvas></div>
-      <p class="note">兩條線一起走是常態；指數往上、融資往下（或反過來）才是值得看的背離。</p>
+      <p class="note">兩條線一起走是常態；融資那條明顯跑得比指數快，就是散戶加槓桿的速度超過行情。</p>
     </section>
     <section class="card">
       <h2>${MARGIN_WIN} 日變化 <small>%</small></h2>
