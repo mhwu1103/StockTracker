@@ -3085,3 +3085,5 @@ button.ustag {
   background: var(--surface);
   color: var(--text);
 }
+.rev-months { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rev-step:disabled { opacity: .4; cursor: default; }

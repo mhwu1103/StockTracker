@@ -150,11 +150,19 @@ function more(rows, render, empty) {
     ${rest > 0 ? `<button class="cyc-morebtn" data-more="1">再列 ${Math.min(PAGE, rest)} 家（還有 ${rest}）</button>` : ''}`;
 }
 
-// 十二個月攤成藥丸在手機上要三排，所以用下拉選單
+// 十二個月攤成藥丸在手機上要三排，所以用下拉選單；兩邊各一顆按鈕一次跳一個月。
+// months[0] 是最新的，所以「上個月」是索引 +1、「下個月」是 −1；到頭的那一顆停用。
 function monthPills() {
-  return `<select class="rev-month" aria-label="月份">${state.data.months
+  const n = state.data.months.length;
+  const step = (d, label, title) => {
+    const k = state.month + d;
+    return `<button class="pill rev-step" data-step="${d}" title="${title}" aria-label="${title}" ${k < 0 || k >= n ? 'disabled' : ''}>${label}</button>`;
+  };
+  return `<div class="rev-months">${step(1, '‹ 上個月', '看上一個月的營收')}
+    <select class="rev-month" aria-label="月份">${state.data.months
     .map((B, k) => `<option value="${k}" ${k === state.month ? 'selected' : ''}>${ym(B.m)}營收${k === 0 ? '（最新）' : ''}</option>`)
-    .join('')}</select>`;
+    .join('')}</select>
+    ${step(-1, '下個月 ›', '看下一個月的營收')}</div>`;
 }
 
 // --------------------------------------------------------------------------
@@ -293,6 +301,11 @@ function bind() {
     if (ds.tab) {
       state.tab = ds.tab;
       save(KEYS.tab, ds.tab);
+    } else if (ds.step) {
+      const k = state.month + Number(ds.step);
+      if (k < 0 || k >= state.data.months.length) return;
+      state.month = k;
+      state.more = 1;
     } else if (ds.filter) {
       state.filter = ds.filter;
       state.more = 1;
