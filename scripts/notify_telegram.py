@@ -5,10 +5,10 @@
     TELEGRAM_CHAT_ID
 選用：
     SITE_URL   有設定的話，訊息末端會附上網站連結
-    WATCHLIST  逗號分隔的代號（例如 2330,2454）。有設定時，全市場那一則之後
+    WATCHLIST  逗號分隔的代號（例如 2330,2454）。有設定時，全市場的兩則（排行、籌碼與資金）之後
                再多發兩則只講這幾檔的動態（進出榜 + 跌破／站回 5、10 日線 +
                逐檔的籌碼動靜）：分段版與族群版（族群依網站題材分類自動判斷，
-               secret 只放代號）。自選股當天沒動靜就只發全市場那一則。
+               secret 只放代號）。自選股當天沒動靜就只發全市場的兩則。
                **檔數沒有上限** —— 排程本來就對全市場算一次，選幾檔不影響成本。
                網站上的自選股存在瀏覽器裡，不會自動同步到這裡，要自己把清單設成
                secret（刻意不寫進 repo：那會讓「誰在看哪幾檔」永久留在 git 歷史裡）。
@@ -45,45 +45,95 @@ def escape(text: str) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# --------------------------------------------------------------------------- #
+# 排版
+# --------------------------------------------------------------------------- #
+# 手機上一長串清單很難掃，所以：
+#   - 長清單收進可展開的引用區塊（Telegram 的 <blockquote expandable>），收合時只露
+#     前幾行，標題與檔數一眼看完，想看全部再點開
+#   - 每一段的說明不跟在段落後面，集中到訊息最後一個「說明」區塊
+#   - 題材名稱裡的「 · 」換成「／」，不跟欄位分隔符號混在一起
+FOLD_MIN = 6                # 超過幾行才收合；短清單直接攤開比點開快
+NOTE = "\x00"               # 說明行的記號，finish() 會把它們搬到訊息最後
+GAP = "　"                  # 欄位之間用全形空白，比「 · 」安靜
+
+
+def fold(rows: list) -> list:
+    """清單行數多就收進可展開的引用區塊。"""
+    if len(rows) <= FOLD_MIN:
+        return rows
+    return ["<blockquote expandable>" + "\n".join(rows) + "</blockquote>"]
+
+
+def note(text: str) -> str:
+    return NOTE + text
+
+
+def finish(lines: list) -> str:
+    """把散在各段的說明行搬到最後（去重），收成一個可展開的區塊。"""
+    body = [l for l in lines if not l.startswith(NOTE)]
+    notes = list(dict.fromkeys(l[1:] for l in lines if l.startswith(NOTE)))
+    if notes:
+        body += ["", "<blockquote expandable><i>ℹ️ 說明\n" + "\n".join(f"• {n}" for n in notes)
+                 + "</i></blockquote>"]
+    return "\n".join(body)
+
+
+def tidy(name: str) -> str:
+    return escape(name).replace(" · ", "／")
+
+
 def is_stock(code: str) -> bool:
     """普通股：4 碼數字、不是 0 開頭。跟 sector_flow.common() 同一個判斷。"""
     return len(code) == 4 and code.isdigit() and not code.startswith("0")
 
 
 def build_message(payload: dict, site_url: str = "", scope_name: str = "",
-                  total_label: str = "大盤", insti_rows=None, flow_lines=None) -> str:
+                  total_label: str = "大盤") -> str:
+    """第一則：成交值排行的進榜清單。"""
     by_streak = defaultdict(list)
     for stock in payload["stocks"]:
         # 進榜清單只列個股：ETF（0 開頭）與特別股（5 碼）會把債券 ETF 這類東西擠進新進榜
         if stock.get("streak") in STREAK_GROUPS and is_stock(stock["code"]):
             by_streak[stock["streak"]].append(stock)
 
+    # 第三行是總覽：不用往下滑就知道今天各組有幾檔
+    counts = "｜".join(("新進" if d == 1 else f"連{d}") + f" {len(by_streak.get(d, []))}"
+                      for d in STREAK_GROUPS)
     lines = [
         f"<b>📊 台股成交值排行{scope_name} · {payload['date']}</b>",
         f"{total_label}成交值 {payload['marketValue'] / 1e8:,.0f} 億",
+        counts,
     ]
 
     for days in STREAK_GROUPS:
         group = sorted(by_streak.get(days, []), key=lambda s: s["rank"])
         title = "🆕 今日新進榜" if days == 1 else f"📌 連續 {days} 天"
-        lines += ["", f"<b>{title}（{len(group)} 檔）</b>"]
+        lines += ["", f"<b>{title} · {len(group)} 檔</b>"]
         if not group:
             lines.append("（無）")
             continue
-        for stock in group[:MAX_PER_GROUP]:
-            lines.append(
-                f"#{stock['rank']} {escape(stock['name'])} {stock['code']}"
-                f" · {stock['value'] / 1e8:,.1f} 億"
-            )
+        rows = [f"#{s['rank']} <b>{escape(s['name'])}</b> {s['code']}{GAP}{s['value'] / 1e8:,.1f} 億"
+                for s in group[:MAX_PER_GROUP]]
         if len(group) > MAX_PER_GROUP:
-            lines.append(f"…另有 {len(group) - MAX_PER_GROUP} 檔未列出")
-
-    lines += insti_lines(insti_rows)
-    lines += flow_lines or []
+            rows.append(f"…另有 {len(group) - MAX_PER_GROUP} 檔未列出")
+        lines += fold(rows)
 
     if site_url:
         lines += ["", f'<a href="{escape(site_url)}">看完整排行</a>']
-    return "\n".join(lines)
+    return finish(lines)
+
+
+def build_money_message(date_iso: str, scope_name: str = "", insti_rows=None,
+                        flow_lines=None) -> str:
+    """第二則：籌碼異動與資金流向。兩段都沒有就回空字串（不發）。
+
+    跟排行拆成兩則：擠在同一則時要滑好幾頁，而且逼近 4,096 字元上限。
+    """
+    body = insti_lines(insti_rows) + (flow_lines or [])
+    if not body:
+        return ""
+    return finish([f"<b>🧭 籌碼與資金{scope_name} · {date_iso}</b>"] + body)
 
 
 # --------------------------------------------------------------------------- #
@@ -92,11 +142,12 @@ def build_message(payload: dict, site_url: str = "", scope_name: str = "",
 # 網站上那兩組榜的推播版。門檻與網站「法人」頁的預設值一致 —— 兩邊看到的名單
 # 不一樣的話，使用者會以為其中一邊壞了。
 #
-# 每一組只佔**一行**（名稱與代號用頓號串起來），不是一檔一行：現有的訊息已經有
-# 四組進榜清單，再加四組一檔一行會逼近 Telegram 的 4,096 字元上限，而超過的部分
-# 是被截掉、不是被拒絕 —— 那種壞法在收到訊息之前看不出來。
+# 這一段跟排行分開發，一檔一行、附外資與投信金額，長的那幾組收合起來。每組仍只列
+# 前 INSTI_MAX 檔：Telegram 超過 4,096 字元是被截掉、不是被拒絕 —— 那種壞法在收到
+# 訊息之前看不出來。
 INSTI_MIN_OKU = 0.5         # 兩邊各自都要達到的金額（億）
 INSTI_MAX = 8               # 每一組最多列幾檔
+INSTI_NOTE = "法人金額為估算（買賣超股數 × 收盤價，單位億），非官方數字。"
 
 # 標籤 -> 訊息裡的標題。
 INSTI_GROUPS = [
@@ -154,7 +205,7 @@ def insti_lines(groups, min_oku: float = INSTI_MIN_OKU, only: set = None) -> lis
     """籌碼那一段的訊息行。only 給了就只留那幾檔（自選股推播用）。"""
     if groups is None:
         return []
-    lines = ["", f"<b>🧭 籌碼異動 · 外資與投信各自 {min_oku} 億以上</b>"]
+    lines = ["", f"<b>籌碼異動</b>（外資與投信各自 {min_oku} 億以上）"]
     empty = True
     for key, title in INSTI_GROUPS:
         rows = groups[key]
@@ -163,13 +214,15 @@ def insti_lines(groups, min_oku: float = INSTI_MIN_OKU, only: set = None) -> lis
         if not rows:
             continue
         empty = False
-        names = "、".join(f"{escape(name)} {code}" for _, code, name, _, _ in rows[:INSTI_MAX])
-        more = f" …另 {len(rows) - INSTI_MAX} 檔" if len(rows) > INSTI_MAX else ""
-        lines.append(f"{title}（{len(rows)}）：{names}{more}")
+        items = [f"<b>{escape(name)}</b> {code}{GAP}外 {fo:+,.1f}／投 {tr:+,.1f}"
+                 for _, code, name, fo, tr in rows[:INSTI_MAX]]
+        if len(rows) > INSTI_MAX:
+            items.append(f"…另 {len(rows) - INSTI_MAX} 檔")
+        lines += ["", f"{title} · {len(rows)} 檔"] + fold(items)
     if empty:
         return []
     # 金額是估算的這件事每次都要講，不然這幾個數字看起來像官方數字
-    lines.append("<i>金額為估算（買賣超股數 × 收盤價），非官方數字。</i>")
+    lines.append(note(INSTI_NOTE))
     return lines
 
 # --------------------------------------------------------------------------- #
@@ -226,16 +279,16 @@ def value_flow_lines(payload: dict, prev: dict) -> list:
     rows.sort(reverse=True)
 
     def line(shift, name, flow, chg):
-        price = "" if chg is None else f" · 加權 {chg:+.2f}%"
-        return f"{escape(name)} {shift:+.2f}pp（成交值 {flow / 1e8:+,.0f} 億）{price}"
+        price = "" if chg is None else f"{GAP}漲跌 {chg:+.2f}%"
+        return f"{tidy(name)} <b>{shift:+.2f}pp</b>{GAP}{flow / 1e8:+,.0f} 億{price}"
 
     inflow = [r for r in rows if r[0] > 0][:FLOW_TOP]
     outflow = [r for r in reversed(rows) if r[0] < 0][:FLOW_TOP]
-    lines = ["", f"<b>💰 資金流向 · 成交值（前 {twse.STREAK_RANK} 名，比昨天）</b>"]
-    lines += ["比重上升："] + [line(*r) for r in inflow] if inflow else []
-    lines += ["比重下降："] + [line(*r) for r in outflow] if outflow else []
-    lines.append("<i>pp＝佔榜上成交值的比重變化，已扣掉大盤整體放量或縮量；"
-                 "比重上升但成交值減少，代表縮得比大盤少。</i>")
+    lines = ["", f"<b>💰 成交值流向</b>（前 {twse.STREAK_RANK} 名，比昨天）"]
+    lines += ["🔼 比重上升"] + [line(*r) for r in inflow] if inflow else []
+    lines += ["🔽 比重下降"] + [line(*r) for r in outflow] if outflow else []
+    lines.append(note("pp＝佔榜上成交值的比重變化，已扣掉大盤整體放量或縮量；後面依序是成交值增減與"
+                      "成交值加權漲跌。比重上升但成交值減少，代表縮得比大盤少。"))
     return lines
 
 
@@ -260,14 +313,14 @@ def insti_flow_lines(date_iso: str, who: str = "三大") -> list:
             mood = "加碼中" if diff > 0 else "買盤收斂"
         else:
             mood = "賣壓收斂" if diff > 0 else "減碼中"
-        return f"{escape(name)} {net:+,.1f} 億 · {mood}"
+        return f"{tidy(name)} <b>{net:+,.1f} 億</b>{GAP}{mood}"
 
     buys = [r for r in rows if r[0] > 0][:FLOW_TOP]
     sells = [r for r in reversed(rows) if r[0] < 0][:FLOW_TOP]
-    lines = ["", f"<b>🏦 法人資金動向 · {who}法人近 5 日淨買賣</b>"]
-    lines += ["淨買："] + [line(*r) for r in buys] if buys else []
-    lines += ["淨賣："] + [line(*r) for r in sells] if sells else []
-    lines.append("<i>加碼／收斂看近 5 日日均比近 20 日日均多或少。只講錢往哪裡跑，不是買賣訊號。</i>")
+    lines = ["", f"<b>🏦 法人動向</b>（{who}法人近 5 日淨買賣）"]
+    lines += ["🔼 淨買"] + [line(*r) for r in buys] if buys else []
+    lines += ["🔽 淨賣"] + [line(*r) for r in sells] if sells else []
+    lines.append(note("加碼／收斂看近 5 日日均比近 20 日日均多或少。只講錢往哪裡跑，不是買賣訊號。"))
     return lines
 
 # --------------------------------------------------------------------------- #
@@ -358,14 +411,15 @@ def watch_insti_lines(events: dict) -> list:
     """自選股籌碼監控那一段的訊息行。沒有任何一檔有事件就整段不出現。"""
     if not events:
         return []
-    lines = ["", f"<b>🧭 籌碼動靜（{len(events)} 檔）</b>"]
+    lines = ["", f"<b>🧭 籌碼動靜 · {len(events)} 檔</b>"]
     # 事件多的排前面，同樣多就比外資金額 —— 一次動到三件事的比只動一件的值得先看
     for code, (name, moved, fo, items) in sorted(
             events.items(), key=lambda kv: (len(kv[1][3]), abs(kv[1][2])), reverse=True):
-        pct = "" if moved is None else f" · {moved:+.2f}%"
-        lines.append(f"{escape(name)} {code}{pct} · 外資 {fo:+,.1f} 億 · "
-                     + "、".join(escape(e) for e in items))
-    lines.append("<i>金額為估算（買賣超股數 × 收盤價），非官方數字。</i>")
+        pct = "" if moved is None else f"{GAP}{moved:+.2f}%"
+        # 兩行：第一行是誰、漲跌、外資金額，第二行才是事件 —— 擠在一行時會在手機上亂折
+        lines += [f"<b>{escape(name)}</b> {code}{pct}{GAP}外資 {fo:+,.1f} 億",
+                  f"{GAP}└ " + "、".join(escape(e) for e in items)]
+    lines.append(note(INSTI_NOTE))
     return lines
 
 # --------------------------------------------------------------------------- #
@@ -380,6 +434,7 @@ def watch_insti_lines(events: dict) -> list:
 # 區間裡任何一天沒有收盤（停牌、資料缺漏）就不算 —— 寧可漏報也不拿斷掉的序列湊。
 MA_WINDOWS = (5, 10)
 RULE_PATH = twse.DATA_DIR / "rule.json"
+MA_NOTE = "均線為還原除權息後的收盤均價；只在穿越當天通知。"
 
 
 def load_exright_factors(years: set) -> dict:
@@ -448,13 +503,13 @@ def watch_ma_lines(events: dict) -> list:
     """均線穿越那一段的訊息行，跌破排前面。沒有任何一檔穿越就整段不出現。"""
     if not events:
         return []
-    lines = ["", f"<b>〰️ 均線穿越（{len(events)} 檔）</b>"]
+    lines = ["", f"<b>〰️ 均線穿越 · {len(events)} 檔</b>"]
     for code, (name, close, moved, items) in sorted(
             events.items(), key=lambda kv: (not any("跌破" in e for e in kv[1][3]), kv[1][2])):
         icon = "🔻" if any("跌破" in e for e in items) else "🔺"
-        lines.append(f"{icon} {escape(name)} {code} · {close:,.2f}（{moved:+.2f}%）· "
-                     + "、".join(escape(e) for e in items))
-    lines.append("<i>均線為還原除權息後的收盤均價；只在穿越當天通知。</i>")
+        lines += [f"{icon} <b>{escape(name)}</b> {code}{GAP}{close:,.2f}（{moved:+.2f}%）",
+                  f"{GAP}└ " + "、".join(escape(e) for e in items)]
+    lines.append(note(MA_NOTE))
     return lines
 
 
@@ -519,11 +574,11 @@ def build_group_message(payload: dict, prev: dict, groups: list, site_url: str =
     lines = [f"<b>🗂 自選股依族群{scope_name} · {date_iso}</b>"]
     for group, codes in groups:
         moves = [stocks[c][2] for c in codes if c in stocks and stocks[c][2] is not None]
-        avg = f" 平均 {sum(moves) / len(moves):+.2f}%" if moves else ""
-        lines += ["", f"<b>【{escape(group)}】{avg}</b>"]
+        avg = f"{GAP}平均 {sum(moves) / len(moves):+.2f}%" if moves else ""
+        lines += ["", f"<b>【{tidy(group)}】</b>{avg}"]
         for code in codes:
             row = stocks.get(code)
-            parts = [f"{escape(names.get(code) or code)} {code}"]
+            parts = [f"<b>{escape(names.get(code) or code)}</b> {code}"]
             if row and row[2] is not None:
                 parts.append(f"{row[2]:+.2f}%")
             if code in today:
@@ -533,15 +588,14 @@ def build_group_message(payload: dict, prev: dict, groups: list, site_url: str =
             tags = [("🔻" if "跌破" in e else "🔺") + e.split("（")[0]
                     for e in ma_events.get(code, (None, None, None, []))[3]]
             tags += insti_events.get(code, (None, None, None, []))[3]
-            line = " ".join(parts)
+            lines.append(GAP.join(parts))
             if tags:
-                line += "　" + "、".join(escape(t) for t in tags)
-            lines.append(line)
+                lines.append(f"{GAP}└ " + "、".join(escape(t) for t in tags))
 
-    lines += ["", "<i>🔻🔺 均線為還原除權息後的收盤均價；#n 為成交值排名；法人金額為估算。</i>"]
+    lines += [note("#n 為成交值排名。"), note(MA_NOTE), note(INSTI_NOTE)]
     if site_url:
         lines += ["", f'<a href="{escape(site_url)}">看完整排行</a>']
-    return "\n".join(lines)
+    return finish(lines)
 
 
 def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = "",
@@ -561,22 +615,24 @@ def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = 
     dropped = [c for c in codes if c not in today and c in before]
 
     if on_board:
-        lines.append(f"<b>📈 在榜上（{len(on_board)} 檔）</b>")
+        lines.append(f"<b>📈 在榜上 · {len(on_board)} 檔</b>")
+        rows = []
         for code in sorted(on_board, key=lambda c: today[c]["rank"]):
             stock = today[code]
-            tag = " 🆕" if stock.get("streak") == 1 else f" · 連 {stock['streak']} 天"
-            lines.append(
-                f"#{stock['rank']} {escape(stock['name'])} {code}"
-                f" · {stock['value'] / 1e8:,.1f} 億{tag}"
+            tag = " 🆕" if stock.get("streak") == 1 else f"{GAP}連 {stock['streak']} 天"
+            rows.append(
+                f"#{stock['rank']} <b>{escape(stock['name'])}</b> {code}"
+                f"{GAP}{stock['value'] / 1e8:,.1f} 億{tag}"
             )
+        lines += fold(rows)
     else:
         lines.append("<b>📈 在榜上</b>\n（無）")
 
     if dropped:
-        lines += ["", f"<b>📉 今日掉出榜（{len(dropped)} 檔）</b>"]
+        lines += ["", f"<b>📉 今日掉出榜 · {len(dropped)} 檔</b>"]
         for code in sorted(dropped, key=lambda c: before[c]["rank"]):
             stock = before[code]
-            lines.append(f"#{stock['rank']} {escape(stock['name'])} {code} → 已不在前 {twse.STREAK_RANK}")
+            lines.append(f"#{stock['rank']} <b>{escape(stock['name'])}</b> {code} → 已不在前 {twse.STREAK_RANK}")
 
     missing = [c for c in codes if c not in today and c not in before]
     if missing:
@@ -589,7 +645,7 @@ def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = 
 
     if site_url:
         lines += ["", f'<a href="{escape(site_url)}">看完整排行</a>']
-    return "\n".join(lines)
+    return finish(lines)
 
 
 def send(token: str, chat_id: str, text: str, retries: int = 3) -> None:
@@ -659,8 +715,11 @@ def main() -> int:
     if args.scope == "all":
         flow += insti_flow_lines(date_iso)
 
-    # 全市場那一則每天都發；有自選股時再接在後面多發自選股的兩則。
-    messages = [build_message(payload, site_url, scope_name, total_label, insti_rows, flow)]
+    # 全市場每天發兩則（排行、籌碼與資金）；有自選股時再接在後面多發自選股的兩則。
+    messages = [build_message(payload, site_url, scope_name, total_label)]
+    money = build_money_message(date_iso, scope_name, insti_rows, flow)
+    if money:
+        messages.append(money)
 
     if codes:
         on_board = {s["code"] for s in payload["stocks"] if s["rank"] <= twse.STREAK_RANK}
@@ -672,7 +731,7 @@ def main() -> int:
         # 或跌破 5 日線、卻剛好沒進前 200 名時整封信都不會發，而那正是最該通知的情況。
         ranked = any(c in on_board or c in was_on for c in codes)
         if not ranked and not events and not crosses:
-            print(f"自選股（{len(codes)} 檔）在 {date_iso} 沒有進出榜、籌碼動靜或均線穿越，只發全市場那一則。")
+            print(f"自選股（{len(codes)} 檔）在 {date_iso} 沒有進出榜、籌碼動靜或均線穿越，只發全市場的。")
         else:
             if not ranked:
                 print(f"自選股沒有進出榜，但有 {len(events)} 檔籌碼動靜、{len(crosses)} 檔均線穿越，照發。")
