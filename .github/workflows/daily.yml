@@ -134,6 +134,12 @@ jobs:
         timeout-minutes: 7
         run: python scripts/fetch_pair.py kr
 
+      # 處置股公告（證交所 punish、櫃買 disposal）。交易所在收盤後才公告，排在抓資料的
+      # 最後面，盡量等到當天的公告出來；一次抓一整年，檔案很小，不受下面的修剪影響。
+      - name: 抓處置股
+        continue-on-error: true
+        run: python scripts/fetch_disposal.py
+
       # 網站只留最近兩年的每日原始檔（Pages 上限 1 GB，每日資料一年約長 130 MB）。
       # 要排在所有 build 前面：衍生檔照現存的原始檔重建，過期的由各支 build 自己清掉。
       - name: 修剪兩年以前的每日原始檔
@@ -258,6 +264,12 @@ jobs:
       - name: 重算策略頁
         continue-on-error: true
         run: python scripts/build_strategy.py
+
+      # 處置頁：今天公布的處置、處置中的、近期每一筆抱滿處置期間的結果。讀 disposal/、close/、
+      # daily/、exright/。
+      - name: 重算處置頁
+        continue-on-error: true
+        run: python scripts/build_disposal.py
 
       - name: 提交資料變更
         run: |

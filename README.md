@@ -26,7 +26,7 @@
 | 群組 | 分頁 | 回答的問題 |
 |---|---|---|
 | 排行 | 排行 · 站穩 · 異動 · 後續 · 週月 | 今天誰在榜上、誰進誰出、進榜之後通常怎麼走 |
-| 技術 | 爆量 · 均線 · MACD · RSI · 組合 | 價量出現什麼訊號 |
+| 技術 | 爆量 · 均線 · MACD · RSI · 組合 · 結構 · 處置 | 價量出現什麼訊號、誰被處置了 |
 | 籌碼 | 大戶 · 法人 · 買超 · 連買 · 雷達 | 誰在買、買了多久 |
 | 資金 | 族群 · 流向 · 大盤 | 錢往哪一族去 |
 | 環境 | 報價 · 美股 · 日股 · 韓股 · 四市 · 景氣 · 營收 · 觀點 | 上游報價、昨夜美股、同盤的日股與韓股、四個市場橫著比、景氣走到哪與誰是循環股、這個月誰的營收剛公布又創新高、供應鏈上有人在講什麼 |
@@ -467,6 +467,19 @@ openapi 的 t187ap05 只給最新一個月，而「成長有沒有在加速」�
 `value/revdate/<月>.json`。排程只在平日收盤後跑，所以這是「本站第一次看到」；開始記之前就已經公布的記成 null，
 頁面改從申報期限（隔月 10 日）算股價反應，並標出是哪一種。
 
+### 第十二頁：處置股
+
+`disposal.html`，入口在「技術 → 處置」。被交易所處置（分盤撮合、預收款券）的股票：
+
+- **今天**：今天收盤後公布、明天開始處置的股票——這是訊號：處置第一天開盤買、抱到處置最後一天收盤賣，
+  開盤就漲停的跳過；以及處置中的股票從第一天開盤算起的漲跌
+- **近期**：最近 60 個交易日公布的每一筆照同一條規則的實際結果，與 5 年回測的中位數並排
+- **規則**：5 年回測（BACKTEST.md「處置股」）——跟漲幅相近、沒被處置的股票比，平均多 +4.8%、63% 贏，
+  每一年都成立；原始報酬中位數只有 +1.7%，2022 是 0。出關之後買沒有效果
+
+公告來自證交所 `announcement/punish` 與櫃買 `bulletin/disposal`，一次查一整年，存在 `disposal/<年>.json`
+（`fetch_disposal.py`）。排程在收盤後跑，交易所公告得比排程晚的，要到隔天才看得到。
+
 ### 三種寬度，三種版面
 
 同一份 DOM，三層：
@@ -602,6 +615,10 @@ scripts/
                     純標準函式庫
   fetch_exright.py  除權息計算結果（證交所 TWT49U、櫃買 exDailyQ）→ docs/data/exright/<年>.json，
                     每日抓今年與去年；第一次 --since 2019
+  fetch_disposal.py 處置股公告（證交所 punish、櫃買 disposal）→ docs/data/disposal/<年>.json，
+                    每日抓今年；第一次 --since 2021
+  build_disposal.py 處置頁 → docs/data/disposal.json：今天公布的、處置中的、近期每一筆的結果
+  backtest_disposal.py 處置股回測（只印表）：處置與出關之後的報酬，跟漲幅相近、沒被處置的比
   build_revenue.py  營收頁 → docs/data/revenue.json：最近兩個月的月營收速報、族群對照、
                     公布後的股價反應。讀 value/rev/、value/revdate/、close/、exright/、themes.json
   build_season.py   景氣頁的月曆 → docs/data/season.json：1～12 月清單、產業、walk-forward
@@ -670,6 +687,8 @@ docs/               GitHub Pages 網站根目錄
                     「紀律 → MK」。判斷全在 build_gooaye.py，這支只畫
   strategy.html strategy.js 「策略」——動能 ＋ 營收創新高、抱 20 天的每日訊號與實盤追蹤，入口在
                     「紀律 → 策略」。判斷全在 build_strategy.py，這支只畫
+  disposal.html disposal.js 「處置」——明天開始處置的股票、處置中的、近期結果，入口在
+                    「技術 → 處置」。判斷全在 build_disposal.py，這支只畫
   rev.html revenue.js 「營收速報」——這個月誰剛公布、創新高、股價反應了沒，入口在
                     「環境 → 營收」。判斷全在 build_revenue.py，這支只畫
   cycle.html cycle.js 「景氣循環」——用月營收找循環股與它們在循環的哪一段，入口在
@@ -717,6 +736,8 @@ docs/               GitHub Pages 網站根目錄
                     以及逐年的超額中位數
     exright/<年>.json  除權息 {代號: [[日期, 參考價 ÷ 前收盤], ...]}，上市櫃併在一起
     season.json     月曆：每個月份的買進／賣出清單（每年的超額）、偏強偏弱產業、運氣基準、walk-forward
+    disposal/<年>.json  處置公告 [[公布日, 代號, 名稱, 起日, 迄日, 第幾次, 撮合分鐘, 市場], ...]
+    disposal.json   處置頁直接讀的表：today／active／recent 三份清單、近期統計與回測數字（research）
     revenue.json    營收頁直接讀的表：最近兩個月每一家的營收、年增、月增、新高、連續年增、公布日、
                     公布前 20 日與公布後的漲跌、股價是否創 60 日新高，以及子族群的彙總
     value/revdate/<月>.json  那個月營收每一家第一次在彙總表上看到的日期（null＝開始記之前就公布了）
