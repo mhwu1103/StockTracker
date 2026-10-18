@@ -1,4 +1,4 @@
-"""營收頁 → docs/data/revenue.json：最近兩個月的月營收速報、族群對照與公布後的股價反應。
+"""營收頁 → docs/data/revenue/：最近 12 個月的月營收、族群對照與公布後的股價反應。
 
     python scripts/build_revenue.py
 
@@ -9,11 +9,18 @@
 - **連續年增**：年增率連續大於 0 的月數，算到這個月
 - **公布日**是本站第一次在公開資訊觀測站的彙總表上看到（value/revdate/，fetch_value.py 記的）；
   2026-10 以前的月份沒有記，那些用申報期限（隔月 10 日）當基準，頁面上會標出是哪一種
-- **公布後**：基準日收盤 → 最新收盤，還原除權息。基準日是公布當天——排程在收盤後跑，那天看到的
-  多半是盤後才申報的，所以從那天的收盤算起；**公布前 20 日**是基準日往前 20 個交易日到基準日，
-  看消息是不是早就反映了
-- **股價 60 日新高**：最新的還原收盤是近 60 個交易日的最高。跟「營收 12 個月新高」同時成立就是
-  策略頁的進場條件（策略另外還要流動性，見 strategy.py）
+- **公布後**：基準日收盤 → 窗口結束那天的收盤，還原除權息。基準日是公布當天——排程在收盤後跑，
+  那天看到的多半是盤後才申報的，所以從那天的收盤算起。窗口結束在**下一次申報期限**（m 月營收算到
+  m+2 月 10 日），還沒到就是最新收盤：過去的月份數字固定下來，不會每天變；**公布前 20 日**是
+  基準日往前 20 個交易日到基準日，看消息是不是早就反映了
+- **股價 60 日新高**：窗口結束那天的還原收盤是近 60 個交易日的最高（最新的月份就是今天）。跟
+  「營收 12 個月新高」同時成立就是策略頁的進場條件（策略另外還要流動性，見 strategy.py）
+
+## 檔案
+
+`revenue/index.json` 是月份清單與共用的東西（子族群名、門檻）；`revenue/<月>.json` 是那個月每一家
+與族群彙總，前端切到那個月才抓。一個月約 250 KB，12 個月攤在一個檔裡太大；而且過去的月份窗口已經
+結束，檔案不會再變，每天的 git 差異只有最近兩個月。
 - **族群**用題材族群的子族群（themes.json）：已公布幾家、年增中位數、幾家創新高
 
 排在 fetch_value.py 與 build_history.py 之後（要最新的 value/rev 與 close/）。
@@ -31,7 +38,8 @@ from strategy import nextm
 import twse
 
 TPE = timezone(timedelta(hours=8))
-MONTHS = 2          # 頁面上能切的月份數
+MONTHS = 12         # 頁面上能切的月份數
+OUT_DIR = twse.DATA_DIR / "revenue"
 HI_PREV = 12        # 12 個月新高：比前幾個月都高
 HI_MIN = 10         # 前面至少要有幾個月
 ALL_MIN = 36        # 2019 起新高：前面至少要有幾個月
@@ -44,7 +52,7 @@ def r1(x):
 
 
 def slim(row):
-    """兩個月 × 兩千家，空值與 False 不寫：檔案小一半，前端讀不到就當沒有。"""
+    """兩千家，空值與 False 不寫：檔案小一半，前端讀不到就當沒有。"""
     return {k: v for k, v in row.items() if v is not None and v is not False and v != []}
 
 
@@ -97,6 +105,8 @@ def main() -> int:
         pub = dates_of.get(m) or {}
         deadline = f"{nextm(m)}-10"
         i_dead = close_on_or_before(deadline)
+        end = f"{nextm(nextm(m))}-10"
+        i_end = min(last, close_on_or_before(end))
         rows = []
         for c, v in cur.items():
             if not common(c) or not v or not v[0]:
@@ -121,16 +131,16 @@ def main() -> int:
             react = pre = None
             nh = False
             if xs and i0 is not None:
-                b, e = at(xs, i0), at(xs, last)
-                if b and e and i0 < last:
+                b, e = at(xs, i0), at(xs, i_end)
+                if b and e and i0 < i_end:
                     react = (e / b - 1) * 100
                 if i0 >= PRE:
                     a = at(xs, i0 - PRE)
                     if a and b:
                         pre = (b / a - 1) * 100
-            if xs and xs[last] is not None and last >= NH - 1:
-                w = [x for x in xs[last - NH + 1:last + 1] if x is not None]
-                nh = len(w) >= NH // 2 and xs[last] >= max(w)
+            if xs and xs[i_end] is not None and i_end >= NH - 1:
+                w = [x for x in xs[i_end - NH + 1:i_end + 1] if x is not None]
+                nh = len(w) >= NH // 2 and xs[i_end] >= max(w)
             rows.append(slim({
                 "c": c, "n": names.get(c, c), "ind": industry.get(c),
                 "rev": round(now / 1e5, 2),                     # 千元 → 億元
@@ -159,22 +169,29 @@ def main() -> int:
         known = sum(1 for r in rows if "pub" in r)
         return {
             "m": m, "count": len(rows), "prevCount": sum(1 for c in prev if common(c)),
-            "known": known, "deadline": deadline, "rows": rows, "groups": groups,
+            "known": known, "deadline": deadline, "end": P.dates[i_end], "rows": rows, "groups": groups,
         }
 
-    out = {
+    blocks = [month_block(j) for j in range(len(ms) - 1, max(-1, len(ms) - 1 - MONTHS), -1)]
+    changed = 0
+    for b in blocks:
+        changed += twse.write_if_changed(OUT_DIR / f"{b['m']}.json", {"rows": b["rows"], "groups": b["groups"]})
+    keep = {f"{b['m']}.json" for b in blocks} | {"index.json"}
+    for old in OUT_DIR.glob("*.json"):
+        if old.name not in keep:
+            old.unlink()
+    twse.write_if_changed(OUT_DIR / "index.json", {
         "updated": datetime.now(TPE).isoformat(timespec="seconds"),
         "asof": asof,
         "today": max((d for m in dates_of.values() for d in m.values() if d), default=None),
         "subs": [[g, s] for g, s, _ in subs],
-        "months": [month_block(j) for j in range(len(ms) - 1, max(-1, len(ms) - 1 - MONTHS), -1)],
+        "months": [{k: v for k, v in b.items() if k not in ("rows", "groups")} for b in blocks],
         "rules": {"hiPrev": HI_PREV, "hiMin": HI_MIN, "allMin": ALL_MIN, "pre": PRE, "nh": NH,
                   "since": ms[0]},
-    }
-    changed = twse.write_if_changed(twse.DATA_DIR / "revenue.json", out)
-    b = out["months"][0]
+    })
+    b = blocks[0]
     print(f"營收 {b['m']}：{b['count']} 家（上月 {b['prevCount']}），"
-          f"12 個月新高 {sum(1 for r in b['rows'] if r.get('hi'))} 家{'' if changed else '，無變化'}")
+          f"12 個月新高 {sum(1 for r in b['rows'] if r.get('hi'))} 家；共 {len(blocks)} 個月，{changed} 個月的檔有變")
     return 0
 
 

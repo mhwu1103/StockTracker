@@ -425,21 +425,23 @@ def watch_insti_lines(events: dict) -> list:
 # --------------------------------------------------------------------------- #
 # 自選股公布月營收
 # --------------------------------------------------------------------------- #
-# 讀營收頁的 revenue.json（build_revenue.py 在推播之前跑）：公布日是本站第一次在
+# 讀營收頁的 revenue/（build_revenue.py 在推播之前跑）：公布日是本站第一次在
 # 公開資訊觀測站彙總表上看到的那一天，所以「今天公布」＝今天的排程第一次看到。
-REV_PATH = twse.DATA_DIR / "revenue.json"
+# 會在今天第一次出現的只有最近兩個月（當月與晚報的上個月）。
+REV_DIR = twse.DATA_DIR / "revenue"
 REV_NOTE = "營收公布日是本站排程第一次看到的那一天；新高是比前 12 個月都高。"
 
 
 def rev_watch_events(date_iso: str, codes: list) -> list:
     """[(月份, 列)]：自選股裡今天公布營收的。"""
-    data = _json_or_none(REV_PATH) or {}
+    index = _json_or_none(REV_DIR / "index.json") or {}
     want = set(codes)
     out = []
-    for block in data.get("months") or []:
+    for meta in (index.get("months") or [])[:2]:
+        block = _json_or_none(REV_DIR / f"{meta['m']}.json") or {}
         for r in block.get("rows") or []:
             if r.get("pub") == date_iso and r["c"] in want:
-                out.append((block["m"], r))
+                out.append((meta["m"], r))
     return out
 
 

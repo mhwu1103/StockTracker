@@ -3076,3 +3076,12 @@ button.ustag {
 .rev-lumpy summary::-webkit-details-marker { display: none; }
 .rev-lumpy summary h2::after { content: "　展開 ▾"; font-size: 12px; font-weight: 400; color: var(--muted); }
 .rev-lumpy[open] summary h2::after { content: "　收合 ▴"; }
+.rev-month {
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+}

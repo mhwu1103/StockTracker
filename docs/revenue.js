@@ -3,6 +3,8 @@
  *
  * 回答的問題：**這個月誰的營收剛公布、創了新高？股價反應了沒？同一族的其他家呢？**
  *
+ * 月份（最近 12 個月）用下拉選單切，每個月一個檔、切到才抓。
+ *
  *   速報   當月已公布的每一家：年增、月增、新高、連續年增，與公布後的股價反應
  *   族群   題材子族群裡已公布幾家、年增中位數、幾家創新高
  *   自選   排行榜那邊加的自選股（同一份 localStorage），公布了沒、數字如何
@@ -75,7 +77,27 @@ function save(key, value) {
   try { localStorage.setItem(key, value); } catch (err) { /* 記不住就算了 */ }
 }
 
-const block = () => state.data.months[state.month];
+// 每個月一個檔（build_revenue.py），切到那個月才抓。null = 載不到
+const monthData = {};
+
+function block() {
+  const meta = state.data.months[state.month];
+  const got = monthData[meta.m];
+  return got ? { ...meta, ...got } : null;
+}
+
+async function loadMonth(m) {
+  if (m in monthData) return;
+  monthData[m] = undefined;
+  try {
+    const res = await fetch(`${DATA}/revenue/${m}.json`);
+    if (!res.ok) throw new Error(`${m} ${res.status}`);
+    monthData[m] = await res.json();
+  } catch (err) {
+    console.error(err);
+    monthData[m] = null;
+  }
+}
 const subName = (k) => state.data.subs[k][1];
 
 // 一家公司的一列：主數字是年增，右下是公布後的股價
@@ -128,9 +150,11 @@ function more(rows, render, empty) {
     ${rest > 0 ? `<button class="cyc-morebtn" data-more="1">再列 ${Math.min(PAGE, rest)} 家（還有 ${rest}）</button>` : ''}`;
 }
 
+// 十二個月攤成藥丸在手機上要三排，所以用下拉選單
 function monthPills() {
-  const opts = state.data.months.map((B, k) => ({ value: String(k), label: ym(B.m) }));
-  return pills('month', opts, String(state.month));
+  return `<select class="rev-month" aria-label="月份">${state.data.months
+    .map((B, k) => `<option value="${k}" ${k === state.month ? 'selected' : ''}>${ym(B.m)}營收${k === 0 ? '（最新）' : ''}</option>`)
+    .join('')}</select>`;
 }
 
 // --------------------------------------------------------------------------
@@ -146,7 +170,7 @@ function flashView() {
   const today = state.data.today;
   const fresh = today ? B.rows.filter((r) => r.pub === today).length : 0;
   const R = state.data.rules;
-  const pending = B.prevCount - B.count;
+  const pending = state.month === 0 ? B.prevCount - B.count : 0;   // 過去的月份早就報齊，差的是下市或停報
   return `<section class="card">
     <div class="controls">${monthPills()}</div>
     <div class="stat-grid">
@@ -161,7 +185,7 @@ function flashView() {
     <h2>${ym(B.m)}營收 <small>${rows.length} 家</small></h2>
     <div class="controls">${pills('filter', FILTERS, state.filter)}</div>
     <div class="controls">${pills('sort', SORTS, state.sort)}</div>
-    <p class="note">右邊大字是年增率；下面是${B.known ? '公布後' : `申報期限 ${md(B.deadline)} 起`}到 ${md(state.data.asof)} 收盤的股價漲跌（還原除權息）。
+    <p class="note">右邊大字是年增率；下面是${B.known ? '公布後' : `申報期限 ${md(B.deadline)} 起`}到 ${md(B.end)} 收盤的股價漲跌（還原除權息）${state.month ? '——過去的月份算到下一次營收申報期限為止，數字固定不再變' : ''}。
       「12 個月新高」比前 ${R.hiPrev} 個月都高；「2019 起新高」比 ${esc(R.since)} 以來每個月都高（前面至少 ${R.allMin} 個月）。
       ${B.known < B.count ? `${B.count - B.known} 家在本站開始記公布日之前就已公布，從申報期限（${md(B.deadline)}）算起。` : ''}</p>
     ${more(rows, (r) => revRow(r, B), '沒有符合的公司。')}
@@ -235,7 +259,16 @@ function searchView() {
 // --------------------------------------------------------------------------
 function render() {
   const d = state.data;
+  const meta = d.months[state.month];
+  if (!(meta.m in monthData)) {
+    loadMonth(meta.m).then(render);
+  }
   const B = block();
+  if (!B) {
+    $('#view').innerHTML = `<section class="card"><div class="controls">${monthPills()}</div>
+      <p class="hint">${monthData[meta.m] === null ? `${ym(meta.m)}的資料載不到。` : '載入中…'}</p></section>`;
+    return;
+  }
   $('#meta').textContent = `${ym(B.m)}營收 ${B.count} 家 · 收盤 ${d.asof}`;
   if (state.q.trim()) {
     $('#view').innerHTML = searchView();
@@ -247,6 +280,12 @@ function render() {
 }
 
 function bind() {
+  $('#view').addEventListener('change', (ev) => {
+    if (!ev.target.matches('.rev-month')) return;
+    state.month = Number(ev.target.value);
+    state.more = 1;
+    render();
+  });
   $('#view').addEventListener('click', (ev) => {
     const el = ev.target.closest('button');
     if (!el) return;
@@ -254,9 +293,6 @@ function bind() {
     if (ds.tab) {
       state.tab = ds.tab;
       save(KEYS.tab, ds.tab);
-    } else if (ds.month) {
-      state.month = Number(ds.month);
-      state.more = 1;
     } else if (ds.filter) {
       state.filter = ds.filter;
       state.more = 1;
@@ -305,8 +341,8 @@ function restore() {
 async function main() {
   restore();
   try {
-    const res = await fetch(`${DATA}/revenue.json`);
-    if (!res.ok) throw new Error(`revenue.json ${res.status}`);
+    const res = await fetch(`${DATA}/revenue/index.json`);
+    if (!res.ok) throw new Error(`revenue/index.json ${res.status}`);
     state.data = await res.json();
   } catch (err) {
     console.error(err);
