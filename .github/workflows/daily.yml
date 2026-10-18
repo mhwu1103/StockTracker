@@ -134,6 +134,11 @@ jobs:
         timeout-minutes: 7
         run: python scripts/fetch_pair.py kr
 
+      # 台指期三大法人未平倉（期交所 CSV，近 40 天）。策略頁拿外資的淨部位當參考。
+      - name: 抓台指期法人未平倉
+        continue-on-error: true
+        run: python scripts/fetch_futures.py
+
       # 處置股公告（證交所 punish、櫃買 disposal）。交易所在收盤後才公告，排在抓資料的
       # 最後面，盡量等到當天的公告出來；一次抓一整年，檔案很小，不受下面的修剪影響。
       - name: 抓處置股

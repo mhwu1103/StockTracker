@@ -446,7 +446,7 @@ openapi 的 t187ap05 只給最新一個月，而「成長有沒有在加速」�
 閒錢放 0050；0050 跌到 120 日線之下時不買新股、閒錢轉現金。它是排列組合挖掘（`mine_strategies.py`）、動能出場比較（`backtest_momentum_exit.py`）與
 壓力測試（`backtest_strategy.py`）一路收斂出來的，數字與限制在 BACKTEST.md「動能 ＋ 營收創新高」。
 
-- **今天**：多空狀態（0050 距 120 日線）、今天收盤後的訊號，照 20 日漲幅排，標出明天開盤依空位會買的那幾檔；
+- **今天**：多空狀態（0050 距 120 日線；底下附外資台指期淨部位當參考，不在規則裡）、今天收盤後的訊號，照 20 日漲幅排，標出明天開盤依空位會買的那幾檔；
   實盤追蹤的持股
 - **績效**：實盤追蹤（2026-10-19 開盤起，回測沒看過的資料）與近一年照同一套規則跑的淨值，都跟 0050 並排
 - **規則**：規則本身、5 年回測的範圍（30 種挑股順序的中位數）、它在哪幾年輸 0050
@@ -620,6 +620,9 @@ scripts/
                     純標準函式庫
   fetch_exright.py  除權息計算結果（證交所 TWT49U、櫃買 exDailyQ）→ docs/data/exright/<年>.json，
                     每日抓今年與去年；第一次 --since 2019
+  fetch_futures.py  台指期（大台、小台）三大法人未平倉淨口數 → docs/data/futures.json。每日抓期交所
+                    近 40 天（期交所只給查近三年）；第一次 --finmind 2018-06-01 用 FinMind 回補
+  backtest_futures.py 外資台指期當大盤多空開關的回測（只印表）
   fetch_disposal.py 處置股公告（證交所 punish、櫃買 disposal）→ docs/data/disposal/<年>.json，
                     每日抓今年；第一次 --since 2021
   build_disposal.py 處置頁 → docs/data/disposal.json：今天公布的、處置中的、近期每一筆的結果
@@ -742,6 +745,7 @@ docs/               GitHub Pages 網站根目錄
     exright/<年>.json  除權息 {代號: [[日期, 參考價 ÷ 前收盤], ...]}，上市櫃併在一起
     season.json     月曆：每個月份的買進／賣出清單（每年的超額）、偏強偏弱產業、運氣基準、walk-forward
     value/river/<前兩碼>.json  本益比河流圖 {代號: [[月份, 月底收盤, 本益比], ...]}，近 5 年
+    futures.json    台指期法人未平倉 {d, tx: {fo, tr, de}, mtx: {fo, tr, de}}，淨口數，與 d 平行
     disposal/<年>.json  處置公告 [[公布日, 代號, 名稱, 起日, 迄日, 第幾次, 撮合分鐘, 市場], ...]
     disposal.json   處置頁直接讀的表：today／active／recent 三份清單、近期統計與回測數字（research）
     revenue/        營收頁：index.json 是月份清單與子族群名，<月>.json 是那個月每一家的營收；

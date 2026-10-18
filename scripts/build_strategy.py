@@ -58,6 +58,30 @@ RESEARCH = {
 }
 
 
+# 外資台指期（不在規則裡，只當參考）：回測在 BACKTEST.md「台指期法人未平倉」（scripts/backtest_futures.py）。
+# 放進策略當多空開關會變差，但「空單一個月加得最快」的那 20% 日子，之後 5 天大盤平均約 0%（其他日子 +0.6%）。
+FUT_WIN, FUT_CHG, FUT_PCT = 250, 20, 0.2
+FUT_RESEARCH = {"fast5": 0.0, "other5": 0.6, "since": "2019-07"}
+
+
+def futures_note():
+    """外資約當大台淨未平倉（大台 ＋ 小台 ÷ 4）、近 20 日變化，與那個變化在近一年裡的百分位。"""
+    f = load(os.path.join(SITE, "futures.json"))
+    if not f:
+        return None
+    d = f["d"]
+    F = [None if a is None or b is None else a + b / 4 for a, b in zip(f["tx"]["fo"], f["mtx"]["fo"])]
+    ok = [(dd, v) for dd, v in zip(d, F) if v is not None]
+    if len(ok) < FUT_WIN + FUT_CHG:
+        return None
+    days, vals = zip(*ok)
+    chg = [vals[i] - vals[i - FUT_CHG] for i in range(FUT_CHG, len(vals))]
+    win = chg[-FUT_WIN:]
+    rank = sum(1 for x in win if x < win[-1]) / len(win)
+    return {"d": days[-1], "net": round(vals[-1]), "chg": round(chg[-1]), "rank": round(rank * 100),
+            "fast": rank < FUT_PCT, "days": FUT_CHG, "pct": round(FUT_PCT * 100), "research": FUT_RESEARCH}
+
+
 def pct(x, d=1):
     return None if x is None or not np.isfinite(x) else round(float(x) * 100, d)
 
@@ -153,6 +177,7 @@ def main() -> int:
         "gap": pct(D.b_close[last] / ma_now - 1),
         "close": D.P.C["0050"].get(last),
     }
+    regime["fut"] = futures_note()
     cap = S.RULE["slots"] if bull else S.RULE["bear_slots"]
     free = max(0, cap - len(staying))
 

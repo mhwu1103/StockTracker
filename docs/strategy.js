@@ -148,6 +148,18 @@ const holdingRow = (r) => stockRow(r, pct(r.r, 1), dir(r.r),
   `${md(r.ed)} 開盤 ${fmt(r.px)} 買`);
 const tradeRow = (r) => stockRow(r, pct(r.r, 1), dir(r.r), `${md(r.ed)} → ${md(r.xd)}`, '已扣來回成本');
 
+// 外資台指期：不在規則裡，只當參考（回測在 BACKTEST.md「台指期法人未平倉」）
+function futLine(f) {
+  if (!f) return '';
+  const lots = (v) => `${v < 0 ? '淨空' : '淨多'} ${Math.abs(v).toLocaleString('zh-TW')} 口`;
+  const move = f.chg === 0 ? '沒變' : `${f.chg < 0 ? '空單多了' : '空單少了'} ${Math.abs(f.chg).toLocaleString('zh-TW')} 口`;
+  return `<p class="note">外資台指期（約當大台）${lots(f.net)}，近 ${f.days} 個交易日${move}——在近一年裡排第 ${f.rank}%
+    （越低＝空單加得越快）。${f.fast
+      ? `<b>落在最快的 ${f.pct}%</b>：回測（${esc(f.research.since)} 起）這種日子之後 5 天，大盤平均 ${pct(f.research.fast5, 1)}，
+        其他日子 ${pct(f.research.other5, 1)}——短線別追高。`
+      : ''}這一條不在規則裡：拿它當多空開關放進策略，結果比 120 日線差。</p>`;
+}
+
 // --------------------------------------------------------------------------
 function todayView() {
   const d = state.data;
@@ -162,7 +174,7 @@ function todayView() {
       <b>${R.bull ? '多頭：照常買進' : '空頭：明天不買新股，閒錢放現金'}</b>
       <span>0050 收盤 ${fmt(R.close)}，距 ${R.ma} 日線 ${pct(R.gap, 1)}。${esc(R.since)} 起${R.bull ? '站在線上' : '跌破'}。
         ${R.bull ? `跌破 ${R.ma} 日線就停止買新股、閒錢轉現金。` : `手上的股票照原規則抱滿 ${d.rule.hold} 天；站回 ${R.ma} 日線才恢復買進。`}</span>
-    </p></section>` : '';
+    </p>${futLine(R.fut)}</section>` : '';
   const bear = R && !R.bull;
   return `${regime}<section class="card">
     <h2>${bear ? '今天的訊號（空頭，不買）' : '明天開盤要買'} <small>${d.d} 收盤後 · 空位 ${d.free}/${d.rule.slots}</small></h2>
