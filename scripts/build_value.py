@@ -313,6 +313,41 @@ def kd_signal(k, wk):
 
 
 # --------------------------------------------------------------------------- #
+# 6. 本益比河流圖
+# --------------------------------------------------------------------------- #
+RIVER_DIR = valuation.VALUE_DIR / "river"
+
+
+def write_river(pe_hist: dict, stocks: dict) -> int:
+    """每個月底的 [月份, 收盤, 本益比]（近 BAND_YEARS 年＋這個月），給個股卡畫河流圖。
+
+    河流的每一條線是「那個月的近四季 EPS × 一個本益比」，EPS 用收盤 ÷ 本益比倒推（同一天的兩個數字，
+    所以不必還原除權息）。倍數用估值區間的平均最低／平均／平均最高——跟位階判斷同一把尺。
+    兩千檔攤在一個檔裡太大，前端只在搜尋卡打開時才要，所以依代號前兩碼分檔（約 90 份、各十幾 KB）。
+    """
+    months = sorted({m for rows in pe_hist.values() for m, _, _ in rows})[-(BAND_YEARS * 12 + 1):]
+    keep = set(months)
+    seq = defaultdict(dict)
+    for rows in pe_hist.values():
+        for month, _, table in rows:
+            if month not in keep:
+                continue
+            for code, vals in table.items():
+                if code in stocks and stocks[code]["peBand"] and len(vals) > 3 and vals[3]:
+                    pe = vals[0] if vals[0] and 0 < vals[0] <= PE_MAX else None
+                    seq[code][month] = [vals[3], pe]
+    files = defaultdict(dict)
+    for code, by in seq.items():
+        files[code[:2]][code] = [[m, *by[m]] for m in months if m in by]
+    for old in RIVER_DIR.glob("*.json") if RIVER_DIR.exists() else []:
+        if old.stem not in files:
+            old.unlink()
+    for prefix, body in files.items():
+        twse.write_if_changed(RIVER_DIR / f"{prefix}.json", body)
+    return len(seq)
+
+
+# --------------------------------------------------------------------------- #
 def main() -> int:
     dates, bars = load_bars()
     taiex_doc = twse.read_json(twse.DATA_DIR / "taiex.json") or {}
@@ -480,6 +515,8 @@ def main() -> int:
                             "sig": got["sig"]})
     kd_rows.sort(key=lambda r: r["k"])
 
+    rivers = write_river(pe_hist, stocks)
+
     mv = market_view(taiex, bars, dates)
     twse.write_json(OUT_PATH, {
         "updated": datetime.now(twse.TAIPEI).isoformat(timespec="seconds"),
@@ -510,7 +547,7 @@ def main() -> int:
           f"動用 {mv['tranches']['used']}/{TRANCHES} 份；台積電訊號 {mv['tsmcSignal']}；盤整 {mv['box']}")
     print(f"  個股 {len(stocks)} 檔：" + "、".join(f"{k} {v}" for k, v in lv.items()))
     print(f"  量價齊揚的子族群：" + "、".join(r["s"] for r in theme_rows if {"vol", "price"} <= set(r["tags"])))
-    print(f"  KD 訊號 {len(kd_rows)} 檔")
+    print(f"  KD 訊號 {len(kd_rows)} 檔；本益比河流圖 {rivers} 檔")
     return 0
 
 

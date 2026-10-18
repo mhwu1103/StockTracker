@@ -80,6 +80,71 @@ const state = {
   bt: undefined,       // 回測資料：undefined 還沒載、null 載不到
 };
 
+// 本益比河流圖：代號前兩碼一份（build_value.py 的 write_river），搜尋卡打開時才抓
+const rivers = {};            // 前兩碼 -> {代號: [[月份, 收盤, 本益比]…]}；null = 載不到
+const riverLoading = new Set();
+const RIVER_MAX_CARDS = 3;    // 結果超過幾張卡就不畫河流圖（打一個字就命中上百檔）
+
+function riverFor(code) {
+  const k = code.slice(0, 2);
+  if (k in rivers) return rivers[k] ? rivers[k][code] || null : null;
+  if (!riverLoading.has(k)) {
+    riverLoading.add(k);
+    fetch(`${DATA}/value/river/${k}.json`)
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null)
+      .then((j) => {
+        rivers[k] = j;
+        riverLoading.delete(k);
+        if (state.q.trim()) render();
+      });
+  }
+  return undefined;
+}
+
+/**
+ * 河流圖：每個月底的收盤，疊上「那個月的 EPS × 平均最低／平均／平均最高本益比」三條線。
+ * 收盤在最上面那條之上是偏貴、最下面那條之下是便宜——跟上面那條位階條是同一把尺，只是攤在時間上。
+ * 虧損（沒有本益比）的月份那三條線斷開。
+ */
+function riverChart(rows, b) {
+  if (!rows || rows.length < 6 || !b) return '';
+  const W = 600;
+  const H = 170;
+  const pad = 6;
+  const pts = rows.map(([m, c, pe]) => ({ m, c, lo: pe ? (c / pe) * b.lo : null, avg: pe ? (c / pe) * b.avg : null, hi: pe ? (c / pe) * b.hi : null }));
+  const all = pts.flatMap((p) => [p.c, p.lo, p.hi]).filter((v) => v !== null);
+  const lo = Math.min(...all);
+  const hi = Math.max(...all);
+  const n = pts.length;
+  const x = (k) => pad + (k / Math.max(1, n - 1)) * (W - pad * 2);
+  const y = (v) => pad + (1 - (v - lo) / (hi - lo || 1)) * (H - pad * 2);
+  // 有缺值的線拆成好幾段，不把虧損的月份連過去
+  const lines = (key) => {
+    const segs = [];
+    let cur = [];
+    pts.forEach((p, k) => {
+      if (p[key] === null) { if (cur.length) segs.push(cur); cur = []; return; }
+      cur.push(`${x(k).toFixed(1)},${y(p[key]).toFixed(1)}`);
+    });
+    if (cur.length) segs.push(cur);
+    return segs.map((sg) => `<polyline class="val-river__${key}" points="${sg.join(' ')}"/>`).join('');
+  };
+  const ticks = pts.map((p, k) => (p.m.endsWith('-01') ? `<span style="left:${(x(k) / W) * 100}%">${p.m.slice(0, 4)}</span>` : '')).join('');
+  const hits = pts.map((p, k) => `<rect x="${(x(k) - (W / n) / 2).toFixed(1)}" y="0" width="${(W / n).toFixed(1)}" height="${H}">
+    <title>${p.m}　收盤 ${fmt(p.c)}${p.hi === null ? '　虧損，沒有本益比' : `
+偏貴 ${fmt(p.hi, 1)}　平均 ${fmt(p.avg, 1)}　便宜 ${fmt(p.lo, 1)}`}</title></rect>`).join('');
+  return `<figure class="cyc-chart val-river">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="本益比河流圖" style="height:150px">
+      ${lines('hi')}${lines('avg')}${lines('lo')}${lines('c')}
+      <g class="val-river__hit">${hits}</g>
+    </svg>
+    <div class="cyc-chart__years">${ticks}</div>
+  </figure>
+  <p class="gy-keys"><span class="cyc-key val-river__key--c">收盤</span><span class="cyc-key val-river__key--hi">平均最高 ${fmt(b.hi, 1)} 倍</span>
+    <span class="cyc-key val-river__key--avg">平均 ${fmt(b.avg, 1)} 倍</span><span class="cyc-key val-river__key--lo">平均最低 ${fmt(b.lo, 1)} 倍</span></p>`;
+}
+
 // 搜尋結果最多列幾檔。打一個字（「電」）就會命中上百檔，全畫出來既慢也不是在找東西
 const SEARCH_LIMIT = 30;
 
@@ -554,7 +619,7 @@ function kdLine(k, eligible) {
 }
 
 /** 一檔的完整判斷卡：這一頁六個軸對它說了什麼，攤在同一張上。 */
-function searchCard({ code, s, etf }) {
+function searchCard({ code, s, etf }, river = false) {
   const link = `<a class="linky" href="index.html#/stock/${esc(code)}">個股頁 ↗</a>`;
   if (etf) {
     return `<article class="val-card">
@@ -598,6 +663,7 @@ function searchCard({ code, s, etf }) {
     <header class="val-card__head"><b>${esc(s.n || code)}</b><small>${esc(code)}${s.ind ? ` · ${esc(s.ind)}` : ''}</small>
       <span class="val-card__price">${fmt(s.price)}</span>${link}</header>
     <div class="val-card__band">${bandBar(s.pe, b)}</div>
+    ${river && b ? riverBlock(code, b) : ''}
     <dl class="val-card__dl">
       <dt>估值</dt><dd>${pe}</dd>
       <dt>營收</dt><dd>${growth}</dd>
@@ -608,6 +674,12 @@ function searchCard({ code, s, etf }) {
   </article>`;
 }
 
+function riverBlock(code, b) {
+  const rows = riverFor(code);
+  if (rows === undefined) return '<p class="val-muted val-river__wait">河流圖載入中…</p>';
+  return rows ? riverChart(rows, b) : '';
+}
+
 function searchView(d) {
   const hits = searchHits(d, state.q);
   const shown = hits.slice(0, SEARCH_LIMIT);
@@ -615,7 +687,7 @@ function searchView(d) {
     ? `找到 ${hits.length} 檔${hits.length > shown.length ? `，列出前 ${shown.length} 檔——再多打幾個字縮小範圍` : ''}。`
     : '沒有符合的標的。這一頁只收題材族群的成分股、金融股，與成交熱絡的原型 ETF。';
   return `<section class="card"><p class="lede">「${esc(state.q.trim())}」：${head}</p></section>
-    ${shown.length ? `<section class="card">${shown.map(searchCard).join('')}</section>` : ''}`;
+    ${shown.length ? `<section class="card">${shown.map((h) => searchCard(h, shown.length <= RIVER_MAX_CARDS)).join('')}</section>` : ''}`;
 }
 
 // --------------------------------------------------------------------------

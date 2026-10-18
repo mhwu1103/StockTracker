@@ -3056,3 +3056,19 @@ button.ustag {
 .rev-grp[aria-expanded="true"] { background: var(--bg); }
 .rev-members { border-bottom: 1px solid var(--line); padding-left: 12px; }
 .ident .rev-sub { display: block; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: normal; }
+
+/* 價值頁搜尋卡的本益比河流圖：收盤是實線（主角），三條本益比線是細虛線；偏貴用 --side、便宜用 --star3，
+ * 都不是漲跌的紅綠（那兩個顏色在全站是漲跌）。每個月一塊透明的 rect 帶 <title>，滑過去看數字。 */
+.val-river { border-top: 0; padding: 4px 0 0; }
+.val-river polyline { fill: none; vector-effect: non-scaling-stroke; }
+.val-river__c { stroke: var(--text); stroke-width: 2; }
+.val-river__hi { stroke: var(--side); stroke-width: 1.2; stroke-dasharray: 4 3; }
+.val-river__avg { stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 2 3; }
+.val-river__lo { stroke: var(--star3); stroke-width: 1.2; stroke-dasharray: 4 3; }
+.val-river__hit rect { fill: transparent; }
+.val-river__hit rect:hover { fill: var(--muted); opacity: .08; }
+.val-river__key--c::before { background: var(--text); }
+.val-river__key--hi::before { background: var(--side); }
+.val-river__key--avg::before { background: var(--muted); }
+.val-river__key--lo::before { background: var(--star3); }
+.val-river__wait { font-size: 12px; margin: 6px 0; }
