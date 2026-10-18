@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>營收</title>
+<meta name="description" content="月營收速報：這個月誰剛公布、誰創新高、股價反應了沒、同一族的其他家呢">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0f1216">
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+<!-- ?v= 是前端版號，各頁與 sw.js 要一致，見 index.html 的說明 -->
+<link rel="stylesheet" href="style.css?v=94">
+<!-- 亮／暗切換。刻意不用 defer，理由在 theme.js 的開頭。 -->
+<script src="theme.js?v=94"></script>
+</head>
+<!-- data-view 告訴 nav.js：這是獨立頁面，而且停在「環境」群組的「營收」那一項 -->
+<body data-view="rev">
+
+<header class="app-bar">
+  <div class="app-bar__top">
+    <h1>營收</h1>
+  </div>
+  <p class="app-bar__meta" id="meta">載入中…</p>
+</header>
+
+<nav class="tabs"></nav>
+<nav class="subtabs"></nav>
+
+<!-- 搜尋框放在 #view 外面，理由同 value.html：#view 每次整塊重畫，框在裡面會失去焦點 -->
+<main class="view">
+  <div class="val-search">
+    <input type="search" id="q" placeholder="搜尋代號、名稱或產業，例如 2330、台積、半導體" autocomplete="off" enterkeyhint="search">
+  </div>
+  <div id="view">
+    <p class="hint">載入中…</p>
+  </div>
+</main>
+
+<footer class="foot">
+  月營收來自公開資訊觀測站的彙總表；公布日是本站第一次在表上看到的那一天（平日收盤後檢查一次），
+  不是申報的時間戳。股價還原除權息。這一頁不是投資建議。
+</footer>
+
+<script src="nav.js?v=94" defer></script>
+<script src="revenue.js?v=94" defer></script>
+</body>
+</html>

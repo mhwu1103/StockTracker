@@ -3039,3 +3039,20 @@ button.ustag {
 .gy-mark--ok { background: var(--accent); color: #fff; }
 .gy-mark--no { background: var(--side); color: #fff; }
 .gy-mark--q { border: 1px solid var(--line); color: var(--muted); }
+
+/* ---------- 營收頁（rev.html） ----------
+ * 族群那一列是可以點開的 button，長得跟一般的 .row 一樣；成員縮排一格，看得出是誰底下的。
+ */
+.rev-grp {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rev-grp[aria-expanded="true"] { background: var(--bg); }
+.rev-members { border-bottom: 1px solid var(--line); padding-left: 12px; }
+.ident .rev-sub { display: block; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: normal; }

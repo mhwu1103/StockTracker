@@ -7,7 +7,7 @@
     SITE_URL   有設定的話，訊息末端會附上網站連結
     WATCHLIST  逗號分隔的代號（例如 2330,2454）。有設定時，全市場的兩則（排行、籌碼與資金）之後
                再多發兩則只講這幾檔的動態（進出榜 + 跌破／站回 5、10 日線 +
-               逐檔的籌碼動靜）：分段版與族群版（族群依網站題材分類自動判斷，
+               逐檔的籌碼動靜 + 當天公布的月營收）：分段版與族群版（族群依網站題材分類自動判斷，
                secret 只放代號）。自選股當天沒動靜就只發全市場的兩則。
                **檔數沒有上限** —— 排程本來就對全市場算一次，選幾檔不影響成本。
                網站上的自選股存在瀏覽器裡，不會自動同步到這裡，要自己把清單設成
@@ -423,6 +423,43 @@ def watch_insti_lines(events: dict) -> list:
     return lines
 
 # --------------------------------------------------------------------------- #
+# 自選股公布月營收
+# --------------------------------------------------------------------------- #
+# 讀營收頁的 revenue.json（build_revenue.py 在推播之前跑）：公布日是本站第一次在
+# 公開資訊觀測站彙總表上看到的那一天，所以「今天公布」＝今天的排程第一次看到。
+REV_PATH = twse.DATA_DIR / "revenue.json"
+REV_NOTE = "營收公布日是本站排程第一次看到的那一天；新高是比前 12 個月都高。"
+
+
+def rev_watch_events(date_iso: str, codes: list) -> list:
+    """[(月份, 列)]：自選股裡今天公布營收的。"""
+    data = _json_or_none(REV_PATH) or {}
+    want = set(codes)
+    out = []
+    for block in data.get("months") or []:
+        for r in block.get("rows") or []:
+            if r.get("pub") == date_iso and r["c"] in want:
+                out.append((block["m"], r))
+    return out
+
+
+def watch_rev_lines(events: list) -> list:
+    if not events:
+        return []
+    lines = ["", f"<b>📊 公布月營收 · {len(events)} 檔</b>"]
+    for m, r in sorted(events, key=lambda e: e[1].get("yoy", -1e9), reverse=True):
+        yoy = r.get("yoy")
+        mom = r.get("mom")
+        tag = "　🏆 2019 起新高" if r.get("hiAll") else "　🏆 12 個月新高" if r.get("hi") else ""
+        lines += [f"<b>{escape(r.get('n') or r['c'])}</b> {r['c']}{GAP}{int(m[5:])} 月 {r['rev']:,.1f} 億{tag}",
+                  f"{GAP}└ 年增 {'—' if yoy is None else f'{yoy:+.1f}%'}"
+                  f"{GAP}月增 {'—' if mom is None else f'{mom:+.1f}%'}"
+                  + (f"{GAP}連 {r['run']} 月年增" if r.get("run", 0) >= 2 else "")]
+    lines.append(note(REV_NOTE))
+    return lines
+
+
+# --------------------------------------------------------------------------- #
 # 自選股的均線穿越（5／10 日線）
 # --------------------------------------------------------------------------- #
 # 只在「穿越的那一天」通知：昨天收在線上、今天收在線下就是跌破，反過來是站回。
@@ -600,7 +637,7 @@ def build_group_message(payload: dict, prev: dict, groups: list, site_url: str =
 
 def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = "",
                         scope_name: str = "", total_label: str = "大盤",
-                        insti_events=None, ma_events=None) -> str:
+                        insti_events=None, ma_events=None, rev_events=None) -> str:
     """只講自選股：今天在不在榜上、名次多少、是不是剛進榜或剛掉出榜。"""
     today = {s["code"]: s for s in payload["stocks"] if s["rank"] <= twse.STREAK_RANK}
     before = {s["code"]: s for s in (prev or {}).get("stocks", []) if s["rank"] <= twse.STREAK_RANK}
@@ -642,6 +679,7 @@ def build_watch_message(payload: dict, prev: dict, codes: list, site_url: str = 
     # 籌碼異動是兩件事，所以這一段不受上面的「在榜上／掉出榜」影響，自選股全部都看。
     lines += watch_ma_lines(ma_events or {})
     lines += watch_insti_lines(insti_events or {})
+    lines += watch_rev_lines(rev_events or [])
 
     if site_url:
         lines += ["", f'<a href="{escape(site_url)}">看完整排行</a>']
@@ -726,19 +764,21 @@ def main() -> int:
         was_on = {s["code"] for s in (prev or {}).get("stocks", []) if s["rank"] <= twse.STREAK_RANK}
         events = insti_watch_events(date_iso, codes)
         crosses = ma_cross_events(date_iso, codes)
+        revs = rev_watch_events(date_iso, codes)
         # 自選股完全沒動靜就別發，每天一封「今天沒事」只會讓人關掉通知。
         # 但「沒動靜」要把籌碼與均線穿越算進去 —— 只看進出榜的話，自選股有土洋對作
         # 或跌破 5 日線、卻剛好沒進前 200 名時整封信都不會發，而那正是最該通知的情況。
         ranked = any(c in on_board or c in was_on for c in codes)
-        if not ranked and not events and not crosses:
-            print(f"自選股（{len(codes)} 檔）在 {date_iso} 沒有進出榜、籌碼動靜或均線穿越，只發全市場的。")
+        if not ranked and not events and not crosses and not revs:
+            print(f"自選股（{len(codes)} 檔）在 {date_iso} 沒有進出榜、籌碼動靜、均線穿越或營收公布，只發全市場的。")
         else:
             if not ranked:
-                print(f"自選股沒有進出榜，但有 {len(events)} 檔籌碼動靜、{len(crosses)} 檔均線穿越，照發。")
+                print(f"自選股沒有進出榜，但有 {len(events)} 檔籌碼動靜、{len(crosses)} 檔均線穿越、"
+                      f"{len(revs)} 檔公布營收，照發。")
             # 兩則：先發原本的分段版，再發族群版。兩種都在試用，用一陣子再決定留哪一種。
             messages += [
                 build_watch_message(payload, prev, codes, site_url, scope_name,
-                                    total_label, events, crosses),
+                                    total_label, events, crosses, revs),
                 build_group_message(payload, prev, auto_groups(codes), site_url, scope_name,
                                     events, crosses),
             ]

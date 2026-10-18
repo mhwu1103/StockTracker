@@ -224,6 +224,12 @@ jobs:
         continue-on-error: true
         run: python scripts/build_cycle.py
 
+      # 營收頁：最近兩個月的月營收速報、族群對照與公布後的股價反應。讀 value/rev/、value/revdate/
+      # （上面 fetch_value 記的公布日）、close/、exright/、themes.json。
+      - name: 重算營收頁
+        continue-on-error: true
+        run: python scripts/build_revenue.py
+
       # 景氣頁的月曆：1～12 月清單與它的 walk-forward。讀 value/pe/ 與 exright/。
       - name: 重算景氣頁月曆
         continue-on-error: true

@@ -8,6 +8,9 @@
   覆寫。要五年的區間，所以回補給 61 個月。
 - **月營收**：`--rev-months` 個月。每月 10 日前公布上個月，而且常有公司晚報、更正，
   所以最近兩個月每天都重抓；更早的已存在就跳過。要一年的新高與三個月平均，回補給 14 個月。
+- **營收公布日**：彙總表沒有公布日，所以每天比對——某一家第一次出現在表上，就記下今天
+  （value/revdate/）。排程只在平日 16:30 跑，週末或盤後才申報的會記成下一個排程日，所以這是
+  「本站第一次看到」，不是申報的時間戳。這個檔案開始記之前就已經在表上的，記成 null（不知道）。
 
 資料來源與格式見 valuation.py。
 """
@@ -40,6 +43,18 @@ def months_back(first: date, n: int) -> list:
         out.append((y, m))
         y, m = (y, m - 1) if m > 1 else (y - 1, 12)
     return out[::-1]
+
+
+def record_dates(month: str, merged: dict, old: dict, today: date) -> None:
+    """第一次在表上看到的那一天。日期檔還不存在時，已經在舊表上的那些不知道是哪天公布的。"""
+    path = valuation.revdate_path(month)
+    dates = twse.read_json(path) if path.exists() else {c: None for c in old}
+    new = [c for c in merged if c not in dates]
+    for c in new:
+        dates[c] = today.isoformat()
+    if new or not path.exists():
+        twse.write_if_changed(path, dict(sorted(dates.items())))
+        print(f"  營收公布日 {month}：今天新出現 {len(new)} 家")
 
 
 def main() -> int:
@@ -97,8 +112,11 @@ def main() -> int:
         if not merged:
             print(f"  月營收 {month}：還沒公布")
             continue
+        old = twse.read_json(path) if path.exists() else {}
         changed = twse.write_if_changed(path, merged)
         print(f"  月營收 {month}：{len(merged)} 家{'' if changed else '，無變化'}")
+        if (y, m) in recent:
+            record_dates(month, merged, old, today)
 
     return 0
 

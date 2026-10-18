@@ -42,6 +42,7 @@ import twse
 VALUE_DIR = twse.DATA_DIR / "value"
 PE_DIR = VALUE_DIR / "pe"
 REV_DIR = VALUE_DIR / "rev"
+REVDATE_DIR = VALUE_DIR / "revdate"
 
 TWSE_PE_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_d"
 TPEX_PE_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/peQryDate"
@@ -57,6 +58,11 @@ def pe_path(market: str, month: str):
 
 def rev_path(month: str):
     return REV_DIR / f"{month}.json"
+
+
+def revdate_path(month: str):
+    """那個月營收，每一家是哪一天第一次在公開資訊觀測站的彙總表上出現：{代號: 日期 | None}。"""
+    return REVDATE_DIR / f"{month}.json"
 
 
 def _num(raw):

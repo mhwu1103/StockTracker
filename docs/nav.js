@@ -52,6 +52,7 @@ window.StockNav = (function () {
       { v: 'kr', label: '韓股', href: 'kr.html' },
       { v: 'cross', label: '四市', href: 'cross.html' },
       { v: 'cycle', label: '景氣', href: 'cycle.html' },
+      { v: 'rev', label: '營收', href: 'rev.html' },
       { v: 'x', label: '觀點', href: 'x.html' }] },
     { key: 'find', label: '查詢', views: [
       { v: 'stock', label: '個股' }, { v: 'compare', label: '對照' }] },
