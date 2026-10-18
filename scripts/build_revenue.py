@@ -21,6 +21,8 @@
 `revenue/index.json` 是月份清單與共用的東西（子族群名、門檻）；`revenue/<月>.json` 是那個月每一家
 與族群彙總，前端切到那個月才抓。一個月約 250 KB，12 個月攤在一個檔裡太大；而且過去的月份窗口已經
 結束，檔案不會再變，每天的 git 差異只有最近兩個月。
+- **個股的營收走勢**：`revenue/stock/<代號前兩碼>.json`，每一家從 2019 起的逐月營收與年增，
+  個股頁打開時才抓（一份約幾十 KB）
 - **族群**用題材族群的子族群（themes.json）：已公布幾家、年增中位數、幾家創新高
 
 排在 fetch_value.py 與 build_history.py 之後（要最新的 value/rev 與 close/）。
@@ -38,7 +40,7 @@ from strategy import nextm
 import twse
 
 TPE = timezone(timedelta(hours=8))
-MONTHS = 12         # 頁面上能切的月份數
+MONTHS = 24         # 頁面上能切的月份數（跟網站留兩年的股價對齊，再早就算不出公布後漲跌）
 OUT_DIR = twse.DATA_DIR / "revenue"
 HI_PREV = 12        # 12 個月新高：比前幾個月都高
 HI_MIN = 10         # 前面至少要有幾個月
@@ -54,6 +56,27 @@ def r1(x):
 def slim(row):
     """兩千家，空值與 False 不寫：檔案小一半，前端讀不到就當沒有。"""
     return {k: v for k, v in row.items() if v is not None and v is not False and v != []}
+
+
+def write_stock_series(revs: dict, ms: list) -> int:
+    """{代號: [第一個月, [營收（億）…], [年增 %…]]}，依代號前兩碼分檔；中間沒報的月份是 null。"""
+    files = defaultdict(dict)
+    codes = {c for m in ms for c in revs[m] if common(c)}
+    for c in codes:
+        have = [m for m in ms if (revs[m].get(c) or [None])[0]]
+        if not have:
+            continue
+        span = ms[ms.index(have[0]):]
+        rv = [round(revs[m][c][0] / 1e5, 2) if (revs[m].get(c) or [None])[0] else None for m in span]
+        yy = [(revs[m].get(c) or [None, None])[1] for m in span]
+        files[c[:2]][c] = [span[0], rv, yy]
+    folder = OUT_DIR / "stock"
+    for old in folder.glob("*.json") if folder.exists() else []:
+        if old.stem not in files:
+            old.unlink()
+    for k, body in files.items():
+        twse.write_if_changed(folder / f"{k}.json", body)
+    return sum(len(v) for v in files.values())
 
 
 def main() -> int:
@@ -176,6 +199,7 @@ def main() -> int:
     changed = 0
     for b in blocks:
         changed += twse.write_if_changed(OUT_DIR / f"{b['m']}.json", {"rows": b["rows"], "groups": b["groups"]})
+    stocks = write_stock_series(revs, ms)
     keep = {f"{b['m']}.json" for b in blocks} | {"index.json"}
     for old in OUT_DIR.glob("*.json"):
         if old.name not in keep:
@@ -191,7 +215,7 @@ def main() -> int:
     })
     b = blocks[0]
     print(f"營收 {b['m']}：{b['count']} 家（上月 {b['prevCount']}），"
-          f"12 個月新高 {sum(1 for r in b['rows'] if r.get('hi'))} 家；共 {len(blocks)} 個月，{changed} 個月的檔有變")
+          f"12 個月新高 {sum(1 for r in b['rows'] if r.get('hi'))} 家；共 {len(blocks)} 個月，{changed} 個月的檔有變；個股走勢 {stocks} 家")
     return 0
 
 

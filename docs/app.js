@@ -3251,11 +3251,109 @@ function drawStack(Chart, canvas, labels, series, suffix = '') {
   state.charts.push(chart);
 }
 
+// 個股的月營收走勢：revenue/stock/<代號前兩碼>.json（build_revenue.py），同一份檔裡約百來檔，
+// 抓一次整份留著。{代號: [第一個月, [營收（億）…], [年增 %…]]}，沒報的月份是 null。
+const REV_STOCK = new Map();
+const REV_MONTHS = 36;          // 圖上畫幾個月
+const REV_HI = 12;              // 比前幾個月都高算新高，跟營收頁、策略頁同一個定義
+
+function loadRevStock(code) {
+  const k = code.slice(0, 2);
+  if (!REV_STOCK.has(k)) REV_STOCK.set(k, getJSON(`${DATA}/revenue/stock/${k}.json`).catch(() => null));
+  return REV_STOCK.get(k).then((all) => (all && all[code]) || null);
+}
+
+/** [第一個月, 營收, 年增] → 每個月一列，另外算「12 個月新高」與連續年增。 */
+function revRows(raw) {
+  if (!raw) return [];
+  const [m0, rv, yy] = raw;
+  let y = Number(m0.slice(0, 4));
+  let m = Number(m0.slice(5));
+  return rv.map((v, i) => {
+    const prev = rv.slice(Math.max(0, i - REV_HI), i).filter((x) => x !== null);
+    const row = { m: `${y}-${String(m).padStart(2, '0')}`, rev: v, yoy: yy[i],
+      hi: v !== null && prev.length >= REV_HI - 2 && v > Math.max(...prev) };
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+    return row;
+  });
+}
+
+function revenueCard(rows) {
+  if (!rows.length) {
+    return `<section class="card"><h2>月營收</h2><p class="hint">這一檔沒有月營收資料（ETF 或不用申報的公司）。</p></section>`;
+  }
+  const last = rows[rows.length - 1];
+  let run = 0;
+  for (let i = rows.length - 1; i >= 0 && rows[i].yoy > 0; i -= 1) run += 1;
+  const shown = rows.slice(-REV_MONTHS);
+  const highs = shown.filter((r) => r.hi).length;
+  return `<section class="card">
+    <h2>月營收 <small>近 ${shown.length} 個月 · 億元</small></h2>
+    <div class="stat-grid">
+      <div class="stat"><b>${last.rev === null ? '—' : num(last.rev, 2)}</b><span>${esc(last.m)} 營收（億）</span></div>
+      <div class="stat"><b class="${trend(last.yoy)}">${last.yoy === null ? '—' : `${last.yoy > 0 ? '+' : ''}${num(last.yoy, 1)}%`}</b><span>年增</span></div>
+      <div class="stat"><b>${last.hi ? '是' : '否'}</b><span>創 ${REV_HI} 個月新高</span></div>
+      <div class="stat"><b>${run}</b><span>連續年增（月）</span></div>
+    </div>
+    <div class="chart-box"><canvas id="c-rev"></canvas></div>
+    <p class="note">藍色的那幾根是創 ${REV_HI} 個月新高的月份（比前 ${REV_HI} 個月都高），這一段有 ${highs} 個月；灰色是其他月份。
+      營收是公司自己申報的當月數字，沒有季節調整——要看成長看下面的年增率。</p>
+    <div class="chart-box"><canvas id="c-revyoy"></canvas></div>
+    <p class="note">年增率＝跟去年同月比。建設公司交屋才認列營收，年增率常會跳到幾千 %，那不是生意變好。
+      <a class="linky" href="rev.html">看這個月誰剛公布營收 →</a></p>
+  </section>`;
+}
+
+function drawRevenue(Chart, rows) {
+  const shown = rows.slice(-REV_MONTHS);
+  const labels = shown.map((r) => r.m);
+  const chart = new Chart($('#c-rev'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: '營收（億）',
+        data: shown.map((r) => r.rev),
+        backgroundColor: shown.map((r) => (r.hi ? LINE.rank : 'rgba(128,128,128,.45)')),
+        borderWidth: 0,
+        borderRadius: 2,
+        categoryPercentage: 1,
+        barPercentage: 0.8,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (c) => {
+              const r = shown[c.dataIndex];
+              const yoy = r.yoy === null ? '—' : `${r.yoy > 0 ? '+' : ''}${num(r.yoy, 1)}%`;
+              return `營收 ${num(r.rev, 2)} 億　年增 ${yoy}${r.hi ? '　創 12 個月新高' : ''}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 6, font: { size: 10 } }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { font: { size: 10 } }, grid: { color: 'rgba(128,128,128,.18)' } },
+      },
+    },
+  });
+  state.charts.push(chart);
+  drawLine(Chart, $('#c-revyoy'), labels, [{ data: shown.map((r) => r.yoy), color: LINE.top10, label: '年增率' }],
+    { suffix: '%', emptyText: '沒有' });
+}
+
 async function renderStock(view, code) {
   if (!code) return renderStockPicker(view);
 
-  const [{ name, byDate }, todayPayload, instiSeries] = await Promise.all([
-    seriesFor(code), loadDaily(state.date), loadInstiStock(code)]);
+  const [{ name, byDate }, todayPayload, instiSeries, revRaw] = await Promise.all([
+    seriesFor(code), loadDaily(state.date), loadInstiStock(code), loadRevStock(code)]);
+  const revenue = revRows(revRaw);
   if (!byDate.size) {
     view.innerHTML = `<p class="hint">${esc(code)} 在目前的歷史資料中沒有進過前 300 名。</p>`;
     return;
@@ -3386,6 +3484,7 @@ async function renderStock(view, code) {
         （三邊的估算金額都不到 0.05 億的日子不會收）。<br>
         法人資料涵蓋 ${esc((state.index.instiFirst) || '較短的一段期間')}，比成交值排行短。</p>`}
     </section>
+    ${revenueCard(revenue)}
     <section class="card">
       <h2>成交值排名走勢 <small>斷線＝當日未進前 300</small></h2>
       <div class="chart-box"><canvas id="c-rank"></canvas></div>
@@ -3409,6 +3508,7 @@ async function renderStock(view, code) {
         { label: '自營', data: insti.map((r) => Number(r.de.toFixed(2))), color: INSTI_COLORS.de },
       ], ' 億');
     }
+    if (revenue.length) drawRevenue(Chart, revenue);
     drawLine(Chart, $('#c-rank'), labels, [{ data: ranks, color: LINE.rank, label: '名次' }], { reverse: true });
     drawLine(Chart, $('#c-value'), labels, [{ data: values, color: LINE.top10, label: '成交值(億)' }]);
   } catch (err) {

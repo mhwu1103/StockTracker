@@ -230,7 +230,7 @@ jobs:
         continue-on-error: true
         run: python scripts/build_cycle.py
 
-      # 營收頁：最近 12 個月的月營收、族群對照與公布後的股價反應。讀 value/rev/、value/revdate/
+      # 營收頁：最近 24 個月的月營收與個股的逐月營收、族群對照與公布後的股價反應。讀 value/rev/、value/revdate/
       # （上面 fetch_value 記的公布日）、close/、exright/、themes.json。
       - name: 重算營收頁
         continue-on-error: true
