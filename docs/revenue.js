@@ -104,9 +104,14 @@ function revRow(r, B) {
   </a>`;
 }
 
+// 建設公司完工交屋才一次認列營收，沒交屋的月份幾乎是零：年增率動輒幾千幾萬 %、「新高」只是交屋的時間點。
+// 跟其他產業擺在一起會霸佔年增排序與新高清單，所以速報分開放，統計數字也不算它們。
+const LUMPY = '建材營造';
+const isLumpy = (r) => r.ind === LUMPY;
+
 function filtered(B) {
   const f = state.filter;
-  let rows = B.rows.filter((r) => (f === 'hi' ? r.hi
+  let rows = B.rows.filter((r) => !isLumpy(r)).filter((r) => (f === 'hi' ? r.hi
     : f === 'all' ? r.hiAll
       : f === 'both' ? r.hi && r.nh
         : f === 'yoy30' ? r.yoy >= 30
@@ -132,10 +137,12 @@ function monthPills() {
 function flashView() {
   const B = block();
   const rows = filtered(B);
-  const hi = B.rows.filter((r) => r.hi).length;
-  const both = B.rows.filter((r) => r.hi && r.nh).length;
-  const yoyMed = median(B.rows.map((r) => r.yoy));
-  const up = B.rows.filter((r) => r.yoy > 0).length;
+  const main = B.rows.filter((r) => !isLumpy(r));
+  const lumpy = B.rows.filter(isLumpy).sort((a, b) => b.rev - a.rev);
+  const hi = main.filter((r) => r.hi).length;
+  const both = main.filter((r) => r.hi && r.nh).length;
+  const yoyMed = median(main.map((r) => r.yoy));
+  const up = main.filter((r) => r.yoy > 0).length;
   const today = state.data.today;
   const fresh = today ? B.rows.filter((r) => r.pub === today).length : 0;
   const R = state.data.rules;
@@ -144,11 +151,11 @@ function flashView() {
     <div class="controls">${monthPills()}</div>
     <div class="stat-grid">
       <div class="stat"><b>${B.count}</b><span>已公布${pending > 0 ? `（上月 ${B.prevCount} 家，還差約 ${pending}）` : ''}</span></div>
-      <div class="stat"><b class="${dir(yoyMed)}">${pct(yoyMed, 1)}</b><span>年增中位數 · ${Math.round((up / Math.max(1, B.count)) * 100)}% 年增為正</span></div>
+      <div class="stat"><b class="${dir(yoyMed)}">${pct(yoyMed, 1)}</b><span>年增中位數 · ${Math.round((up / Math.max(1, main.length)) * 100)}% 年增為正</span></div>
       <div class="stat"><b>${hi}</b><span>創 12 個月新高</span></div>
       <div class="stat"><b>${both}</b><span>營收＋股價都新高</span></div>
     </div>
-    ${fresh ? `<p class="note">${md(today)} 新公布 ${fresh} 家。</p>` : ''}
+    <p class="note">${fresh ? `${md(today)} 新公布 ${fresh} 家。` : ''}年增中位數與新高家數不含${LUMPY}（${lumpy.length} 家，放在最下面）。</p>
   </section>
   <section class="card">
     <h2>${ym(B.m)}營收 <small>${rows.length} 家</small></h2>
@@ -158,7 +165,15 @@ function flashView() {
       「12 個月新高」比前 ${R.hiPrev} 個月都高；「2019 起新高」比 ${esc(R.since)} 以來每個月都高（前面至少 ${R.allMin} 個月）。
       ${B.known < B.count ? `${B.count - B.known} 家在本站開始記公布日之前就已公布，從申報期限（${md(B.deadline)}）算起。` : ''}</p>
     ${more(rows, (r) => revRow(r, B), '沒有符合的公司。')}
-  </section>`;
+  </section>
+  ${lumpy.length ? `<section class="card">
+    <details class="rev-lumpy">
+      <summary><h2>${LUMPY} <small>${lumpy.length} 家 · 依營收規模排</small></h2></summary>
+      <p class="note">建設公司要等完工交屋，營收才一次入帳，沒交屋的月份幾乎是零。所以年增率常是幾千、幾萬 %，
+        「新高」反映的是交屋的時間點，不是生意變好——這裡只看這個月入帳多少，不跟其他產業一起排。</p>
+      ${lumpy.map((r) => revRow(r, B)).join('')}
+    </details>
+  </section>` : ''}`;
 }
 
 function groupView() {

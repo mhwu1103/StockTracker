@@ -3072,3 +3072,7 @@ button.ustag {
 .val-river__key--avg::before { background: var(--muted); }
 .val-river__key--lo::before { background: var(--star3); }
 .val-river__wait { font-size: 12px; margin: 6px 0; }
+.rev-lumpy summary { cursor: pointer; list-style: none; }
+.rev-lumpy summary::-webkit-details-marker { display: none; }
+.rev-lumpy summary h2::after { content: "　展開 ▾"; font-size: 12px; font-weight: 400; color: var(--muted); }
+.rev-lumpy[open] summary h2::after { content: "　收合 ▴"; }
