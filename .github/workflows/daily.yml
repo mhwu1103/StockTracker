@@ -33,37 +33,44 @@ jobs:
           python-version: "3.12"
 
       - name: 安裝相依套件
+        id: s01
         run: pip install -r requirements.txt
 
       - name: 抓取當日收盤行情
+        id: s02
         run: python scripts/fetch_daily.py
 
       # GitHub 的排程可能被延遲甚至整次跳過，當日 API 又只提供最新一個交易日。
       # 這一步用歷史 API 補上最近兩週內任何缺漏的交易日（上市與上櫃都補），
       # 已存在的日期不會發出請求。
       - name: 補抓遺漏的交易日
+        id: s03
         run: python scripts/backfill.py --days 14 --sleep 4
 
       # 紀律頁的大盤溫控。每次重抓這個月與上個月再與舊檔合併，排程漏跑幾天也補得回來。
       # 掛掉只影響紀律頁那一張卡，不該連帶讓當日行情更新失敗。
       - name: 抓加權指數
+        id: s04
         continue-on-error: true
         run: python scripts/fetch_taiex.py
 
       # 價值頁的本益比／殖利率／股淨比（當月那一檔每天覆寫）與最近兩個月的月營收。
       # 只影響價值頁，掛掉不該連帶讓當日行情更新失敗。
       - name: 抓本益比與月營收
+        id: s05
         continue-on-error: true
         run: python scripts/fetch_value.py
 
       # 除權息計算結果（今年與去年），景氣頁的月曆拿來還原股價。
       - name: 抓除權息
+        id: s06
         continue-on-error: true
         run: python scripts/fetch_exright.py
 
       # 產業別幾乎不會變，但它只是輔助資訊：證交所這支 API 掛掉時
       # 不該連帶讓當日行情更新失敗，所以允許這一步出錯。
       - name: 更新產業別對照
+        id: s07
         continue-on-error: true
         run: python scripts/fetch_industry.py
 
@@ -73,6 +80,7 @@ jobs:
       # 而這兩支來源都能指定日期，已存在的日期不會發出請求。
       # 官方資料，但仍是附加資訊，不該連帶讓當日行情更新失敗。
       - name: 抓三大法人買賣超
+        id: s08
         continue-on-error: true
         run: python scripts/fetch_institutions.py --days 14 --sleep 3
 
@@ -80,12 +88,14 @@ jobs:
       # 維持率。build_margin.py 算維持率要乘當日收盤，所以排在 backfill.py 後面；
       # 最近 14 天缺的才抓，排程漏跑也補得回來。附加資訊，不該連帶讓當日行情更新失敗。
       - name: 抓融資融券餘額
+        id: s09
         continue-on-error: true
         run: python scripts/fetch_margin.py
 
       # 報價來自第三方的免費頁面（TrendForce、Yahoo），改版或臨時掛掉都有可能。
       # 那是附加資訊，不該連帶讓當日行情更新失敗，所以這兩步都允許出錯。
       - name: 抓上游報價與原物料
+        id: s10
         continue-on-error: true
         run: python scripts/fetch_quotes.py
 
@@ -93,6 +103,7 @@ jobs:
       # 的話解出來的內容與已存的那一份一字不差，就不會再寫一次。第三方網站，
       # 同樣不該連帶讓當日行情更新失敗。
       - name: 抓集保股權分散表
+        id: s11
         continue-on-error: true
         run: python scripts/fetch_holders.py
 
@@ -101,6 +112,7 @@ jobs:
       # 這一步在正常情況下不發任何查詢請求：那幾週的快照已經涵蓋前 200 名就直接略過，
       # 只有真的缺了才會補，一週的成本是 200 次小請求。
       - name: 補回漏掉的集保週資料
+        id: s12
         continue-on-error: true
         run: python scripts/backfill_holders.py --source stock --weeks 3 --top 200
 
@@ -114,6 +126,7 @@ jobs:
       #   · timeout-minutes 是最後一道：即使上面兩層都沒攔住，也不會拖垮整個流程
       # 真的被限流的話，先調大 --sleep（預設 0.7）。
       - name: 抓美股日線
+        id: s13
         continue-on-error: true
         timeout-minutes: 8
         run: python scripts/fetch_us.py
@@ -125,11 +138,13 @@ jobs:
       # 韓股排最後，所以它是累積請求數最多的時候才開始跑，也最容易中槍。三個市場
       # 各自一份 market.json、各自一個 --give-up，前面那支失敗不會波及後面那支的舊資料。
       - name: 抓日股日線
+        id: s14
         continue-on-error: true
         timeout-minutes: 6
         run: python scripts/fetch_pair.py jp
 
       - name: 抓韓股日線
+        id: s15
         continue-on-error: true
         timeout-minutes: 7
         run: python scripts/fetch_pair.py kr
@@ -137,12 +152,14 @@ jobs:
       # 台指期與選擇權籌碼（期交所 CSV，近 30 天）：三大法人、大額交易人、期貨行情、P/C 比與選擇權
       # 未平倉。期貨頁、策略頁與推播用。
       - name: 抓台指期與選擇權籌碼
+        id: s16
         continue-on-error: true
         run: python scripts/fetch_futures.py
 
       # 內部人持股轉讓事前申報（公開資訊觀測站）。當天的要等觀測站產製完才查得到，
       # 所以每天往回抓 5 個交易日，今天沒抓到的明天補。
       - name: 抓內部人申報轉讓
+        id: s17
         continue-on-error: true
         timeout-minutes: 10
         run: python scripts/fetch_insider.py
@@ -150,49 +167,59 @@ jobs:
       # 處置股公告（證交所 punish、櫃買 disposal）。交易所在收盤後才公告，排在抓資料的
       # 最後面，盡量等到當天的公告出來；一次抓一整年，檔案很小，不受下面的修剪影響。
       - name: 抓處置股
+        id: s18
         continue-on-error: true
         run: python scripts/fetch_disposal.py
 
       # 網站只留最近兩年的每日原始檔（Pages 上限 1 GB，每日資料一年約長 130 MB）。
       # 要排在所有 build 前面：衍生檔照現存的原始檔重建，過期的由各支 build 自己清掉。
       - name: 修剪兩年以前的每日原始檔
+        id: s19
         run: python scripts/prune_data.py
 
       - name: 重建索引與歷史序列
+        id: s20
         run: python scripts/build_history.py
 
       # 要放在 build_history.py 後面：電子股的 K 線是由那一步一起寫出來的，
       # 結構分頁點進個股時要讀。結構本身只吃 close/，與排行無關。
       - name: 重建電子股價格結構
+        id: s21
         continue-on-error: true
         run: python scripts/build_structure.py
 
       - name: 統計新進榜之後的表現
+        id: s22
         run: python scripts/build_entry.py
 
       - name: 重建報價序列
+        id: s23
         continue-on-error: true
         run: python scripts/build_quotes.py
 
       # 要放在 build_history.py 後面：個股序列只出給進過排行的代號，
       # 那份名單是從 history/ 讀的。
       - name: 重建集保序列
+        id: s24
         continue-on-error: true
         run: python scripts/build_holders.py
 
       - name: 重建法人目錄與外資連續買賣超
+        id: s25
         continue-on-error: true
         run: python scripts/build_institutions.py
 
       # 要放在 build_history.py 後面：交易日序號取自它寫的 index.json，
       # 用來判斷前 20 天的法人日檔有沒有缺檔。
       - name: 重建族群法人四象限（動向分頁）
+        id: s26
         continue-on-error: true
         run: python scripts/build_sector_flow.py
 
       # 要放在 build_institutions.py 後面：短線訊號的「外資連買」讀的是它剛寫出來的
       # insti/streak/。放在前面也不會報錯，只是那一欄會是昨天的、或整欄空的。
       - name: 重建紀律頁的出場線
+        id: s27
         continue-on-error: true
         run: python scripts/build_rule.py
 
@@ -200,6 +227,7 @@ jobs:
       # kline/，兩者都是那一步寫的。排在它前面的話，算出來的 twAsof 會停在上一次
       # 跑 build_history 的日期 —— 而畫面看起來一切正常，只有那行小字會透露。
       - name: 重算美股連動
+        id: s28
         continue-on-error: true
         run: python scripts/build_us.py
 
@@ -210,10 +238,12 @@ jobs:
       #
       # 兩個市場分兩步而不是一支跑兩次：其中一邊的對照表寫壞時，另一邊還是會更新。
       - name: 重算日股族群對照
+        id: s29
         continue-on-error: true
         run: python scripts/build_pair.py jp
 
       - name: 重算韓股族群對照
+        id: s30
         continue-on-error: true
         run: python scripts/build_pair.py kr
 
@@ -222,53 +252,62 @@ jobs:
       # 這一步仍然算得出來（那一欄會用比較舊的最後一場，頁面上標得出來），
       # 所以不必跟著失敗。
       - name: 重算四市題材
+        id: s31
         continue-on-error: true
         run: python scripts/build_cross.py
 
       # 價值頁。吃 close/、taiex.json、value/（上面 fetch_value 寫的）與報價頁的
       # quotes/index.json，所以排在 build_quotes.py 之後。
       - name: 重算價值頁
+        id: s32
         continue-on-error: true
         run: python scripts/build_value.py
 
       # 價值頁的回測：同一套規則放回過去每個月底。只讀 value/pe/ 與 value/rev/，
       # 月底的資料一個月才變一次，每天跑是因為它只要兩秒，不必另外排一個月排程。
       - name: 重算價值頁回測
+        id: s33
         continue-on-error: true
         run: python scripts/build_value_backtest.py
 
       # 景氣頁：只讀 value/rev/ 與 industry.json。月營收每月 10 日前才報齊，
       # 還沒報齊的那個月 build_cycle.py 自己會跳過，所以每天跑也只有月初會變。
       - name: 重算景氣頁
+        id: s34
         continue-on-error: true
         run: python scripts/build_cycle.py
 
       # 營收頁：最近 24 個月的月營收與個股的逐月營收、族群對照與公布後的股價反應。讀 value/rev/、value/revdate/
       # （上面 fetch_value 記的公布日）、close/、exright/、themes.json。
       - name: 重算營收頁
+        id: s35
         continue-on-error: true
         run: python scripts/build_revenue.py
 
       # 景氣頁的月曆：1～12 月清單與它的 walk-forward。讀 value/pe/ 與 exright/。
       - name: 重算景氣頁月曆
+        id: s36
         continue-on-error: true
         run: python scripts/build_season.py
 
       # 總經（FRED：VIX、布蘭特、美債殖利率、美元、初領失業金、CPI），MK 頁的大盤溫度計用。
       # 第三方來源，掛掉沿用舊檔，不該連帶讓當日行情更新失敗。
       - name: 抓總經數字
+        id: s37
         continue-on-error: true
         run: python scripts/fetch_macro.py
 
       # 融資序列。原始檔只留兩年，但序列沿用 margin.json 裡算好的舊值，所以排在
       # prune_data.py 後面也不會把長歷史修掉。
       - name: 重算融資序列
+        id: s38
         continue-on-error: true
         run: python scripts/build_margin.py
 
       # MK 頁：大盤溫度計（taiex.json、margin.json）與回測成立的規則今天挑出來的清單。
       # 讀 close/、exright/、value/rev/、industry.json，所以排在上面這些都更新完之後。
       - name: 重算 MK 頁
+        id: s39
         continue-on-error: true
         run: python scripts/build_gooaye.py
 
@@ -277,20 +316,24 @@ jobs:
       # 期貨頁：外資部位與成本、散戶多空比、大額交易人、P/C 比、基差、選擇權關卡。讀 futures.json 與
       # taiex.json；推播的「台指期」那一段也讀它，所以要排在推播之前。
       - name: 重算期貨頁
+        id: s40
         continue-on-error: true
         run: python scripts/build_futures.py
 
       - name: 重算策略頁
+        id: s41
         continue-on-error: true
         run: python scripts/build_strategy.py
 
       # 處置頁：今天公布的處置、處置中的、近期每一筆抱滿處置期間的結果。讀 disposal/、close/、
       # daily/、exright/。
       - name: 重算處置頁
+        id: s42
         continue-on-error: true
         run: python scripts/build_disposal.py
 
       - name: 提交資料變更
+        id: s43
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -339,6 +382,7 @@ jobs:
       # 沒設定 secret 時會自動略過，不會讓整個流程失敗。
       # 非交易日因為沒有當天的新資料，也不會重複推播。
       - name: 推播 Telegram
+        id: s44
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -346,3 +390,15 @@ jobs:
           # 自選股清單（逗號分隔代號）。有設的話，全市場那一則之後再多發自選股的兩則。
           WATCHLIST: ${{ secrets.WATCHLIST }}
         run: python scripts/notify_telegram.py
+
+      # 健康檢查：每一步的真實結果（continue-on-error 的失敗在 API 上也是 success，只有 steps.<id>.outcome
+      # 看得到，所以上面每一步都帶 id）＋各頁資料有沒有跟上當天的交易日。有問題才推一則 Telegram。
+      # 不能讓它自己失敗把整個排程弄紅，所以也是 continue-on-error。
+      - name: 排程健康檢查
+        if: always()
+        continue-on-error: true
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/check_health.py
