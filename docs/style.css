@@ -3087,3 +3087,23 @@ button.ustag {
 }
 .rev-months { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rev-step:disabled { opacity: .4; cursor: default; }
+
+/* ---------- 期貨頁（futures.html） ----------
+ * 主角那條線用 --text，關卡的買權／賣權用 --side（壓力）與 --star3（支撐）——避開漲跌的紅綠。
+ * 回測判讀的那一行：有預測力用 accent 左邊線，沒有的用灰色，兩種都有字，不只靠顏色。 */
+.fut-chart polyline { fill: none; vector-effect: non-scaling-stroke; }
+.fut-line--main { stroke: var(--text); stroke-width: 1.8; }
+.fut-line--up { stroke: var(--side); stroke-width: 1.4; stroke-dasharray: 4 3; }
+.fut-line--down { stroke: var(--star3); stroke-width: 1.4; stroke-dasharray: 4 3; }
+.fut-hit rect { fill: transparent; }
+.fut-hit rect:hover { fill: var(--muted); opacity: .08; }
+.fut-key { color: var(--muted); }
+.fut-key.fut-line--main::before { background: var(--text); }
+.fut-key.fut-line--up::before { background: var(--side); }
+.fut-key.fut-line--down::before { background: var(--star3); }
+.fut-verdict { margin: 4px 14px 12px; padding: 8px 10px; border-left: 3px solid var(--line); font-size: 13px; line-height: 1.5; }
+.fut-verdict b { display: block; }
+.fut-verdict span { color: var(--muted); }
+.fut-verdict.is-ok { border-left-color: var(--accent); }
+.fut-verdict.is-ok b { color: var(--accent); }
+.fut-verdict.is-no b { color: var(--muted); }

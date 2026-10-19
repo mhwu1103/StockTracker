@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>期貨</title>
+<meta name="description" content="台指期與台指選擇權的籌碼：外資部位與成本、散戶多空比、大額交易人、P/C 比、基差、選擇權關卡">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0f1216">
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+<!-- ?v= 是前端版號，各頁與 sw.js 要一致，見 index.html 的說明 -->
+<link rel="stylesheet" href="style.css?v=102">
+<!-- 亮／暗切換。刻意不用 defer，理由在 theme.js 的開頭。 -->
+<script src="theme.js?v=102"></script>
+</head>
+<!-- data-view 告訴 nav.js：這是獨立頁面，而且停在「資金」群組的「期貨」那一項 -->
+<body data-view="futures">
+
+<header class="app-bar">
+  <div class="app-bar__top">
+    <h1>期貨</h1>
+  </div>
+  <p class="app-bar__meta" id="meta">載入中…</p>
+</header>
+
+<nav class="tabs"></nav>
+<nav class="subtabs"></nav>
+
+<main class="view">
+  <div id="view">
+    <p class="hint">載入中…</p>
+  </div>
+</main>
+
+<footer class="foot">
+  資料來自期貨交易所的每日公開資訊（三大法人、大額交易人、期貨與選擇權行情、P/C 比）；三大法人早於三年的那段用 FinMind 回補。
+  成本與損益是估算。這一頁不是投資建議。
+</footer>
+
+<script src="nav.js?v=102" defer></script>
+<script src="futures.js?v=102" defer></script>
+</body>
+</html>

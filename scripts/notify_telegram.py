@@ -323,6 +323,26 @@ def insti_flow_lines(date_iso: str, who: str = "三大") -> list:
     lines.append(note("加碼／收斂看近 5 日日均比近 20 日日均多或少。只講錢往哪裡跑，不是買賣訊號。"))
     return lines
 
+FUT_PATH = twse.DATA_DIR / "futpage.json"
+
+
+def futures_lines(date_iso: str) -> list:
+    """期貨頁的兩個有回測支持的指標：外資約當大台的部位與近 20 日變化、散戶多空比；落在極端時加警示。"""
+    d = _json_or_none(FUT_PATH) or {}
+    if d.get("asof") != date_iso:          # 期交所的資料不是今天的就不放
+        return []
+    n, r = d["net"], d["retail"]
+    lines = ["", "<b>📉 台指期</b>",
+             f"外資約當大台 <b>{n['now']:+,}</b> 口{GAP}近 20 日 {n['chg20']:+,}（近一年第 {n['fastRank']}%）",
+             f"散戶多空比 <b>{r['now']:+.1f}%</b>{GAP}近一年第 {r['rank']}%"]
+    if n.get("fast"):
+        lines.append(f"⚠️ 外資空單一個月加得特別快（最快的 {d['rules']['fast']}%）：之後 5 天常偏弱，短線別追高")
+    if r.get("hot"):
+        lines.append(f"⚠️ 散戶偏多到近一年前 {d['rules']['hot']}%：反向指標，之後 5 天常偏弱")
+    lines.append(note("台指期兩項有回測支持（2019 起每一年幾乎都同方向）：外資部位看 20 日變化不看水位；散戶多空比是反向指標。"))
+    return lines
+
+
 # --------------------------------------------------------------------------- #
 # 自選股的籌碼監控
 # --------------------------------------------------------------------------- #
@@ -754,6 +774,7 @@ def main() -> int:
     flow = value_flow_lines(payload, prev)
     if args.scope == "all":
         flow += insti_flow_lines(date_iso)
+        flow += futures_lines(date_iso)
 
     # 全市場每天發兩則（排行、籌碼與資金）；有自選股時再接在後面多發自選股的兩則。
     messages = [build_message(payload, site_url, scope_name, total_label)]

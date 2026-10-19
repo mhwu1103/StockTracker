@@ -134,10 +134,18 @@ jobs:
         timeout-minutes: 7
         run: python scripts/fetch_pair.py kr
 
-      # 台指期三大法人未平倉（期交所 CSV，近 40 天）。策略頁拿外資的淨部位當參考。
-      - name: 抓台指期法人未平倉
+      # 台指期與選擇權籌碼（期交所 CSV，近 30 天）：三大法人、大額交易人、期貨行情、P/C 比與選擇權
+      # 未平倉。期貨頁、策略頁與推播用。
+      - name: 抓台指期與選擇權籌碼
         continue-on-error: true
         run: python scripts/fetch_futures.py
+
+      # 內部人持股轉讓事前申報（公開資訊觀測站）。當天的要等觀測站產製完才查得到，
+      # 所以每天往回抓 5 個交易日，今天沒抓到的明天補。
+      - name: 抓內部人申報轉讓
+        continue-on-error: true
+        timeout-minutes: 10
+        run: python scripts/fetch_insider.py
 
       # 處置股公告（證交所 punish、櫃買 disposal）。交易所在收盤後才公告，排在抓資料的
       # 最後面，盡量等到當天的公告出來；一次抓一整年，檔案很小，不受下面的修剪影響。
@@ -266,6 +274,12 @@ jobs:
 
       # 策略頁：今天的訊號、實盤追蹤（2026-10-19 起）與近一年照規則跑的淨值。
       # 讀 close/、daily/、exright/、value/rev/，跟 MK 頁一樣排在資料都更新完之後。
+      # 期貨頁：外資部位與成本、散戶多空比、大額交易人、P/C 比、基差、選擇權關卡。讀 futures.json 與
+      # taiex.json；推播的「台指期」那一段也讀它，所以要排在推播之前。
+      - name: 重算期貨頁
+        continue-on-error: true
+        run: python scripts/build_futures.py
+
       - name: 重算策略頁
         continue-on-error: true
         run: python scripts/build_strategy.py
