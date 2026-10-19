@@ -1,14 +1,15 @@
-name: 前端檢查
+name: 前端與排程檢查
 
-# 只在外殼檔改動時跑。docs/data/ 底下每天都有新檔，那些不該觸發這個流程。
+# 只在外殼檔與腳本改動時跑。docs/data/ 底下每天都有新檔，那些不該觸發這個流程。
 on:
   push:
     paths:
       - "docs/*.html"
       - "docs/*.js"
       - "docs/*.css"
-      - "scripts/check_frontend_version.py"
-      - "scripts/check_pair_pages.py"
+      - "scripts/**.py"
+      - "requirements.txt"
+      - ".github/workflows/daily.yml"
       - ".github/workflows/check.yml"
   pull_request:
     paths:
@@ -55,3 +56,21 @@ jobs:
             node --check "$f" || exit 1
           done
           echo "docs/*.js 全部通過"
+
+  # 排程的步驟大多設了 continue-on-error（一個來源掛掉不該拖垮整天的更新），代價是缺套件也是綠燈。
+  # 2026-10 營收、處置、期貨、策略四頁就這樣停了好幾天：四支都 import numpy，requirements.txt 只有 requests。
+  # 這裡只裝 requirements.txt，然後確認排程會跑的每一支腳本 import 得到它要的東西（不執行腳本）。
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 只裝 requirements.txt
+        run: pip install -r requirements.txt
+
+      - name: 排程腳本的套件齊全
+        run: python scripts/check_imports.py

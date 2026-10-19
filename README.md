@@ -637,6 +637,7 @@ scripts/
                     純標準函式庫
   fetch_exright.py  除權息計算結果（證交所 TWT49U、櫃買 exDailyQ）→ docs/data/exright/<年>.json，
                     每日抓今年與去年；第一次 --since 2019
+  check_imports.py  檢查每日排程跑的每一支腳本 import 的模組都在 requirements.txt 裡（check.yml 跑，不執行腳本）
   fetch_futures.py  台指期與選擇權籌碼 → docs/data/futures.json：三大法人、大額交易人、期貨行情、P/C 比、
                     選擇權關卡。每日抓期交所近 30 天；第一次 --history 2018-06-01（期交所，一個月一個月）
                     ＋ --finmind 2018-06-01（三大法人只能查近三年，更早的用 FinMind）
