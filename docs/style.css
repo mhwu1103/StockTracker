@@ -3087,6 +3087,10 @@ button.ustag {
 }
 .rev-months { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rev-step:disabled { opacity: .4; cursor: default; }
+/* 公告分頁的法說會日曆：一天一個小標，已經過去的日子淡一點 */
+.ev-day { margin: 14px 0 2px; font-size: 14px; }
+.ev-day small { font-weight: 400; color: var(--muted); }
+.ev-day--past { color: var(--muted); }
 
 /* ---------- 期貨頁（futures.html） ----------
  * 主角那條線用 --text，關卡的買權／賣權用 --side（壓力）與 --star3（支撐）——避開漲跌的紅綠。

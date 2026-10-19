@@ -8,6 +8,8 @@
  *   速報   當月已公布的每一家：年增、月增、新高、連續年增，與公布後的股價反應
  *   族群   題材子族群裡已公布幾家、年增中位數、幾家創新高
  *   自選   排行榜那邊加的自選股（同一份 localStorage），公布了沒、數字如何
+ *   公告   財報（單季淨利年增 × 開盤反應的訊號）與法說會日曆，不分月份；資料是 events/page.json
+ *          （scripts/build_events.py），切到這一頁才抓
  *
  * 全部在 scripts/build_revenue.py 算好，這裡只畫。「營收 12 個月新高 ＋ 股價 60 日新高」是策略頁的
  * 進場條件，這裡把它標出來，但不重算策略（策略另外要流動性，見策略頁）。
@@ -18,6 +20,14 @@ const TABS = [
   { value: 'flash', label: '速報' },
   { value: 'group', label: '族群' },
   { value: 'watch', label: '自選' },
+  { value: 'events', label: '公告' },
+];
+const EV_FILTERS = [
+  { value: 'live', label: '訊號進行中' },
+  { value: 'good', label: '好財報＋開高' },
+  { value: 'bad', label: '壞財報＋開低' },
+  { value: 'watch', label: '自選股' },
+  { value: 'all', label: '全部財報' },
 ];
 const FILTERS = [
   { value: 'hi', label: '12 個月新高' },
@@ -33,10 +43,11 @@ const SORTS = [
   { value: 'rev', label: '營收規模' },
 ];
 const PAGE = 30;
-const KEYS = { tab: 'stocktracker.revtab', filter: 'stocktracker.revfilter', sort: 'stocktracker.revsort' };
+const KEYS = { tab: 'stocktracker.revtab', filter: 'stocktracker.revfilter', sort: 'stocktracker.revsort',
+  evf: 'stocktracker.revevf' };
 const WATCH_KEY = 'stocktracker.watch';     // 跟排行榜（app.js）同一份自選股
 
-const state = { data: null, tab: 'flash', month: 0, filter: 'hi', sort: 'pub', q: '', more: 1, open: new Set() };
+const state = { data: null, tab: 'flash', month: 0, filter: 'hi', sort: 'pub', evf: 'live', q: '', more: 1, open: new Set() };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -269,8 +280,147 @@ function searchView() {
 }
 
 // --------------------------------------------------------------------------
+// 公告：events/page.json（build_events.py）。undefined = 還沒抓、false = 抓取中、null = 載不到
+let events;
+
+async function loadEvents() {
+  if (events !== undefined) return;
+  events = false;
+  try {
+    const res = await fetch(`${DATA}/events/page.json`);
+    if (!res.ok) throw new Error(`events/page.json ${res.status}`);
+    events = await res.json();
+  } catch (err) {
+    console.error(err);
+    events = null;
+  }
+}
+
+const growth = (g) => (typeof g === 'string' ? g : `單季淨利 ${pct(g)}`);
+const live = (r) => r.sig && r.held <= events.rules.hold;
+const weekday = (d) => '日一二三四五六'[new Date(`${d}T12:00:00+08:00`).getDay()];
+
+function finRow(r) {
+  const H = events.rules.hold;
+  const tag = r.sig === 'good' ? '<span class="val-good">好財報＋開高</span>'
+    : r.sig === 'bad' ? '<span class="val-trap">壞財報＋開低</span>' : '';
+  const when = r.react === undefined ? '明天開盤進場'
+    : r.sig ? (r.held <= H ? `第 ${r.held}/${H} 天` : `已滿 ${H} 天`) : '';
+  const sub = [
+    esc(r.q),
+    r.g !== undefined ? growth(r.g) : '去年同季沒得比',
+    r.eps !== undefined ? `累計 EPS ${fmt(r.eps)}` : '',
+    `${md(r.d)} ${esc(r.t)} 公布`,
+  ].filter(Boolean).join(' · ');
+  return `<a class="row gy-row" href="index.html#/stock/${esc(r.c)}">
+    <span class="ident">
+      <span class="name">${esc(r.n || r.c)}</span>
+      <span class="code">${esc(r.c)}${tag ? ` · ${tag}` : ''}${when ? ` · ${when}` : ''}</span>
+      <span class="rev-sub">${sub}</span>
+    </span>
+    <span class="figures">
+      <span class="value ${dir(r.ret)}">${r.ret === undefined ? '—' : pct(r.ret, 1)}</span>
+      <span class="price">開盤 <span class="${dir(r.react)}">${r.react === undefined ? '—' : pct(r.react, 1)}</span></span>
+    </span>
+  </a>`;
+}
+
+function confRow(r) {
+  const sub = [
+    r.t ? esc(r.t) : '',
+    r.end ? `到 ${md(r.end)}` : '',
+    r.host,
+    r.ann ? `${md(r.ann)} 公告` : '',
+  ].filter(Boolean).join(' · ');
+  return `<a class="row gy-row" href="index.html#/stock/${esc(r.c)}">
+    <span class="ident">
+      <span class="name">${esc(r.n || r.c)}</span>
+      <span class="code">${esc(r.c)} · ${sub}</span>
+      <span class="rev-sub">${esc(r.note || '')}</span>
+    </span>
+    <span class="figures">
+      <span class="value ${dir(r.pre)}">${r.pre === undefined ? '—' : pct(r.pre, 1)}</span>
+      <span class="price">會前</span>
+    </span>
+  </a>`;
+}
+
+function finPick(q) {
+  const f = state.evf;
+  let rows = events.fin;
+  if (q) return rows.filter((r) => r.c.startsWith(q) || (r.n || '').toLowerCase().includes(q));
+  if (f === 'live') rows = rows.filter(live);
+  else if (f === 'good' || f === 'bad') rows = rows.filter((r) => r.sig === f);
+  else if (f === 'watch') {
+    const watch = new Set(loadWatch());
+    rows = rows.filter((r) => watch.has(r.c));
+  }
+  return rows;
+}
+
+function eventsView() {
+  if (!events) {
+    return `<section class="card"><p class="hint">${events === null
+      ? '公告資料載不到。這一頁要等 <code>scripts/build_events.py</code> 跑過一次才有東西。' : '載入中…'}</p></section>`;
+  }
+  const R = events.rules;
+  const q = state.q.trim().toLowerCase();
+  const rows = finPick(q);
+  const good = events.fin.filter((r) => r.sig === 'good');
+  const bad = events.fin.filter((r) => r.sig === 'bad');
+  const done = (xs) => xs.filter((r) => r.held >= R.hold);
+  const medGood = median(done(good).map((r) => r.ret));
+  const medBad = median(done(bad).map((r) => r.ret));
+  const today = events.today;
+  const conf = q ? events.conf.filter((r) => r.c.startsWith(q) || (r.n || '').toLowerCase().includes(q)) : events.conf;
+  const byDay = new Map();
+  for (const r of conf) {
+    if (!byDay.has(r.d)) byDay.set(r.d, []);
+    byDay.get(r.d).push(r);
+  }
+  return `<section class="card">
+    <h2>財報 <small>最近 ${R.recent} 個交易日進場的 ${events.fin.length} 則</small></h2>
+    <div class="stat-grid">
+      <div class="stat"><b>${good.filter(live).length}</b><span>好財報＋開高 · 進行中</span></div>
+      <div class="stat"><b>${bad.filter(live).length}</b><span>壞財報＋開低 · 進行中</span></div>
+      <div class="stat"><b class="${dir(medGood)}">${pct(medGood, 1)}</b><span>好的 ${done(good).length} 則滿 ${R.hold} 天 · 中位數</span></div>
+      <div class="stat"><b class="${dir(medBad)}">${pct(medBad, 1)}</b><span>壞的 ${done(bad).length} 則滿 ${R.hold} 天 · 中位數</span></div>
+    </div>
+    ${q ? '' : `<div class="controls">${pills('evf', EV_FILTERS, state.evf)}</div>`}
+    <p class="note">「好財報＋開高」：單季歸屬母公司淨利比去年同季多 ${R.grow}% 以上（或轉盈），公布後第一個開盤漲 ${R.react}% 以上；
+      「壞財報＋開低」反過來（年減 ${R.grow}% 以上或轉虧、開低 ${R.react}% 以上）。右邊大字是那個開盤進場、抱到第 ${R.hold} 個交易日
+      （還沒滿就是到最新收盤）的漲跌，還原除權息。
+      回測（2023～2026，跟同一天、近 60 日漲幅相近的股票比）：好的 ${R.hold} 日多 +3.1%（中位數 +2.4%、60% 贏），
+      壞的少 2.5%（只有 40% 贏），每一年都同方向。沒扣交易成本。</p>
+    ${more(rows, finRow, q ? '找不到這檔的財報。'
+    : state.evf === 'live' ? `現在沒有進行中的訊號——兩季財報之間（5/15、8/14、11/14、3/31 是申報期限）。
+        上一季的結果看「好財報＋開高」「壞財報＋開低」。` : '沒有符合的財報。')}
+  </section>
+  <section class="card">
+    <h2>法說會 <small>${conf.length} 場${conf.length ? ` · ${md(conf[0].d)}～${md(conf[conf.length - 1].d)}` : ''}</small></h2>
+    <p class="note">右邊是<b>會前</b>：重大訊息公告要開法說會的隔天開盤，到召開日收盤（還沒開就是到最新收盤）。回測 2021-10 起
+      1 萬多場，平均 8 個交易日、比近 60 日漲幅相近的股票多 1.5%（中位數 0.8%、58% 贏），五年都是正的，
+      但扣掉來回成本（約 0.6%）剩不多。會後才買沒有效果。只在法說會一覽表上、沒發重大訊息的，沒有會前數字。</p>
+    ${[...byDay].map(([d, xs]) => `<h3 class="ev-day${d < today ? ' ev-day--past' : ''}">${md(d)}（${weekday(d)}）${d === today ? ' · 今天' : ''}
+      <small>${xs.length} 場</small></h3>${xs.map(confRow).join('')}`).join('') || '<p class="hint">這段期間沒有法說會。</p>'}
+  </section>
+  <section class="card">
+    <p class="note">公告來自公開資訊觀測站的每日重大訊息（財報、法說會公告）與法說會一覽表，每天收盤後更新。
+      自結損益（金融股每月自結盈餘等）、達注意標準而公布的財務資訊也測過，沒有效果，這裡不列。
+      代子公司公告的財報不算（數字是子公司的）。</p>
+  </section>`;
+}
+
+// --------------------------------------------------------------------------
 function render() {
   const d = state.data;
+  const head = `<section class="card"><div class="controls cyc-tabs">${pills('tab', TABS, state.tab)}</div></section>`;
+  if (state.tab === 'events') {
+    if (events === undefined) loadEvents().then(render);
+    if (events) $('#meta').textContent = `公告 · 收盤 ${events.asof}`;
+    $('#view').innerHTML = head + eventsView();
+    return;
+  }
   const meta = d.months[state.month];
   if (!(meta.m in monthData)) {
     loadMonth(meta.m).then(render);
@@ -286,7 +436,6 @@ function render() {
     $('#view').innerHTML = searchView();
     return;
   }
-  const head = `<section class="card"><div class="controls cyc-tabs">${pills('tab', TABS, state.tab)}</div></section>`;
   const body = state.tab === 'group' ? groupView() : state.tab === 'watch' ? watchView() : flashView();
   $('#view').innerHTML = head + body;
 }
@@ -318,6 +467,10 @@ function bind() {
       state.sort = ds.sort;
       state.more = 1;
       save(KEYS.sort, ds.sort);
+    } else if (ds.evf) {
+      state.evf = ds.evf;
+      state.more = 1;
+      save(KEYS.evf, ds.evf);
     } else if (ds.more) {
       state.more += 1;
     } else if (ds.grp) {
@@ -352,6 +505,7 @@ function restore() {
     state.tab = pick(KEYS.tab, TABS) || state.tab;
     state.filter = pick(KEYS.filter, FILTERS) || state.filter;
     state.sort = pick(KEYS.sort, SORTS) || state.sort;
+    state.evf = pick(KEYS.evf, EV_FILTERS) || state.evf;
   } catch (err) { /* 讀不到就用預設 */ }
 }
 

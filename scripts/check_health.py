@@ -42,6 +42,7 @@ FRESH = [
     ("gooaye.json", lambda d: d["d"], "MK"),
     ("strategy.json", lambda d: d["d"], "策略"),
     ("revenue/index.json", lambda d: d["asof"], "營收"),
+    ("events/page.json", lambda d: d["asof"], "公告"),
     ("disposal.json", lambda d: d["asof"], "處置"),
     ("futures.json", lambda d: d["d"][-1], "期貨原始資料"),
     ("futpage.json", lambda d: d["asof"], "期貨"),

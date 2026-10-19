@@ -164,6 +164,14 @@ jobs:
         timeout-minutes: 10
         run: python scripts/fetch_insider.py
 
+      # 公司公告（公開資訊觀測站）：每日重大訊息裡的財報、自結、法說會公告，與今年的法說會一覽表。
+      # 「本日」包含前一日 17:30 以後的，所以每天往回抓 4 個日曆日，漏的下一次補上。
+      - name: 抓財報與法說會公告
+        id: s45
+        continue-on-error: true
+        timeout-minutes: 10
+        run: python scripts/fetch_events.py
+
       # 處置股公告（證交所 punish、櫃買 disposal）。交易所在收盤後才公告，排在抓資料的
       # 最後面，盡量等到當天的公告出來；一次抓一整年，檔案很小，不受下面的修剪影響。
       - name: 抓處置股
@@ -324,6 +332,13 @@ jobs:
         id: s41
         continue-on-error: true
         run: python scripts/build_strategy.py
+
+      # 營收頁的「公告」分頁：最近的財報訊號（單季淨利年增 × 開盤反應）與法說會日曆。讀 events/、close/、
+      # exright/、industry.json。
+      - name: 重算公告分頁
+        id: s46
+        continue-on-error: true
+        run: python scripts/build_events.py
 
       # 處置頁：今天公布的處置、處置中的、近期每一筆抱滿處置期間的結果。讀 disposal/、close/、
       # daily/、exright/。
