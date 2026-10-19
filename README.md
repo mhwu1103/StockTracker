@@ -479,13 +479,15 @@ openapi 的 t187ap05 只給最新一個月，而「成長有沒有在加速」�
 `disposal.html`，入口在「技術 → 處置」。被交易所處置（分盤撮合、預收款券）的股票：
 
 - **今天**：今天收盤後公布、明天開始處置的股票——這是訊號：處置第一天開盤買、抱到處置最後一天收盤賣，
-  開盤就漲停的跳過；以及處置中的股票從第一天開盤算起的漲跌
+  開盤就漲停的跳過；明天再被注意一次就會處置的股票（照注意股的累積規則算，5 年 2,121 筆對中 2,119 筆——
+  但**不是買點**，提早一天買平均落後 0.7%，見 BACKTEST.md「處置預測」）；以及處置中的股票從第一天開盤算起的漲跌
 - **近期**：最近 60 個交易日公布的每一筆照同一條規則的實際結果，與 5 年回測的中位數並排
 - **規則**：5 年回測（BACKTEST.md「處置股」）——跟漲幅相近、沒被處置的股票比，平均多 +4.8%、63% 贏，
   每一年都成立；原始報酬中位數只有 +1.7%，2022 是 0。出關之後買沒有效果
 
 公告來自證交所 `announcement/punish` 與櫃買 `bulletin/disposal`，一次查一整年，存在 `disposal/<年>.json`
-（`fetch_disposal.py`）。排程在收盤後跑，交易所公告得比排程晚的，要到隔天才看得到。
+（`fetch_disposal.py`）；注意股來自證交所 `announcement/notice` 與櫃買 `bulletin/attention`，存在
+`notice/<年>.json`（`fetch_notice.py`）。排程在收盤後跑，交易所公告得比排程晚的，要到隔天才看得到。
 
 ### 第十三頁：期貨
 
@@ -653,8 +655,12 @@ scripts/
   backtest_futures.py 外資台指期當大盤多空開關的回測（只印表）
   fetch_disposal.py 處置股公告（證交所 punish、櫃買 disposal）→ docs/data/disposal/<年>.json，
                     每日抓今年；第一次 --since 2021
-  build_disposal.py 處置頁 → docs/data/disposal.json：今天公布的、處置中的、近期每一筆的結果
+  fetch_notice.py   注意股公告（證交所 notice、櫃買 attention）→ docs/data/notice/<年>.json，
+                    每日抓今年；第一次 --since 2021
+  notice.py         共用：用注意股的累積次數重建處置規則、算「明天再被注意一次就處置」的候選
+  build_disposal.py 處置頁 → docs/data/disposal.json：今天公布的、明天可能處置的、處置中的、近期每一筆的結果
   backtest_disposal.py 處置股回測（只印表）：處置與出關之後的報酬，跟漲幅相近、沒被處置的比
+  backtest_notice.py 處置預測回測（只印表）：規則重建準不準、提早一天買有沒有多賺
   build_revenue.py  營收頁 → docs/data/revenue/（index.json ＋ 每月一檔）：最近 24 個月的月營收、族群對照、
                     公布後的股價反應。讀 value/rev/、value/revdate/、close/、exright/、themes.json
   build_season.py   景氣頁的月曆 → docs/data/season.json：1～12 月清單、產業、walk-forward

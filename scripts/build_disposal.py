@@ -12,6 +12,14 @@
 所以頁面上把「今天公布、明天開始處置」當成訊號列出來，並附上近期每一筆抱滿處置期間的實際結果，
 讓人看得到它最近還靈不靈。處置期間要預收款券（先付錢才能買）。開盤就漲停的買不到，不算。
 
+## 明天可能處置（BACKTEST.md「處置預測」，scripts/backtest_notice.py）
+
+處置是照注意股的累積次數判定的（notice.py）：5 年 2,121 筆處置，重建的規則對中 2,119 筆、沒有多報。
+所以收盤後就知道誰「明天再被注意一次就處置」。但這**不是買點**：這些候選隔天開盤買、抱到再隔天開盤，
+平均 −0.9%，比漲幅相近的股票少 0.7%（t −4，每一年都是負的），隔天真的被處置的只有 55%；
+真的被處置的那一半，前一天收盤搶進也比等處置第一天開盤貴 0.2%。列出來是讓手上有的人知道
+明天之後可能要預收款券、分盤撮合。
+
 排在 fetch_disposal.py 與 build_history.py 之後（要最新的 disposal/ 與 close/）。
 """
 
@@ -22,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
+import notice as NT
 import strategy as S
 import twse
 from gooaye import SITE, dated_files, load
@@ -42,6 +51,12 @@ RESEARCH = {
     ],
     "out": "出關隔天開盤買沒有效果：5 日中位數 −1.8%，跟漲幅相近的對照組比也沒贏（44%）",
     "pre": 43,                                       # 公布那天近 10 日漲幅中位數 %
+    "watch": {                                       # 明天可能處置（backtest_notice.py，不在處置中的候選）
+        "disp": 2121, "hit": 2119, "extra": 0,       # 規則重建：實際處置、對中、多報
+        "n": 2924, "got": 55,                        # 候選次數、隔天真的被處置 %
+        "r": -0.9, "ex": -0.7, "beat": 42,           # 隔天開盤 → 再隔天開盤；減漲幅相近的對照組
+        "close": -0.2,                               # 被處置的：前一天收盤 → 處置第一天開盤
+    },
 }
 
 
@@ -96,6 +111,23 @@ def main() -> int:
 
     # 今天公布（明天開始處置）：公布日在最後一個交易日（含）之後
     today = [row(e) for e in events if e[0] >= asof]
+    # 明天可能處置：明天再被注意一次就會處置的（今天剛公布處置的已經歸零，不會在這裡）
+    di = {d: i for i, d in enumerate(dates)}
+    days, pubs = NT.load_notice(SITE, di), NT.load_pubs(SITE, di)
+    held = {e[1] for e in events if e[0] <= asof <= e[4]}
+    watch = []
+    for code, nt in days.items():
+        n = NT.need(nt, last, NT.last_pub(pubs.get(code, []), last))
+        if not n:
+            continue
+        w = {"c": code, "n": names.get(code) or D.names.get(code) or code, "ind": ind.get(code),
+             "need": n[0], "rule": n[1], "held": code in held}
+        c = D.ci.get(code)
+        if c is not None and last >= LOOK:
+            a, b = D.ACf[last - LOOK, c], D.ACf[last, c]
+            w["pre"] = pct(b / a - 1) if a and np.isfinite(a) and np.isfinite(b) else None
+        watch.append({k: v for k, v in w.items() if v is not None})
+    watch.sort(key=lambda r: (r["held"], -(r.get("pre") or -1e9)))
     # 處置中：期間涵蓋最後一個交易日
     active = [row(e) for e in events if e[3] <= asof <= e[4] and e[0] < asof]
     # 近期：最近 RECENT 個交易日內公布、已經進場的
@@ -111,14 +143,14 @@ def main() -> int:
     out = {
         "updated": datetime.now(TPE).isoformat(timespec="seconds"),
         "asof": asof, "look": LOOK,
-        "today": today, "active": active, "recent": recent,
+        "today": today, "watch": watch, "active": active, "recent": recent,
         "recentStats": {"n": len(rs), "avg": round(float(rs.mean()), 1) if len(rs) else None,
                         "med": round(float(np.median(rs)), 1) if len(rs) else None,
                         "win": round(float((rs > 0).mean() * 100)) if len(rs) else None, "days": RECENT},
         "research": RESEARCH,
     }
     twse.write_if_changed(twse.DATA_DIR / "disposal.json", out)
-    print(f"處置：{asof} 公布 {len(today)} 檔、處置中 {len(active)} 檔、近 {RECENT} 日已出關 {len(rs)} 筆")
+    print(f"處置：{asof} 公布 {len(today)} 檔、明天可能處置 {len(watch)} 檔、處置中 {len(active)} 檔、近 {RECENT} 日已出關 {len(rs)} 筆")
     return 0
 
 

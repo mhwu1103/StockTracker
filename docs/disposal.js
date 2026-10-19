@@ -1,7 +1,8 @@
 /*
  * 處置（disposal.html）：被交易所處置（分盤撮合、預收款券）的股票。
  *
- *   今天   今天公布、明天開始處置的（訊號：處置第一天開盤買、抱到處置最後一天收盤），與處置中的
+ *   今天   今天公布、明天開始處置的（訊號：處置第一天開盤買、抱到處置最後一天收盤），
+ *          明天再被注意一次就處置的（不是買點，只是提醒），與處置中的
  *   近期   最近公布的每一筆，照同一條規則的實際結果——讓人看得到它最近還靈不靈
  *   規則   5 年回測的數字、它跟誰比、在哪些地方不賺
  *
@@ -56,6 +57,25 @@ function listMore(key, rows, render, empty) {
     ${rest > 0 ? `<button class="cyc-morebtn" data-more="${key}">再列 ${Math.min(PAGE, rest)} 檔（還有 ${rest}）</button>` : ''}`;
 }
 
+// 明天再被注意一次就會觸發的那一條（notice.py），寫成「已經累積到哪裡」
+const NEAR = {
+  c1: '已連續 2 日第一款',
+  c18: '已連續 4 日被注意',
+  n10: '近 10 日已有 5 日被注意',
+  n30: '近 30 日已有 11 日被注意',
+};
+
+function watchRow(r) {
+  return `<a class="row gy-row" href="index.html#/stock/${esc(r.c)}">
+    <span class="ident">
+      <span class="name">${esc(r.n || r.c)}</span>
+      <span class="code">${esc(r.c)}${r.ind ? ` · ${esc(r.ind)}` : ''}</span>
+      <span class="rev-sub">${esc(NEAR[r.rule] || '')}${r.held ? ' · 處置中' : ''}${r.pre !== undefined ? ` · 近 10 日 <span class="${dir(r.pre)}">${pct(r.pre)}</span>` : ''}</span>
+    </span>
+    <span class="figures"><span class="value">${r.need === 'k1' ? '再一次第一款' : '再被注意一次'}</span><span class="price">就${r.held ? '再次' : ''}處置</span></span>
+  </a>`;
+}
+
 const heldRow = (r) => (r.limit
   ? row(r, '買不到', 'flat', '第一天開盤就漲停')
   : row(r, pct(r.r, 1), dir(r.r), r.done ? `抱滿 ${r.day} 天` : `第 ${r.day} 天`));
@@ -64,12 +84,20 @@ const heldRow = (r) => (r.limit
 function todayView() {
   const d = state.data;
   const R = d.research;
+  const W = R.watch;
   return `<section class="card">
     <h2>明天開始處置 <small>${md(d.asof)} 收盤後公布 · ${d.today.length} 檔</small></h2>
     <p class="note">規則：處置第一天開盤買、抱到處置最後一天收盤賣；開盤就漲停的跳過。5 年回測平均 ${pct(R.avg, 1)}、
       中位數 ${pct(R.med, 1)}、${R.win}% 上漲；比漲幅相近、沒被處置的股票平均多 ${pct(R.ex, 1)}。
       處置期間要<b>預收款券</b>（先把錢存進交割戶才能買），細節在「規則」。</p>
     ${listMore('today', d.today, (r) => row(r, md(r.from), '', '開始處置'), '今天沒有新公布的處置股。')}
+  </section>
+  <section class="card">
+    <h2>明天可能處置 <small>再被注意一次就會 · ${(d.watch || []).length} 檔</small></h2>
+    <p class="note">照交易所的累積規則算的（5 年 ${W.disp.toLocaleString()} 筆處置，對中 ${W.hit.toLocaleString()} 筆、沒有多報）：
+      明天再被公布注意一次，當晚就會公布處置。<b>這不是買點</b>——候選隔天開盤買、抱到再隔天開盤，平均 ${pct(W.r, 1)}，
+      比漲幅相近的股票少 ${Math.abs(W.ex).toFixed(1)}%，而且隔天真的被處置的只有 ${W.got}%。手上有的話，要知道之後可能要預收款券、分盤撮合。</p>
+    ${listMore('watch', d.watch || [], watchRow, '今天沒有差一次就處置的股票。')}
   </section>
   <section class="card">
     <h2>處置中 <small>${d.active.length} 檔</small></h2>
@@ -110,6 +138,12 @@ function rulesView() {
       <li><b>處置是什麼</b><span>連續幾天被公布「注意交易資訊」的股票，交易所改成分盤撮合（每幾分鐘撮合一次）、
         買賣要預收款券。2026-08-07 起第一次、第二次處置都是 5 個交易日、約每 2 分鐘撮合；之前是 10 個交易日、
         第一次 5 分鐘、第二次 20 分鐘。</span></li>
+      <li><b>怎麼判定</b><span>被公布注意之後，連續 3 日達第一款、連續 5 日被注意、10 日內 6 日、或 30 日內 12 日（第一至第八款）
+        就處置；上一次處置公布之後重新起算。用這四條重建 5 年的處置，${R.watch.disp.toLocaleString()} 筆對中 ${R.watch.hit.toLocaleString()} 筆、沒有多報，
+        新制也一樣。</span></li>
+      <li><b>提早一天</b><span>「明天可能處置」的候選，隔天開盤買到再隔天開盤平均 ${pct(R.watch.r, 1)}、比漲幅相近的股票少
+        ${Math.abs(R.watch.ex).toFixed(1)}%（${R.watch.beat}% 贏），每一年都是負的；隔天真的被處置的只有 ${R.watch.got}%。真的被處置的，
+        前一天收盤搶進也比等處置第一天開盤貴 ${Math.abs(R.watch.close).toFixed(1)}%。所以進場還是等處置第一天。</span></li>
     </ul>
   </section>
   <section class="card">
@@ -142,7 +176,7 @@ function rulesView() {
 // --------------------------------------------------------------------------
 function render() {
   const d = state.data;
-  $('#meta').textContent = `收盤 ${d.asof} · 明天開始處置 ${d.today.length} 檔 · 處置中 ${d.active.length} 檔`;
+  $('#meta').textContent = `收盤 ${d.asof} · 明天開始處置 ${d.today.length} 檔 · 明天可能處置 ${(d.watch || []).length} 檔 · 處置中 ${d.active.length} 檔`;
   const head = `<section class="card"><div class="controls cyc-tabs">${pills('tab', TABS, state.tab)}</div></section>`;
   const body = state.tab === 'recent' ? recentView() : state.tab === 'rules' ? rulesView() : todayView();
   $('#view').innerHTML = head + body;

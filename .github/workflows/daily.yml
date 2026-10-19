@@ -171,6 +171,13 @@ jobs:
         continue-on-error: true
         run: python scripts/fetch_disposal.py
 
+      # 注意股公告（證交所 notice、櫃買 attention）：處置頁算「明天再被注意一次就處置」的候選。
+      # 跟處置一樣收盤後才公告、一次抓一整年。
+      - name: 抓注意股
+        id: s18n
+        continue-on-error: true
+        run: python scripts/fetch_notice.py
+
       # 網站只留最近兩年的每日原始檔（Pages 上限 1 GB，每日資料一年約長 130 MB）。
       # 要排在所有 build 前面：衍生檔照現存的原始檔重建，過期的由各支 build 自己清掉。
       - name: 修剪兩年以前的每日原始檔
@@ -325,8 +332,8 @@ jobs:
         continue-on-error: true
         run: python scripts/build_strategy.py
 
-      # 處置頁：今天公布的處置、處置中的、近期每一筆抱滿處置期間的結果。讀 disposal/、close/、
-      # daily/、exright/。
+      # 處置頁：今天公布的處置、明天可能處置的、處置中的、近期每一筆抱滿處置期間的結果。讀 disposal/、
+      # notice/、close/、daily/、exright/。
       - name: 重算處置頁
         id: s42
         continue-on-error: true
