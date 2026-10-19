@@ -28,6 +28,8 @@ FAST = 0.2                  # 外資空單「加最快」：近 20 日變化在�
 VERDICT = {
     "net": {"ok": True, "say": "看變化，不看水位：近 20 日外資加多最多的五分之一日子，之後 5 天大盤比加空最多的五分之一多約 0.9 個百分點"
             "（2022-07 前 +0.86、後 +0.96），2019～2026 有 7 年同方向。水位本身前後段方向相反，沒有預測力。"},
+    "fopt": {"ok": True, "say": "短線有：外資選擇權最偏空的五分之一日子，之後 5 天大盤平均 −0.2%（49% 上漲），其他日子 +0.7%（64%）；"
+             "2022-07 前後同方向（+0.92／+0.79），2019～2026 有 6 年同方向（2020 相反）。20 天逐年就不穩了。"},
     "pnl": {"ok": False, "say": "估算損益高或低，之後 5／20 天大盤都差不多（前後段的差距都不到 0.5 個百分點）。只當參考。"},
     "retail": {"ok": True, "say": "反向指標成立：散戶最偏多的五分之一日子，之後 5 天比最偏空的五分之一少 0.5～1.0 個百分點"
                "（前段 −0.96、後段 −0.52），2020～2026 每一年都同方向；之後 1 天、20 天也同方向。"},
@@ -38,6 +40,7 @@ VERDICT = {
              "剛站上買權關卡之後也沒有比較強。樣本少，只當盤面參考。"},
 }
 WALL_FAR = 0.2              # 關卡離加權指數超過這個比例就不算
+FOPT_BEAR = 0.2             # 外資選擇權多空淨額在近一年的百分位低於這個＝偏空到最低 20%
 HOT = 0.8                   # 散戶多空比在近一年的百分位高於這個＝散戶偏多到前 20%
 
 def r(x, d=0):
@@ -62,6 +65,8 @@ def main() -> int:
     net = F.foreign_net(s)
     cost, pnl = F.foreign_cost(net, F.fut_price(s))
     retail = F.retail_ratio(s)
+    fopt = F.foreign_option(s)
+    fopt_rank = F.rolling_rank(fopt)
     large = F.large_net(s, True)
     pc = s["opt.pco"]
     bpts, bpct = F.basis(s, c)
@@ -89,6 +94,9 @@ def main() -> int:
         "net": pack("net", net, 0, {"fast": bool(fast_rank[last] < FAST), "fastRank": r(fast_rank[last] * 100),
                                     "tx": r(s["tx.fo"][last]), "mtx": r(s["mtx.fo"][last]),
                                     "tr": r(s["tx.tr"][last]), "de": r(s["tx.de"][last])}),
+        "fopt": pack("fopt", fopt, 1, {"cv": r(s["fop.cv"][last], 1), "pv": r(s["fop.pv"][last], 1),
+                                       "cq": r(s["fop.cq"][last]), "pq": r(s["fop.pq"][last]),
+                                       "bear": bool(np.isfinite(fopt_rank[last]) and fopt_rank[last] < FOPT_BEAR)}),
         "pnl": pack("pnl", pnl, 1, {"cost": r(cost[last]), "price": r(F.fut_price(s)[last]),
                                     "costSeries": [r(v) for v in cost[lo:]]}),
         "retail": pack("retail", retail, 1, {"oi": r(s["mkt.mtxoi"][last]),

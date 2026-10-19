@@ -337,9 +337,14 @@ def futures_lines(date_iso: str) -> list:
              f"散戶多空比 <b>{r['now']:+.1f}%</b>{GAP}近一年第 {r['rank']}%"]
     if n.get("fast"):
         lines.append(f"⚠️ 外資空單一個月加得特別快（最快的 {d['rules']['fast']}%）：之後 5 天常偏弱，短線別追高")
+    o = d.get("fopt") or {}
+    if o.get("now") is not None:
+        lines.insert(3, f"外資選擇權 <b>{o['now']:+,.1f} 億</b>{GAP}近一年第 {o['rank']}%")
+    if o.get("bear"):
+        lines.append("⚠️ 外資選擇權偏空到近一年最低 20%：之後 5 天常偏弱")
     if r.get("hot"):
         lines.append(f"⚠️ 散戶偏多到近一年前 {d['rules']['hot']}%：反向指標，之後 5 天常偏弱")
-    lines.append(note("台指期兩項有回測支持（2019 起每一年幾乎都同方向）：外資部位看 20 日變化不看水位；散戶多空比是反向指標。"))
+    lines.append(note("台指期三項有回測支持：外資期貨部位看 20 日變化不看水位；外資選擇權多空淨額；散戶多空比是反向指標。都是之後 1～5 天的短線效果。"))
     return lines
 
 

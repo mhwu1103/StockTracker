@@ -3,6 +3,7 @@
  *
  *   關卡     加權指數，疊上選擇權未平倉最大的買權、賣權履約價
  *   外資     約當大台淨部位（大台 ＋ 小台 ÷ 4）、近 20 日變化在近一年的位置
+ *   選擇權   外資買權淨金額 − 賣權淨金額
  *   成本     外資這批部位的估算平均成本與損益
  *   散戶     小台散戶多空比
  *   大額     前十大特定法人的淨部位
@@ -125,6 +126,25 @@ function netCard(D) {
   </section>`;
 }
 
+function foptCard(D) {
+  const x = D.fopt;
+  return `<section class="card">
+    <h2>外資選擇權 <small>買權淨金額 − 賣權淨金額 · 億元</small></h2>
+    <div class="stat-grid">
+      ${stat(signed(x.now, 1), `${x.now >= 0 ? '偏多' : '偏空'} · ${rankText(x.rank)}`, dir(x.now))}
+      ${stat(`${signed(x.cv, 1)} / ${signed(x.pv, 1)}`, '買權 / 賣權淨金額（億）')}
+      ${stat(`${signed(x.cq)} / ${signed(x.pq)}`, '買權 / 賣權淨口數')}
+      ${stat(signed(x.chg5, 1), '近 5 日變化（億）', dir(x.chg5))}
+    </div>
+    ${x.bear ? `<p class="rule-level rule-level--warn"><b>外資選擇權偏空到近一年最低的 20%</b>
+      <span>回測：這種日子之後 5 天大盤平均 −0.2%、不到一半的日子上漲，其他日子 +0.7%。短線小心。</span></p>` : ''}
+    ${lineChart([{ data: x.series, cls: 'fut-line--main', label: '外資選擇權多空淨額', digits: 1 }], { zero: true, label: '外資選擇權多空淨額', unit: ' 億' })}
+    <p class="note">買買權、賣賣權都是看多，所以「買權淨金額 − 賣權淨金額」越大越偏多。用金額不用口數：價外的選擇權很便宜，
+      一口深價外跟一口價平的份量差很多。</p>
+    ${verdict(x)}
+  </section>`;
+}
+
 function pnlCard(D) {
   const p = D.pnl;
   return `<section class="card">
@@ -209,8 +229,8 @@ function basisCard(D) {
 // --------------------------------------------------------------------------
 function render() {
   const D = state.data;
-  $('#meta').textContent = `資料 ${D.asof} · 外資約當大台 ${signed(D.net.now)} 口${D.net.fast ? ' · ⚠ 外資空單加速' : ''}${D.retail.hot ? ' · ⚠ 散戶偏多' : ''}`;
-  $('#view').innerHTML = wallCard(D) + netCard(D) + pnlCard(D) + retailCard(D) + largeCard(D) + pcCard(D) + basisCard(D);
+  $('#meta').textContent = `資料 ${D.asof} · 外資約當大台 ${signed(D.net.now)} 口${D.net.fast ? ' · ⚠ 外資空單加速' : ''}${D.retail.hot ? ' · ⚠ 散戶偏多' : ''}${D.fopt.bear ? ' · ⚠ 外資選擇權偏空' : ''}`;
+  $('#view').innerHTML = wallCard(D) + netCard(D) + foptCard(D) + pnlCard(D) + retailCard(D) + largeCard(D) + pcCard(D) + basisCard(D);
 }
 
 async function main() {

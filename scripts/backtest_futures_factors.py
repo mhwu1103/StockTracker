@@ -53,6 +53,8 @@ def main():
         ("外資淨部位 20 日變化", F.change(net, 20)),
         ("外資淨部位 5 日變化", F.change(net, 5)),
         ("外資期貨估算損益（億）", pnl),
+        ("外資選擇權多空淨額（億）", F.foreign_option(s)),
+        ("外資選擇權多空淨額 5 日變化", F.change(F.foreign_option(s), 5)),
         ("散戶多空比（小台，越高散戶越多）", retail),
         ("散戶多空比 5 日變化", F.change(retail, 5)),
         ("前十大特定法人淨部位 %", F.large_net(s, True)),

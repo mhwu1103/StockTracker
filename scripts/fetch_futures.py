@@ -11,6 +11,7 @@
 | tx、mtx | futContractsDateDown（commodityId=TXF／MXF） | 三大法人未平倉淨口數 fo／tr／de。**只能查近三年**，更早的用 FinMind 回補 |
 | mkt | futDataDown（commodity_id=TX／MTX） | 大台近月收盤 txc、結算 txs；大台、小台全部月份的未平倉合計 txoi、mtxoi（一般時段） |
 | lt | largeTraderFutDown | 臺股期貨（期交所已把 TX＋MTX÷4＋TMF÷20 併成一個商品）所有月份合計：前五大／前十大交易人的買方、賣方部位 b5 s5 b10 s10，其中屬於特定法人的 pb5 ps5 pb10 ps10，全市場未沖銷 oi |
+| fop | callsAndPutsDateDown（TXO） | 外資的台指選擇權：買權未平倉淨口數 cq 與淨金額 cv（億）、賣權 pq、pv。**只能查近三年**，更早的用 FinMind（TaiwanOptionInstitutionalInvestors） |
 | opt | pcRatioDown、optDataDown（TXO） | 賣權／買權的成交量比 pcv 與未平倉比 pco（%）；最近一個月份契約（不含週選）未平倉最大的買權履約價 cw、賣權履約價 pw 與它們的口數 cwo、pwo |
 
 格式：{"d": [日期…], "<區段>": {"<欄位>": [與 d 平行，缺的是 null]}}。
@@ -42,6 +43,7 @@ FIELDS = {
     "mkt": ["txc", "txs", "txoi", "mtxoi"],
     "lt": ["b5", "s5", "b10", "s10", "pb5", "ps5", "pb10", "ps10", "oi"],
     "opt": ["pcv", "pco", "cw", "pw", "cwo", "pwo"],
+    "fop": ["cq", "cv", "pq", "pv"],
 }
 WHO = {"外資及陸資": "fo", "外資": "fo", "投信": "tr", "自營商": "de"}
 MONTHLY = re.compile(r"^\d{6}$")
@@ -198,6 +200,39 @@ def options(start: date, end: date) -> dict:
     return out
 
 
+def opt_inst(start: date, end: date) -> dict:
+    """外資的台指選擇權買權、賣權未平倉淨口數與淨金額（千元 → 億）。"""
+    rows = post("callsAndPutsDateDown", {**span(start, end), "commodityId": "TXO"})
+    h = rows[0]
+    i_d, i_cp, i_who = col(h, "日期"), col(h, "買賣權別"), col(h, "身份別")
+    i_q, i_v = col(h, "未平倉口數買賣淨額"), col(h, "未平倉契約金額買賣淨額")
+    out = defaultdict(dict)
+    for r in rows[1:]:
+        if len(r) > i_v and WHO.get(r[i_who]) == "fo" and r[i_cp] in ("CALL", "PUT"):
+            k = "c" if r[i_cp] == "CALL" else "p"
+            out[iso(r[i_d])][k + "q"] = int(num(r[i_q]))
+            out[iso(r[i_d])][k + "v"] = round(num(r[i_v]) / 1e5, 2)
+    return out
+
+
+def finmind_opt(since: str, until: str) -> dict:
+    r = requests.get(FINMIND_URL, params={"dataset": "TaiwanOptionInstitutionalInvestors", "data_id": "TXO",
+                                          "start_date": since, "end_date": until}, timeout=60)
+    r.raise_for_status()
+    j = r.json()
+    if j.get("status") != 200:
+        raise RuntimeError(f"FinMind TXO：{j.get('msg')}")
+    out = defaultdict(dict)
+    for x in j["data"]:
+        if WHO.get(x["institutional_investors"]) != "fo":
+            continue
+        k = "c" if x["call_put"] == "買權" else "p"
+        out[x["date"]][k + "q"] = x["long_open_interest_balance_volume"] - x["short_open_interest_balance_volume"]
+        out[x["date"]][k + "v"] = round((x["long_open_interest_balance_amount"]
+                                         - x["short_open_interest_balance_amount"]) / 1e5, 2)
+    return out
+
+
 def finmind(code: str, since: str, until: str) -> dict:
     r = requests.get(FINMIND_URL, params={"dataset": "TaiwanFuturesInstitutionalInvestors", "data_id": code,
                                           "start_date": since, "end_date": until}, timeout=60)
@@ -254,6 +289,7 @@ def main():
         for sec, code in (("tx", "TX"), ("mtx", "MTX")):
             merge(got, sec, finmind(code, args.finmind, today.isoformat()), f"FinMind 三大法人 {code}")
             time.sleep(args.sleep)
+        merge(got, "fop", finmind_opt(args.finmind, today.isoformat()), "FinMind 外資選擇權")
     elif args.history:
         for a, b in months(date.fromisoformat(args.history), today):
             for sec, fn, label in jobs:
@@ -268,6 +304,11 @@ def main():
         for sec, code in (("tx", "TXF"), ("mtx", "MXF")):
             merge(got, sec, tolerant(lambda a, b: inst(code, a, b), start, today, args.sleep), f"三大法人 {code}")
             time.sleep(args.sleep)
+        try:
+            merge(got, "fop", tolerant(opt_inst, start, today, args.sleep), "外資選擇權")
+        except RuntimeError as err:
+            print(f"  ! 外資選擇權：{err}")
+        time.sleep(args.sleep)
         for sec, fn, label in jobs:
             try:
                 merge(got, sec, tolerant(fn, start, today, args.sleep), label)
