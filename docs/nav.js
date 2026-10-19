@@ -57,7 +57,7 @@ window.StockNav = (function () {
       { v: 'rev', label: '營收', href: 'rev.html' },
       { v: 'x', label: '觀點', href: 'x.html' }] },
     { key: 'find', label: '查詢', views: [
-      { v: 'stock', label: '個股' }, { v: 'compare', label: '對照' }] },
+      { v: 'stock', label: '個股' }, { v: 'compare', label: '對照' }, { v: 'grid', label: '多圖' }] },
     // 紀律不回答「市場上發生了什麼」，回答「照規則我今天該做什麼」—— 跟上面六組都不是
     // 同一種問題，所以自成一組，而不是塞進技術或資金裡當第五個分頁。
     //

@@ -63,6 +63,7 @@ const state = {
   sort: 'rank',        // 排行榜排序欄位
   floor: 0,            // 排行榜成交值門檻（億）
   watch: new Set(),    // 自選股代號
+  gridSpan: 60,        // 「多圖」分頁每張小圖畫幾個交易日
   streakDays: 3,       // 「站穩」分頁要看的連續進榜天數
   burstLots: 20000,    // 「爆量」分頁的成交量門檻（張）
   burstHigh: 60,       // 「爆量」分頁要求量創幾日新高
@@ -3346,6 +3347,82 @@ function drawRevenue(Chart, rows) {
   state.charts.push(chart);
   drawLine(Chart, $('#c-revyoy'), labels, [{ data: shown.map((r) => r.yoy), color: LINE.top10, label: '年增率' }],
     { suffix: '%', emptyText: '沒有' });
+}
+
+// --------------------------------------------------------------------------
+// 分頁：多圖（自選股一頁排滿小走勢圖）
+//
+// 自選股十幾檔，一檔一檔點進個股頁太慢。這一頁每檔一張小卡：收盤走勢、期間漲跌、最新收盤，
+// 依期間漲跌排，點了進個股頁。K 線檔沒有還原除權息——除息那天的跳空是真的，跟個股頁的 K 線一樣。
+// 沒進過成交值排行的股票沒有 K 線檔，那幾檔列在最下面。
+// --------------------------------------------------------------------------
+const GRID_SPANS = [
+  { value: 20, label: '近 20 日' },
+  { value: 60, label: '近 60 日' },
+  { value: 120, label: '近 120 日' },
+];
+
+/**
+ * 單日漲跌超過 ±11%（漲跌停是 10%，交易上做不到）的跳空是分割、減資這類事件，把那一天之前的價格
+ * 按比例接起來；不然一次 1 拆 4 會畫成崩盤 75%。除息（一般不到 10%）不處理，跟個股頁的 K 線一致。
+ */
+function joinGaps(closes) {
+  const out = closes.slice();
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const r = closes[i] / closes[i - 1];
+    if (r > 1.11 || r < 0.89) for (let k = 0; k < i; k += 1) out[k] *= r;
+  }
+  return out;
+}
+
+function miniLine(closes, up) {
+  const W = 160;
+  const H = 48;
+  const lo = Math.min(...closes);
+  const hi = Math.max(...closes);
+  const x = (k) => (k / Math.max(1, closes.length - 1)) * W;
+  const y = (v) => 2 + (1 - (v - lo) / (hi - lo || 1)) * (H - 4);
+  const pts = closes.map((v, k) => `${x(k).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  return `<svg class="wgrid__spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    <line class="wgrid__base" x1="0" x2="${W}" y1="${y(closes[0]).toFixed(1)}" y2="${y(closes[0]).toFixed(1)}"/>
+    <polyline class="${up ? 'up' : 'down'}" points="${pts}"/></svg>`;
+}
+
+async function renderWatchGrid(view) {
+  const codes = [...state.watch];
+  if (!codes.length) {
+    view.innerHTML = `<p class="hint">還沒有自選股。在排行榜或個股頁點「☆ 加入自選」，這裡就會一頁排滿它們的走勢。</p>`;
+    return;
+  }
+  const today = await loadDaily(state.date);
+  const names = new Map(today.stocks.map((s) => [s.code, s]));
+  const month = state.date.slice(0, 7);
+  const back = Math.ceil(state.gridSpan / 18) + 1;           // 一個月約 20 個交易日，多抓一個月
+  const all = await Promise.all(codes.map(async (code) => {
+    const rows = (await loadKlineAuto(code, names.get(code)?.m ?? null, monthBack(month, back), month))
+      .filter((r) => r.date <= state.date && r.c);
+    return { code, rows: rows.slice(-state.gridSpan) };
+  }));
+  const cards = all.filter((x) => x.rows.length >= 2).map((x) => {
+    const c = joinGaps(x.rows.map((r) => r.c));
+    const chg = (c[c.length - 1] / c[0] - 1) * 100;
+    return { ...x, closes: c, chg, last: c[c.length - 1] };
+  }).sort((a, b) => b.chg - a.chg);
+  const none = all.filter((x) => x.rows.length < 2).map((x) => x.code);
+  const label = (code) => names.get(code)?.name || code;
+  view.innerHTML = `
+    <div class="controls">${pills('gridspan', GRID_SPANS, state.gridSpan)}</div>
+    <section class="card">
+      <h2>自選股走勢 <small>${cards.length} 檔 · 依期間漲跌排 · 到 ${state.date}</small></h2>
+      <div class="wgrid">${cards.map((x) => `<a class="wgrid__card" href="#/stock/${esc(x.code)}">
+          <span class="wgrid__head"><b>${esc(label(x.code))}</b><small>${esc(x.code)}</small></span>
+          ${miniLine(x.closes, x.chg >= 0)}
+          <span class="wgrid__foot"><span>${num(x.last, 2)}</span><b class="${trend(x.chg)}">${x.chg > 0 ? '+' : ''}${num(x.chg, 1)}%</b></span>
+        </a>`).join('')}</div>
+      <p class="note">漲跌是期間第一天收盤到 ${state.date} 收盤。單日跳空超過漲跌停的（分割、減資）接起來算，除息沒有還原。
+        虛線是期間第一天的收盤。</p>
+      ${none.length ? `<p class="note">沒有 K 線資料（沒進過成交值排行）：${none.map(esc).join('、')}</p>` : ''}
+    </section>`;
 }
 
 async function renderStock(view, code) {
@@ -8277,6 +8354,7 @@ async function render() {
     else if (route.view === 'quote') await renderQuote(view, route.arg);
     else if (route.view === 'stock') await renderStock(view, route.arg);
     else if (route.view === 'compare') await renderCompare(view, route.params);
+    else if (route.view === 'grid') await renderWatchGrid(view);
     else await renderRank(view);
     paintChrome();
   } catch (err) {
@@ -8324,6 +8402,7 @@ function bindGlobalControls() {
     if (!pill) return;
     if (pill.dataset.baseline) state.baseline = Number(pill.dataset.baseline);
     if (pill.dataset.span) state.span = Number(pill.dataset.span);
+    if (pill.dataset.gridspan) state.gridSpan = Number(pill.dataset.gridspan);
     if (pill.dataset.streak) state.streakDays = Number(pill.dataset.streak);
     if (pill.dataset.burstlots) state.burstLots = Number(pill.dataset.burstlots);
     if (pill.dataset.bursthigh) state.burstHigh = Number(pill.dataset.bursthigh);

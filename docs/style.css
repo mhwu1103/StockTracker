@@ -3107,3 +3107,20 @@ button.ustag {
 .fut-verdict.is-ok { border-left-color: var(--accent); }
 .fut-verdict.is-ok b { color: var(--accent); }
 .fut-verdict.is-no b { color: var(--muted); }
+
+/* ---------- 多圖（自選股一頁排滿小走勢圖） ---------- */
+.wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 0 12px 12px; }
+.wgrid__card {
+  display: flex; flex-direction: column; gap: 4px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 10px; color: inherit; text-decoration: none; background: var(--surface);
+}
+.wgrid__card:active { background: var(--bg); }
+.wgrid__head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.wgrid__head b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wgrid__head small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.wgrid__spark { width: 100%; height: 48px; display: block; }
+.wgrid__spark polyline { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.wgrid__spark polyline.up { stroke: var(--up); }
+.wgrid__spark polyline.down { stroke: var(--down); }
+.wgrid__base { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; opacity: .6; }
+.wgrid__foot { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; font-size: 13px; }
