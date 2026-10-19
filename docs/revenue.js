@@ -105,6 +105,7 @@ function revRow(r, B) {
   const tags = [
     r.hiAll ? '<span class="val-good">2019 起新高</span>' : r.hi ? '<span class="val-good">12 個月新高</span>' : '',
     r.nh ? '<span class="val-good">股價 60 日新高</span>' : '',
+    r.low ? '<span class="val-trap" title="去年同月營收不到它前 12 個月平均的三成、或不到 1,000 萬，年增率是小分母灌大的">低基期</span>' : '',
   ].filter(Boolean).join(' ');
   const sub = [
     `${fmt(r.rev)} 億`,
@@ -140,6 +141,8 @@ function filtered(B) {
           : true));
   const key = { yoy: 'yoy', react: 'react', rev: 'rev' }[state.sort];
   if (key) rows = [...rows].sort((a, b) => (b[key] ?? -Infinity) - (a[key] ?? -Infinity));
+  // 依年增排的時候，低基期的放到最後：它們的年增率是小分母灌大的，擺在最前面會蓋掉真的成長
+  if (key === 'yoy') rows = [...rows.filter((r) => !r.low), ...rows.filter((r) => r.low)];
   return rows;   // 公布日：build 已經排好（新到舊，同一天年增大的在前）
 }
 
@@ -194,6 +197,7 @@ function flashView() {
     <div class="controls">${pills('filter', FILTERS, state.filter)}</div>
     <div class="controls">${pills('sort', SORTS, state.sort)}</div>
     <p class="note">右邊大字是年增率；下面是${B.known ? '公布後' : `申報期限 ${md(B.deadline)} 起`}到 ${md(B.end)} 收盤的股價漲跌（還原除權息）${state.month ? '——過去的月份算到下一次營收申報期限為止，數字固定不再變' : ''}。
+      「低基期」是去年同月營收不到它前 12 個月平均的 ${Math.round((R.lowBase || 0.3) * 100)}%、或不到 1,000 萬，依年增排時放在最後。
       「12 個月新高」比前 ${R.hiPrev} 個月都高；「2019 起新高」比 ${esc(R.since)} 以來每個月都高（前面至少 ${R.allMin} 個月）。
       ${B.known < B.count ? `${B.count - B.known} 家在本站開始記公布日之前就已公布，從申報期限（${md(B.deadline)}）算起。` : ''}</p>
     ${more(rows, (r) => revRow(r, B), '沒有符合的公司。')}

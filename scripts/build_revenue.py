@@ -6,6 +6,8 @@
 
 - **新高**有兩種：「12 個月新高」跟策略頁同一個定義（比前 12 個月都高、前面至少有 10 個月的資料）；
   「2019 起新高」是比本站有資料以來（2019-01 起）的每一個月都高，前面至少要有 36 個月才算
+- **低基期**：去年同月營收不到「去年同月往前 12 個月平均」的 30%，或不到 1,000 萬——年增率是被小分母灌大的，
+  頁面上標出來、依年增排序時放到最後（建材營造另外整群分開放，見前端）
 - **連續年增**：年增率連續大於 0 的月數，算到這個月
 - **公布日**是本站第一次在公開資訊觀測站的彙總表上看到（value/revdate/，fetch_value.py 記的）；
   2026-10 以前的月份沒有記，那些用申報期限（隔月 10 日）當基準，頁面上會標出是哪一種
@@ -47,6 +49,8 @@ HI_MIN = 10         # 前面至少要有幾個月
 ALL_MIN = 36        # 2019 起新高：前面至少要有幾個月
 PRE = 20            # 公布前看幾個交易日
 NH = 60             # 股價創幾日新高
+LOW_BASE = 0.3      # 去年同月營收不到它前 12 個月平均的幾倍，算低基期
+LOW_ABS = 10000     # 或去年同月營收不到 1,000 萬（千元）：整年都很小的公司，跟自己比抓不到
 
 
 def r1(x):
@@ -140,6 +144,11 @@ def main() -> int:
             near = [x for x in (revs[ms[j - q]].get(c, [None])[0] for q in range(1, HI_PREV + 1) if j - q >= 0) if x]
             hi12 = len(near) >= HI_MIN and now > max(near)
             hi_all = len(back) >= ALL_MIN and now > max(back)
+            # 低基期：去年同月營收不到「去年同月往前 12 個月平均」的 LOW_BASE 倍——年增率會被分母灌大
+            base = (revs[ms[j - 12]].get(c) or [None])[0] if j >= 12 else None
+            ly = [x for x in ((revs[ms[j - q]].get(c) or [None])[0] for q in range(13, 25) if j - q >= 0) if x]
+            low = bool(base is not None and (base < LOW_ABS
+                                             or (len(ly) >= 10 and base < LOW_BASE * sum(ly) / len(ly))))
             p = (prev.get(c) or [None])[0]
             mom = (now / p - 1) * 100 if p and p > 0 else None
             run = 0
@@ -167,7 +176,7 @@ def main() -> int:
             rows.append(slim({
                 "c": c, "n": names.get(c, c), "ind": industry.get(c),
                 "rev": round(now / 1e5, 2),                     # 千元 → 億元
-                "yoy": yoy, "mom": r1(mom), "hi": hi12, "hiAll": hi_all, "run": run,
+                "yoy": yoy, "mom": r1(mom), "hi": hi12, "hiAll": hi_all, "run": run, "low": low,
                 "pub": d_pub, "react": r1(react), "pre": r1(pre), "nh": nh,
                 "subs": sub_of.get(c, []),
             }))
@@ -210,7 +219,7 @@ def main() -> int:
         "today": max((d for m in dates_of.values() for d in m.values() if d), default=None),
         "subs": [[g, s] for g, s, _ in subs],
         "months": [{k: v for k, v in b.items() if k not in ("rows", "groups")} for b in blocks],
-        "rules": {"hiPrev": HI_PREV, "hiMin": HI_MIN, "allMin": ALL_MIN, "pre": PRE, "nh": NH,
+        "rules": {"hiPrev": HI_PREV, "hiMin": HI_MIN, "allMin": ALL_MIN, "pre": PRE, "nh": NH, "lowBase": LOW_BASE,
                   "since": ms[0]},
     })
     b = blocks[0]
