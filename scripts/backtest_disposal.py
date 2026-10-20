@@ -120,21 +120,23 @@ MODE = os.environ.get("PEER", "top")       # top：前 5%；match：漲幅相近
 
 
 def stats(rows):
-    """rows: [(日, 報酬, 減對照組, 減大盤)] → 平均、中位數、贏對照組比例、t 值（以日為單位）"""
+    """rows: [(日, 報酬, 減對照組平均, 減大盤平均, 減對照組中位數)] → 平均、中位數、贏對照組比例、t 值（以日為單位）。
+    平均減平均、中位數與「贏」跟對照組的中位數比：個股報酬右偏，平均減中位數一定偏正。"""
     if not rows:
         return None
     r = np.array([x[1] for x in rows])
     ex = np.array([x[2] for x in rows if np.isfinite(x[2])])
     em = np.array([x[3] for x in rows])
+    exm = np.array([x[4] for x in rows if np.isfinite(x[4])])
     by = defaultdict(list)
-    for d, _, e, _ in rows:
+    for d, _, e, _, _ in rows:
         if np.isfinite(e):
             by[d].append(e)
     daily = np.array([np.mean(v) for v in by.values()])
     t = daily.mean() / (daily.std(ddof=1) / np.sqrt(len(daily))) if len(daily) > 2 else np.nan
     return {"n": len(r), "avg": r.mean() * 100, "med": np.median(r) * 100, "win": (r > 0).mean() * 100,
-            "ex": ex.mean() * 100 if len(ex) else np.nan, "exmed": np.median(ex) * 100 if len(ex) else np.nan,
-            "beat": (ex > 0).mean() * 100 if len(ex) else np.nan, "mkt": em.mean() * 100, "t": t}
+            "ex": ex.mean() * 100 if len(ex) else np.nan, "exmed": np.median(exm) * 100 if len(exm) else np.nan,
+            "beat": (exm > 0).mean() * 100 if len(exm) else np.nan, "mkt": em.mean() * 100, "t": t}
 
 
 def collect(sel, at, h):
@@ -153,7 +155,8 @@ def collect(sel, at, h):
         pr = R[h][i][m] if m is not None else np.array([])
         pr = pr[np.isfinite(pr)]
         allr = R[h][i][np.isfinite(R[h][i])]
-        out.append((dates[i], x, x - np.median(pr) if len(pr) >= (3 if MODE == "match" else 10) else np.nan, x - np.median(allr)))
+        ok = len(pr) >= (3 if MODE == "match" else 10)
+        out.append((dates[i], x, x - pr.mean() if ok else np.nan, x - allr.mean(), x - np.median(pr) if ok else np.nan))
     return out
 
 
@@ -226,8 +229,8 @@ def whole(sel):
         pr = pr[np.isfinite(pr)]
         allr = rr[np.isfinite(rr)]
         r0 = x / o - 1
-        out.append((dates[i], r0, r0 - np.median(pr) if len(pr) >= (3 if MODE == "match" else 10) else np.nan,
-                    r0 - np.median(allr)))
+        ok = len(pr) >= (3 if MODE == "match" else 10)
+        out.append((dates[i], r0, r0 - pr.mean() if ok else np.nan, r0 - allr.mean(), r0 - np.median(pr) if ok else np.nan))
     return stats(out)
 
 
