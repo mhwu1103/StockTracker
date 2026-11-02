@@ -1,24 +1,33 @@
-"""跌深頁 → docs/data/drawdown.json：今年每一檔股票從高點到之後低點的最大跌幅。
+"""跌深頁 → docs/data/drawdown.json ＋ docs/data/drawdown/<年>.json：每一檔的還原收盤，讓頁面算任一段期間
+的最大跌幅。
 
     python scripts/build_drawdown.py
 
-## 算法
+## 為什麼是頁面自己算
 
-- 範圍：最後一個交易日所在的那一年（1 月第一個交易日起），上市與上櫃的普通股（strategy.common）
+頁面可以選起訖日（結束日預設最新一天），任一段期間的最大回落沒辦法事先算好，所以這裡只存價格，
+算在 drawdown.js：
+
+- `drawdown/<年>.json`：那一年每一檔的還原收盤。為了小，存的是對數報酬（萬分之一為單位，帶誤差補償，
+  還原回來的價格誤差不到 0.005%）：`{代號: [第一筆在第幾天, 最後一筆在第幾天, 第一筆價格, 差1, 差2, ...]}`，
+  中間停牌的日子差是 0（沿用前一天）。價格的基準是**那一年最後一個交易日**，所以過去年份的檔案不會
+  因為今天有人除息就整份重寫；換成今天基準的係數放在主檔的 `scale`
+- `drawdown.json`：名稱、產業、市場、成交熱門、各年份檔的換算係數、加權指數收盤，與頁面要用的參數
+
+## 算法（drawdown.js）
+
 - 價格：還原除權息的收盤價（gooaye.Prices：除權息表的因子，加上單日差超過 ±20% 的分割、減資），
-  停牌日沿用前一天。頁面上的價格換算成「今天的基準」，所以現價就是最後一天的原始收盤
-- **最大回落**：今年先出現的高點，到它之後最低的那一天，跌了多少（max drawdown）。這是「高點買進、
-  抱到最低」最慘會賠多少，跟「現在離高點多遠」不一樣——後者另外一欄
-- 年初就在交易的才算（第一筆收盤要在今年前 5 個交易日內），今年才上市的跳過；最後一筆收盤離最後
-  一個交易日超過 10 個交易日的（長期停牌）也跳過
-
-每一檔都存（頁面上的搜尋要找得到跌得不深的）；加權指數另外算一份當對照。
+  停牌日沿用前一天，換成今天的基準
+- **最大回落**：期間內先出現的高點，到它之後最低的那一天跌了多少（max drawdown）
+- 期間開始時就在交易的才算（第一筆收盤要在前 5 個交易日內）；最後一筆收盤離結束日超過 10 個交易日的
+  （長期停牌）跳過
 
 排在 build_history.py 之後（要最新的 close/）。
 """
 
 from __future__ import annotations
 
+import math
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -26,91 +35,84 @@ import numpy as np
 
 import strategy as S
 import twse
-from gooaye import SITE, dated_files, load
+from gooaye import SITE, load
 
 TPE = timezone(timedelta(hours=8))
-LATE_START = 5      # 第一筆收盤最晚在今年第幾個交易日
+LATE_START = 5      # 第一筆收盤最晚在期間第幾個交易日
 STALE = 10          # 最後一筆收盤最多落後幾個交易日
-NEW_LOW = 5         # 今年最低點落在最近幾個交易日內 = 還在破底
-COLS = ["c", "n", "ind", "mk", "hd", "hp", "ld", "lp", "dd", "pd", "pp", "cl", "cur", "reb", "ytd", "liq"]
+NEW_LOW = 5         # 最低點落在最近幾個交易日內 = 還在破底
+UNIT = 1e4          # 對數報酬的單位：萬分之一
 
 
-def r1(x):
-    return round(float(x) * 100, 1)
+def sig(x, n=6):
+    """留 n 位有效數字。"""
+    return float(f"{x:.{n}g}")
 
 
-def px(x):
-    x = float(x)
-    return round(x, 2) if x < 100 else round(x, 1) if x < 1000 else round(x)
-
-
-def drawdown(v):
-    """v 是一段沒有 NaN 的價格；回傳 (最大回落, 高點位置, 低點位置)。"""
-    run = np.maximum.accumulate(v)
-    dd = v / run - 1
-    lo = int(np.argmin(dd))
-    hi = int(np.argmax(v[:lo + 1]))
-    return float(dd[lo]), hi, lo
+def encode(v):
+    """一段沒有 NaN 的價格 → [第一筆價格, 差1, 差2, ...]，差帶誤差補償，不會越累積越偏。"""
+    p0 = sig(float(v[0]))
+    out, acc = [p0], math.log(p0)
+    for x in v[1:]:
+        q = round((math.log(float(x)) - acc) * UNIT)
+        acc += q / UNIT
+        out.append(q)
+    return out
 
 
 def main() -> int:
     D = S.Data([SITE])
     dates, last = D.dates, D.T - 1
     asof = dates[last]
-    year = asof[:4]
-    i0 = next(i for i, d in enumerate(dates) if d[:4] == year)
-    ind = (load(os.path.join(SITE, "industry.json")) or {}).get("map") or {}
-    names = (load(os.path.join(SITE, "industry.json")) or {}).get("names") or {}
-    tw = dated_files("close/twse", [SITE])
-    twse_codes = set((load(tw[max(tw)]) or {}).get("c", {})) if tw else set()
+    info = load(os.path.join(SITE, "industry.json")) or {}
+    ind, names = info.get("map") or {}, info.get("names") or {}
+    twse_codes = set()
+    tw = sorted(p for p in os.listdir(os.path.join(SITE, "close", "twse")) if p.endswith(".json"))
+    if tw:
+        twse_codes = set((load(os.path.join(SITE, "close", "twse", tw[-1])) or {}).get("c", {}))
 
-    AC, ACf = D.AC, D.ACf
-    rows, skipped = [], 0
-    for c, k in D.ci.items():
-        real = np.nonzero(np.isfinite(AC[i0:, k]))[0]
-        if not len(real) or real[0] >= LATE_START or (last - i0) - real[-1] > STALE:
-            skipped += 1
-            continue
-        v = ACf[i0 + real[0]:last + 1, k]
-        base = i0 + real[0]
-        dd, hi, lo = drawdown(v)
-        scale = D.RCf[last, k] / ACf[last, k]          # 換成今天的基準
-        pk = int(np.argmax(v))
-        rows.append([
-            c, names.get(c) or D.names.get(c) or c, ind.get(c) or "", "上市" if c in twse_codes else "上櫃",
-            dates[base + hi], px(v[hi] * scale), dates[base + lo], px(v[lo] * scale), r1(dd),
-            dates[base + pk], px(v[pk] * scale), px(D.RCf[last, k]),
-            r1(v[-1] / v[pk] - 1), r1(v[-1] / v[lo] - 1), r1(v[-1] / v[0] - 1),
-            1 if D.LIQ[last, k] else 0,
-        ])
-    rows.sort(key=lambda r: r[8])
+    years = sorted({d[:4] for d in dates})
+    scale, sizes = {}, {}
+    out_dir = twse.DATA_DIR / "drawdown"
+    out_dir.mkdir(exist_ok=True)
+    for y in years:
+        idx = [i for i, d in enumerate(dates) if d[:4] == y]
+        a, b = idx[0], idx[-1]
+        series, sc = {}, {}
+        for c, k in D.ci.items():
+            real = np.nonzero(np.isfinite(D.AC[a:b + 1, k]))[0]
+            if not len(real):
+                continue
+            s, e = int(real[0]), int(real[-1])
+            cum = D.P.cum[c]
+            v = D.ACf[a + s:a + e + 1, k] * cum[b]           # 那一年最後一天的基準
+            series[c] = [s, e] + encode(v)
+            f = cum[last] / cum[b]
+            if abs(f - 1) > 1e-7:
+                sc[c] = sig(f, 7)
+        payload = {"year": y, "dates": dates[a:b + 1], "s": series}
+        twse.write_if_changed(out_dir / f"{y}.json", payload)
+        sizes[y] = len(series)
+        scale[y] = sc
+    # 資料修剪掉的年份，檔案也一起刪
+    for p in out_dir.glob("*.json"):
+        if p.stem not in years:
+            p.unlink()
 
-    # 加權指數當對照
+    meta = {c: [names.get(c) or D.names.get(c) or c, ind.get(c) or "", "上市" if c in twse_codes else "上櫃",
+                1 if D.LIQ[last, k] else 0] for c, k in D.ci.items()}
     tx = load(os.path.join(SITE, "taiex.json")) or {}
-    pairs = [(d, x) for d, x in zip(tx.get("d", []), tx.get("c", [])) if d[:4] == year and d <= asof and x]
-    taiex = None
-    if pairs:
-        v = np.array([x for _, x in pairs], float)
-        dd, hi, lo = drawdown(v)
-        pk = int(np.argmax(v))
-        taiex = {"hd": pairs[hi][0], "hp": round(v[hi], 2), "ld": pairs[lo][0], "lp": round(v[lo], 2), "dd": r1(dd),
-                 "pd": pairs[pk][0], "pp": round(v[pk], 2), "cl": round(v[-1], 2), "cur": r1(v[-1] / v[pk] - 1),
-                 "ytd": r1(v[-1] / v[0] - 1), "d": pairs[-1][0]}
+    pairs = [(d, x) for d, x in zip(tx.get("d", []), tx.get("c", [])) if dates[0] <= d <= asof and x]
 
-    n_all = D.N - skipped
-    dds = np.array([r[8] for r in rows])
     out = {
         "updated": datetime.now(TPE).isoformat(timespec="seconds"),
-        "asof": asof, "year": year, "from": dates[i0], "newLow": NEW_LOW,
-        "lowSince": dates[max(i0, last - NEW_LOW + 1)],
-        "count": {"all": int(n_all), "kept": len(rows),
-                  "d30": int((dds <= -30).sum()), "d50": int((dds <= -50).sum()), "d70": int((dds <= -70).sum())},
-        "taiex": taiex,
-        "cols": COLS, "rows": rows,
+        "asof": asof, "first": dates[0], "years": years, "unit": UNIT,
+        "lateStart": LATE_START, "stale": STALE, "newLow": NEW_LOW,
+        "meta": meta, "scale": scale,
+        "taiex": {"d": [d for d, _ in pairs], "c": [x for _, x in pairs]},
     }
     twse.write_if_changed(twse.DATA_DIR / "drawdown.json", out)
-    print(f"跌深：{year} 年（{dates[i0]} ～ {asof}）{n_all} 檔，最大回落超過 30% 的 {out['count']['d30']} 檔、"
-          f"超過 50% 的 {out['count']['d50']} 檔；最深 {rows[0][0]} {rows[0][1]} {rows[0][8]}%" if rows else "跌深：沒有資料")
+    print(f"跌深：{dates[0]} ～ {asof}，" + "、".join(f"{y} 年 {n} 檔" for y, n in sizes.items()))
     return 0
 
 
