@@ -34,7 +34,8 @@ window.StockNav = (function () {
     { key: 'rank', label: '排行', views: [
       { v: 'rank', label: '排行' }, { v: 'streak', label: '站穩' },
       { v: 'moves', label: '異動' }, { v: 'entry', label: '後續' },
-      { v: 'period', label: '週月' }] },
+      { v: 'period', label: '週月' },
+      { v: 'drawdown', label: '跌深', href: 'drawdown.html' }] },
     { key: 'tech', label: '技術', views: [
       { v: 'burst', label: '爆量' }, { v: 'ma', label: '均線' }, { v: 'macd', label: 'MACD' },
       { v: 'rsi', label: 'RSI' }, { v: 'combo', label: '組合' },

@@ -44,6 +44,7 @@ FRESH = [
     ("revenue/index.json", lambda d: d["asof"], "營收"),
     ("events/page.json", lambda d: d["asof"], "公告"),
     ("disposal.json", lambda d: d["asof"], "處置"),
+    ("drawdown.json", lambda d: d["asof"], "跌深"),
     ("futures.json", lambda d: d["d"][-1], "期貨原始資料"),
     ("futpage.json", lambda d: d["asof"], "期貨"),
 ]

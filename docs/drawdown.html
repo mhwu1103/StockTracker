@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>跌深</title>
+<meta name="description" content="跌深：今年每一檔股票從高點到之後低點的最大跌幅、現在離今年高點多遠、還在破底的">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0f1216">
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+<!-- ?v= 是前端版號，各頁與 sw.js 要一致，見 index.html 的說明 -->
+<link rel="stylesheet" href="style.css?v=107">
+<!-- 亮／暗切換。刻意不用 defer，理由在 theme.js 的開頭。 -->
+<script src="theme.js?v=107"></script>
+</head>
+<!-- data-view 告訴 nav.js：這是獨立頁面，而且停在「排行」群組的「跌深」那一項 -->
+<body data-view="drawdown">
+
+<header class="app-bar">
+  <div class="app-bar__top">
+    <h1>跌深</h1>
+  </div>
+  <p class="app-bar__meta" id="meta">載入中…</p>
+</header>
+
+<nav class="tabs"></nav>
+<nav class="subtabs"></nav>
+
+<main class="view">
+  <div id="view">
+    <p class="hint">載入中…</p>
+  </div>
+</main>
+
+<footer class="foot">
+  收盤價還原除權息，分割、減資也一併還原；價格換算成今天的基準，所以現價就是最後一天的收盤。
+  今年才上市、長期停牌的不列。跌得深不代表便宜，這一頁不是投資建議。
+</footer>
+
+<script src="nav.js?v=107" defer></script>
+<script src="drawdown.js?v=107" defer></script>
+</body>
+</html>

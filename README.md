@@ -509,6 +509,18 @@ openapi 的 t187ap05 只給最新一個月，而「成長有沒有在加速」�
 外資空單一個月加最快 20%、外資選擇權偏空到最低 20%、散戶偏多到近一年前 20% 時，頁面與 Telegram 推播（全市場「籌碼與資金」那一則）會提醒。
 回測在 BACKTEST.md「期貨籌碼的七個指標」，算式在 `scripts/futures.py`（網站與回測共用）。
 
+### 第十四頁：跌深
+
+`drawdown.html`，入口在「排行 → 跌深」。今年每一檔股票從高點跌下來有多深：
+
+- **最大回落**：今年先出現的高點，到它之後最低的那一天跌了多少（max drawdown）——高點買進、抱到最低最慘賠多少
+- **距高點**：現在離今年最高點多遠；跌深又反彈回來的，這裡會比最大回落淺
+- **還在破底**：今年最深的低點落在最近 5 個交易日，還沒止跌的
+
+可以篩市場（上市／上櫃）、成交熱門（策略頁同一個流動池）與產業；頂端放加權指數同一段期間的最大回落與跌超過
+30%／50%／70% 的家數當對照。收盤價還原除權息，分割、減資也還原（`gooaye.Prices`），價格換算成今天的基準；
+年初就在交易的才算，長期停牌的跳過，只存最大回落超過 25% 的。全部在 `build_drawdown.py` 算好。
+
 ### 三種寬度，三種版面
 
 同一份 DOM，三層：
@@ -659,6 +671,7 @@ scripts/
                     每日抓今年；第一次 --since 2021
   build_disposal.py 處置頁 → docs/data/disposal.json：今天公布的、處置中的、近期每一筆的結果
   backtest_disposal.py 處置股回測（只印表）：處置與出關之後的報酬，跟漲幅相近、沒被處置的比
+  build_drawdown.py 跌深頁 → docs/data/drawdown.json：今年每一檔的最大回落、距高點、還在破底
   build_revenue.py  營收頁 → docs/data/revenue/（index.json ＋ 每月一檔）：最近 24 個月的月營收、族群對照、
                     公布後的股價反應。讀 value/rev/、value/revdate/、close/、exright/、themes.json
   build_season.py   景氣頁的月曆 → docs/data/season.json：1～12 月清單、產業、walk-forward
@@ -731,6 +744,8 @@ docs/               GitHub Pages 網站根目錄
                     判斷全在 build_futures.py，這支只畫
   disposal.html disposal.js 「處置」——明天開始處置的股票、處置中的、近期結果，入口在
                     「技術 → 處置」。判斷全在 build_disposal.py，這支只畫
+  drawdown.html drawdown.js 「跌深」——今年從高點跌最深的、離高點最遠的、還在破底的，入口在
+                    「排行 → 跌深」。判斷全在 build_drawdown.py，這支只畫
   rev.html revenue.js 「營收速報」——這個月誰剛公布、創新高、股價反應了沒，入口在
                     「環境 → 營收」。判斷全在 build_revenue.py，這支只畫
   cycle.html cycle.js 「景氣循環」——用月營收找循環股與它們在循環的哪一段，入口在
@@ -783,6 +798,7 @@ docs/               GitHub Pages 網站根目錄
     futpage.json    期貨頁直接讀的表：近 250 個交易日的走勢、今天的值、百分位、回測判讀
     disposal/<年>.json  處置公告 [[公布日, 代號, 名稱, 起日, 迄日, 第幾次, 撮合分鐘, 市場], ...]
     disposal.json   處置頁直接讀的表：today／active／recent 三份清單、近期統計與回測數字（research）
+    drawdown.json   跌深頁直接讀的表：今年最大回落超過 25% 的每一檔（cols 是欄名、rows 是陣列）與加權指數對照
     revenue/        營收頁：index.json 是月份清單與子族群名，<月>.json 是那個月每一家的營收；
                     stock/<前兩碼>.json 是每一家 2019 起的逐月營收與年增（個股頁的營收圖）、年增、月增、新高、連續年增、公布日、
                     公布前 20 日與公布後的漲跌、股價是否創 60 日新高，以及子族群的彙總

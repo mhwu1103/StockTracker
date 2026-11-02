@@ -347,6 +347,13 @@ jobs:
         continue-on-error: true
         run: python scripts/build_disposal.py
 
+      # 跌深頁：今年每一檔從高點到之後低點的最大跌幅、離今年高點多遠、還在破底的。讀 close/、exright/、
+      # daily/、industry.json、taiex.json。
+      - name: 重算跌深頁
+        id: s47
+        continue-on-error: true
+        run: python scripts/build_drawdown.py
+
       - name: 提交資料變更
         id: s43
         run: |
