@@ -12,7 +12,7 @@
 - 年初就在交易的才算（第一筆收盤要在今年前 5 個交易日內），今年才上市的跳過；最後一筆收盤離最後
   一個交易日超過 10 個交易日的（長期停牌）也跳過
 
-只存最大回落超過 25% 的，檔案才不會太大；加權指數另外算一份當對照。
+每一檔都存（頁面上的搜尋要找得到跌得不深的）；加權指數另外算一份當對照。
 
 排在 build_history.py 之後（要最新的 close/）。
 """
@@ -29,7 +29,6 @@ import twse
 from gooaye import SITE, dated_files, load
 
 TPE = timezone(timedelta(hours=8))
-KEEP = -0.25        # 最大回落超過這個才存
 LATE_START = 5      # 第一筆收盤最晚在今年第幾個交易日
 STALE = 10          # 最後一筆收盤最多落後幾個交易日
 NEW_LOW = 5         # 今年最低點落在最近幾個交易日內 = 還在破底
@@ -75,8 +74,6 @@ def main() -> int:
         v = ACf[i0 + real[0]:last + 1, k]
         base = i0 + real[0]
         dd, hi, lo = drawdown(v)
-        if dd > KEEP:
-            continue
         scale = D.RCf[last, k] / ACf[last, k]          # 換成今天的基準
         pk = int(np.argmax(v))
         rows.append([
@@ -104,7 +101,7 @@ def main() -> int:
     dds = np.array([r[8] for r in rows])
     out = {
         "updated": datetime.now(TPE).isoformat(timespec="seconds"),
-        "asof": asof, "year": year, "from": dates[i0], "keep": r1(KEEP), "newLow": NEW_LOW,
+        "asof": asof, "year": year, "from": dates[i0], "newLow": NEW_LOW,
         "lowSince": dates[max(i0, last - NEW_LOW + 1)],
         "count": {"all": int(n_all), "kept": len(rows),
                   "d30": int((dds <= -30).sum()), "d50": int((dds <= -50).sum()), "d70": int((dds <= -70).sum())},

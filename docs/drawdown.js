@@ -5,7 +5,10 @@
  *   距高點     現在離今年最高點多遠（中間反彈過的，在這裡會比最大回落淺）
  *   還在破底   今年最低點就落在最近幾個交易日：還沒止跌的
  *
- * 全部在 scripts/build_drawdown.py 算好（只存最大回落超過 25% 的），這裡只篩選、排序、畫。
+ * 全部在 scripts/build_drawdown.py 算好，這裡只篩選、排序、畫。
+ *
+ * 搜尋（代號開頭或名稱）不管市場、流動性、產業與「還在破底」的篩選，直接在全部股票裡找；名次是
+ * 在這個分頁全市場的名次，搜到的才知道它排第幾。
  */
 
 const DATA = 'data';
@@ -23,7 +26,7 @@ const LIQS = [
 const PAGE = 50;
 const KEY = 'stocktracker.drawdown';
 
-const state = { data: null, rows: [], tab: 'dd', mk: 'all', liq: 'all', ind: '', more: 1 };
+const state = { data: null, rows: [], tab: 'dd', mk: 'all', liq: 'all', ind: '', q: '', more: 1 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -42,16 +45,23 @@ function pills(name, options, current) {
     .join('')}</div>`;
 }
 
+const sortKey = () => (state.tab === 'cur' ? 'cur' : 'dd');
+
 function filtered() {
   const d = state.data;
-  let xs = state.rows.filter((r) => (state.mk === 'all' || r.mk === state.mk)
+  const key = sortKey();
+  // 全市場名次（這個分頁的排序），篩選之後仍顯示原本的名次
+  const all = state.rows.slice().sort((a, b) => a[key] - b[key]);
+  all.forEach((r, i) => { r.no = i + 1; });
+  const q = state.q.trim().toLowerCase();
+  if (q) return all.filter((r) => r.c.startsWith(q) || (r.n || '').toLowerCase().includes(q));
+  let xs = all.filter((r) => (state.mk === 'all' || r.mk === state.mk)
     && (state.liq === 'all' || r.liq) && (!state.ind || r.ind === state.ind));
   if (state.tab === 'low') xs = xs.filter((r) => r.ld >= d.lowSince);
-  const key = state.tab === 'cur' ? 'cur' : 'dd';
-  return xs.slice().sort((a, b) => a[key] - b[key]);
+  return xs;
 }
 
-function row(r, i) {
+function row(r) {
   const cur = state.tab === 'cur';
   const sub = cur
     ? `今年高點 ${md(r.pd)} ${num(r.pp)} · 最大回落 ${pct(r.dd)}`
@@ -60,13 +70,13 @@ function row(r, i) {
     ? `現 ${num(r.cl)} · 今年 <span class="${dir(r.ytd)}">${pct(r.ytd, 0)}</span>`
     : `現 ${num(r.cl)} · ${r.reb > 0 ? `低點起 <span class="up">${pct(r.reb, 0)}</span>` : '就在低點'}`;
   return `<a class="row" href="index.html#/stock/${esc(r.c)}">
-    <span class="rank"><span class="no">${i + 1}</span></span>
+    <span class="rank"><span class="no">${r.no}</span></span>
     <span class="ident">
       <span class="name">${esc(r.n || r.c)}</span>
       <span class="code">${esc(r.c)} · ${esc(r.mk)}${r.ind ? ` · ${esc(r.ind)}` : ''}</span>
       <span class="rev-sub">${sub}</span>
     </span>
-    <span class="figures"><span class="value down">${pct(cur ? r.cur : r.dd)}</span><span class="price">${foot}</span></span>
+    <span class="figures"><span class="value ${dir(cur ? r.cur : r.dd)}">${pct(cur ? r.cur : r.dd)}</span><span class="price">${foot}</span></span>
   </a>`;
 }
 
@@ -95,27 +105,38 @@ function explain() {
   return '今年先出現的高點，到它之後最低的那一天跌了多少——高點買進、抱到最低，最慘會賠多少。';
 }
 
+function listHtml() {
+  const xs = filtered();
+  const shown = xs.slice(0, PAGE * state.more);
+  const rest = xs.length - shown.length;
+  const q = state.q.trim();
+  const head = q ? `<p class="note">搜尋「${esc(q)}」：${xs.length} 檔（不套用上面的篩選；名次是全市場的）</p>`
+    : `<p class="note">共 ${xs.length} 檔。</p>`;
+  return `${head}
+    ${shown.length ? shown.map(row).join('') : `<p class="hint">${q ? '找不到這檔股票（今年才上市或長期停牌的不列）。' : '沒有符合條件的股票。'}</p>`}
+    ${rest > 0 ? `<button class="cyc-morebtn" data-more="1">再列 ${Math.min(PAGE, rest)} 檔（還有 ${rest}）</button>` : ''}`;
+}
+
+function renderList() {
+  $('#dd-list').innerHTML = listHtml();
+}
+
 function render() {
   const d = state.data;
   $('#meta').textContent = `收盤 ${d.asof} · ${d.year} 年最大回落超過 50% 的 ${d.count.d50} 檔`;
   const inds = [...new Set(state.rows.map((r) => r.ind).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
-  const xs = filtered();
-  const shown = xs.slice(0, PAGE * state.more);
-  const rest = xs.length - shown.length;
   $('#view').innerHTML = `${summary()}
   <section class="card">
     <div class="controls cyc-tabs">${pills('tab', TABS, state.tab)}</div>
+    <div class="cond"><b>搜尋</b><input id="dd-q" type="search" inputmode="search" placeholder="代號或名稱，例如 2330、台積電"
+      value="${esc(state.q)}" autocomplete="off" style="flex:1 1 auto;min-width:0"></div>
     <div class="cond"><b>市場</b>${pills('mk', MARKETS, state.mk)}</div>
     <div class="cond"><b>流動性</b>${pills('liq', LIQS, state.liq)}</div>
     <div class="cond"><b>產業</b><select id="dd-ind"><option value="">全部產業</option>${inds
       .map((x) => `<option value="${esc(x)}" ${x === state.ind ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></div>
-    <p class="note">${explain()}${state.liq === 'liq' ? '「成交熱門」是近期常進成交值前段班的股票。' : ''}
-      只列最大回落超過 ${Math.abs(d.keep)}% 的，共 ${xs.length} 檔。</p>
+    <p class="note">${explain()}${state.liq === 'liq' ? '「成交熱門」是近期常進成交值前段班的股票。' : ''}</p>
   </section>
-  <section class="card">
-    ${shown.length ? shown.map(row).join('') : '<p class="hint">沒有符合條件的股票。</p>'}
-    ${rest > 0 ? `<button class="cyc-morebtn" data-more="1">再列 ${Math.min(PAGE, rest)} 檔（還有 ${rest}）</button>` : ''}
-  </section>`;
+  <section class="card" id="dd-list">${listHtml()}</section>`;
 }
 
 function save() {
@@ -133,11 +154,18 @@ function bind() {
     if (ds.tab) state.tab = ds.tab;
     else if (ds.mk) state.mk = ds.mk;
     else if (ds.liq) state.liq = ds.liq;
-    else if (ds.more) { state.more += 1; render(); return; }
+    else if (ds.more) { state.more += 1; renderList(); return; }
     else return;
     state.more = 1;
     save();
     render();
+  });
+  // 打字時只重畫清單，輸入框不重建，游標才不會跳掉
+  view.addEventListener('input', (ev) => {
+    if (ev.target.id !== 'dd-q') return;
+    state.q = ev.target.value;
+    state.more = 1;
+    renderList();
   });
   view.addEventListener('change', (ev) => {
     if (ev.target.id !== 'dd-ind') return;
