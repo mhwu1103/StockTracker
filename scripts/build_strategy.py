@@ -1,5 +1,8 @@
 """策略頁 → docs/data/strategy.json：今天的訊號、實盤追蹤的模擬持股、近一年照規則跑的淨值。
 
+兩套策略各一個帳：A＝動能 ＋ 營收創新高（檔案最上層的欄位），B＝好財報 ＋ 開高（"b" 底下同樣的欄位，
+另有 mix：兩個帳各放一半資金的淨值）。下面的說明兩套都適用，B 的實盤追蹤從 LIVE_FROM_B 開始、還要 events/。
+
     python scripts/build_strategy.py
 
 規則與算式在 scripts/strategy.py（回測 backtest_strategy.py 用同一份）。這支只讀網站上的資料
@@ -28,6 +31,7 @@ import strategy as S
 from gooaye import SITE, load
 
 LIVE_FROM = "2026-10-19"
+LIVE_FROM_B = "2026-11-16"      # 策略 B（好財報 ＋ 開高）的實盤追蹤從這天開盤開始
 YEAR = 250
 OUT = os.path.join(SITE, "strategy.json")
 TPE = timezone(timedelta(hours=8))
@@ -54,6 +58,36 @@ RESEARCH = {
         "選股管多頭、停手管空頭：同一套規則改成隨機選股，2022 一樣贏（停手的功勞），後段卻只有 3% 的路徑贏 0050",
         "每筆勝率約一半出頭，賺在少數大漲的股票；均線出場、移動停利、停利在空頭都更差",
         "組合的結果有路徑依賴：同一套規則只是挑股順序不同，兩年報酬就能差 10～15 個百分點以上",
+    ],
+}
+
+
+# 策略 B 的回測（2023-03 ～ 2026-11，長歷史，scripts/backtest_strategy_b.py）。財報要有去年同季可比，
+# 所以只有這一段、沒有前後段；同樣報 30 種挑股順序的中位數與範圍。出處在 BACKTEST.md「好財報 ＋ 開高」。
+RESEARCH_B = {
+    "period": "2023-03 ～ 2026-11",
+    "s": 447, "lo": 423, "hi": 468, "b": 270, "win": 100,
+    "mdd": -21, "bmdd": -27, "sharpe": 2.05, "bsharpe": 1.59,
+    "nobear": {"s": 476, "mdd": -33},                                 # 不分多空
+    "k10": {"s": 425, "mdd": -26},                                    # 最多 10 檔
+    "rand": {"s": 313, "win": 93},                                    # 同一天隨機挑有季報的股票（含多空）
+    "late": [{"d": 1, "s": 390}, {"d": 2, "s": 359}, {"d": 3, "s": 341}, {"d": 5, "s": 285}, {"d": 10, "s": 241}],
+    "mix": {"s": 441, "lo": 366, "hi": 530, "mdd": -24, "sharpe": 1.92,          # A、B 各一半
+            "a": 435, "alo": 284, "ahi": 630, "amdd": -34, "asharpe": 1.61},     # 同一段只做 A
+    "years": [
+        {"y": "2023", "win": 100, "pt": 14}, {"y": "2024", "win": 0, "pt": -10},
+        {"y": "2025", "win": 73, "pt": 1}, {"y": "2026", "win": 100, "pt": 63},
+    ],
+    # 每個訊號都買（不受檔數限制）；pwin 是組合裡的每筆勝率
+    "trade": {"n": 773, "stocks": 475, "win": 57, "avg": 5.3, "med": 1.8, "gain": 16.1, "loss": -9.2, "pwin": 60},
+    "notes": [
+        "沒有樣本外：只有 3 年 8 個月、約 14 季，幾乎都是多頭；門檻（年增 30%、開高 2%）是在同一段資料上定的。真正的考試是實盤追蹤",
+        "2024 年每一條路徑都輸 0050（中位數少 10 個百分點），2025 年打平；超額主要來自 2023 與 2026",
+        "賺在賺賠比，不在勝率：每筆只有一半贏同期的 0050，但賺的那筆平均是賠的將近兩倍",
+        "空頭時訊號變差（99 筆平均 −3.1%、44% 賺錢），所以帶空頭停手；5 年裡的空頭天數只有 11%",
+        "出場試過 21 種：固定 15～20 天最好，25 天以上、均線、移動停利都比較差；停損、停利跟不設差不多",
+        "只做電子股 +433%、只做非電子股 +265%（輸 0050）：訊號在兩邊都比隨機挑好，但非電子股這幾年本身就弱",
+        "訊號裡月營收也創 12 個月新高的 234 筆，每筆平均多賺 3 個百分點、每年都是正的——事後看的交集，還沒放進規則",
     ],
 }
 
@@ -152,20 +186,38 @@ def main() -> int:
         return {"dates": dates[start:], "eq": [round(float(x), 4) for x in res["eq"][start:]],
                 "bench": [round(float(x), 4) for x in res["bench"][start:]]}
 
-    # 實盤追蹤
-    li = next((i for i, d in enumerate(dates) if d >= LIVE_FROM), None)
-    live = {"from": LIVE_FROM, "started": li is not None}
-    staying = set()
-    if li is not None:
-        res = S.run(D, sig, li)
-        stay = [p for p in res["open"] if p["x"] > T]               # 明天開盤還不用賣的
-        staying = {p["k"] for p in stay}
+    def track(runner, sg, since):
+        """實盤追蹤：(頁面要的 dict, 明天開盤還不用賣的那幾檔, 模擬結果, 起點)"""
+        li = next((i for i, d in enumerate(dates) if d >= since), None)
+        live = {"from": since, "started": li is not None}
+        if li is None:
+            return live, set(), None, None
+        res = runner(D, sg, li)
+        staying = {p["k"] for p in res["open"] if p["x"] > T}
         live.update({
             "holdings": [holding(p) for p in sorted(res["open"], key=lambda p: p["e"])],
             "trades": [trade(t) for t in reversed(res["trades"])],
             "stats": stats(res, li), "curve": curve(res, li),
             "cash": round(float(res["cash"] / res["eq"][last]) * 100, 1),
         })
+        return live, staying, res, li
+
+    def yearly(runner, sg, ys):
+        yr = runner(D, sg, ys)
+        return yr, {
+            "from": dates[ys], "stats": stats(yr, ys), "curve": curve(yr, ys),
+            "holdings": [holding(p) for p in sorted(yr["open"], key=lambda p: p["e"])],
+            "trades": [trade(t) for t in reversed(yr["trades"])][:60],
+        }
+
+    def mix(ea, eb, bench, start):
+        """A、B 各放一半資金（兩個帳各跑各的，淨值相加）。A 比 B 早開始時，A 用起點前一天的收盤當 1"""
+        a = ea / (ea[start - 1] if np.isfinite(ea[start - 1]) else 1.0)
+        res = {"eq": (a + eb) / 2, "bench": bench, "trades": []}
+        return {"from": dates[start], "stats": stats(res, start), "curve": curve(res, start)}
+
+    # 實盤追蹤
+    live, staying, res_a, li = track(S.run, sig, LIVE_FROM)
     # 多空：0050（還原）收盤在 120 日線之下是空頭，明天開盤不買新股、閒錢放現金
     n = S.RULE["regime_ma"]
     reg = S.regime_ma(D, n)
@@ -197,11 +249,33 @@ def main() -> int:
 
     # 近一年
     ys = max(70, T - YEAR)
-    yr = S.run(D, sig, ys)
-    year = {
-        "from": dates[ys], "stats": stats(yr, ys), "curve": curve(yr, ys),
-        "holdings": [holding(p) for p in sorted(yr["open"], key=lambda p: p["e"])],
-        "trades": [trade(t) for t in reversed(yr["trades"])][:60],
+    yr, year = yearly(S.run, sig, ys)
+
+    # ---- 策略 B：好財報 ＋ 開高（規則在 strategy.py 的 RULE_B；多空開關跟 A 同一個）
+    sigb, info = S.signals_b(D)
+    live_b, staying_b, res_b, lb = track(S.run_b, sigb, LIVE_FROM_B)
+    cap_b = S.RULE_B["slots"] if bull else S.RULE_B["bear_slots"]
+    free_b = max(0, cap_b - len(staying_b))
+    signals_b, n_buy_b = [], 0
+    for k in sorted(np.nonzero(sigb[last])[0], key=lambda k: -np.nan_to_num(D.ret20[last, k])):
+        g, react, p1 = info[(last, k)]
+        held = k in staying_b
+        buy = not held and n_buy_b < free_b
+        n_buy_b += buy
+        signals_b.append(row(k, {
+            "close": float(D.RC[last, k]), "r20": pct(D.ret20[last, k]),
+            "q": f"{p1[:4]} Q{int(p1[5:7]) // 3}", "g": pct(g) if isinstance(g, float) else None,
+            "gt": g if isinstance(g, str) else None, "react": pct(react),
+            "held": held, "buy": bool(buy),
+        }))
+    yr_b, year_b = yearly(S.run_b, sigb, ys)
+    b = {
+        "rule": S.RULE_B, "signals": signals_b, "free": free_b,
+        "live": live_b, "year": year_b, "research": RESEARCH_B,
+        "mix": {
+            "live": mix(res_a["eq"], res_b["eq"], res_b["bench"], lb) if res_a and res_b and lb > li else None,
+            "year": mix(yr["eq"], yr_b["eq"], yr_b["bench"], ys),
+        },
     }
 
     out = {
@@ -210,6 +284,7 @@ def main() -> int:
         "rule": S.RULE,
         "signals": signals, "free": free, "regime": regime,
         "live": live, "year": year, "research": RESEARCH,
+        "b": b,
     }
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
@@ -218,7 +293,12 @@ def main() -> int:
           f"實盤{'自 ' + LIVE_FROM if li is not None else '尚未開始（' + LIVE_FROM + ' 起）'}"
           f"{'，' + str(ls.get('ret')) + '% vs 0050 ' + str(ls.get('bret')) + '%' if ls else ''}；"
           f"{'多頭' if bull else '空頭'}（0050 距 {n} 日線 {regime['gap']}%）；"
-          f"近一年 {year['stats']['ret']}% vs 0050 {year['stats']['bret']}% -> {os.path.relpath(OUT)}")
+          f"近一年 {year['stats']['ret']}% vs 0050 {year['stats']['bret']}%")
+    lsb = live_b.get("stats") or {}
+    print(f"  B（好財報＋開高）：訊號 {len(signals_b)} 檔，明天空位 {free_b}、要買 {n_buy_b} 檔；"
+          f"實盤{'自 ' + LIVE_FROM_B if lb is not None else '尚未開始（' + LIVE_FROM_B + ' 起）'}"
+          f"{'，' + str(lsb.get('ret')) + '% vs 0050 ' + str(lsb.get('bret')) + '%' if lsb else ''}；"
+          f"近一年 {year_b['stats']['ret']}% vs 0050 {year_b['stats']['bret']}% -> {os.path.relpath(OUT)}")
     return 0
 
 

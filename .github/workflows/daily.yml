@@ -319,8 +319,8 @@ jobs:
         continue-on-error: true
         run: python scripts/build_gooaye.py
 
-      # 策略頁：今天的訊號、實盤追蹤（2026-10-19 起）與近一年照規則跑的淨值。
-      # 讀 close/、daily/、exright/、value/rev/，跟 MK 頁一樣排在資料都更新完之後。
+      # 策略頁：兩套（動能＋營收創高 2026-10-19 起、好財報＋開高 2026-11-16 起）今天的訊號、實盤追蹤與近一年照規則跑的淨值。
+      # 讀 close/、daily/、exright/、value/rev/、events/，跟 MK 頁一樣排在資料都更新完之後。
       # 期貨頁：外資部位與成本、散戶多空比、大額交易人、P/C 比、基差、選擇權關卡。讀 futures.json 與
       # taiex.json；推播的「台指期」那一段也讀它，所以要排在推播之前。
       - name: 重算期貨頁

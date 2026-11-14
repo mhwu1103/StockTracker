@@ -452,6 +452,13 @@ openapi 的 t187ap05 只給最新一個月，而「成長有沒有在加速」�
 - **績效**：實盤追蹤（2026-10-19 開盤起，回測沒看過的資料）與近一年照同一套規則跑的淨值，都跟 0050 並排
 - **規則**：規則本身、5 年回測的範圍（30 種挑股順序的中位數）、它在哪幾年輸 0050
 
+最上面一排切換兩套，各一個帳、同一個多空開關，三個分頁的內容相同：
+
+- **動能＋營收創高**：上面那一套，最多 10 檔，實盤追蹤 2026-10-19 起
+- **好財報＋開高**：季報第一次公布、單季淨利年增 ≥ 30% 或轉盈、公布後第一個開盤開高 ≥ 2%（近 20 日進過成交值前 300），
+  開高那天收盤後確認、隔天開盤買，抱 20 個交易日，最多 20 檔；實盤追蹤 2026-11-16 起。「績效」多一張
+  「兩套各放一半」的淨值。回測與限制在 BACKTEST.md「好財報 ＋ 開高」（`backtest_strategy_b.py`）
+
 算式在 `scripts/strategy.py`，網站與回測共用。網站只留兩年資料，實盤追蹤要從 2026-10-19 前 60 個交易日起的
 資料，大約 2028-07 會被修剪掉，到那之前要改成把已出場的交易寫進檔案、接著算。
 
@@ -701,6 +708,7 @@ scripts/
   build_strategy.py 策略頁 → docs/data/strategy.json（今天的訊號、實盤追蹤、近一年淨值）。
                     排在資料都更新完之後
   backtest_strategy.py 策略的回測與壓力測試（漲停買不到、晚進場、持有天數、檔數、逐年、隨機選股）
+  backtest_strategy_b.py 策略頁第二套（好財報＋開高）的回測：對照、壓力測試、每筆交易、出場比較
   mine_strategies.py 排列組合挖掘：72 個原子條件的 1～3 個交集，發現期挑、驗證期考、股票對調當雜訊對照
   backtest_momentum_exit.py 動能進場 × 出場方式（跌破 5／10／20 日線、固定抱 20 天）
   study_monster.py  妖股（60 日內翻倍）起漲前的條件與抓到之後怎麼抱
@@ -821,7 +829,8 @@ docs/               GitHub Pages 網站根目錄
     gooaye.json     MK 頁：market（taiex／margin／macro）、lists（六份清單；drift 每列帶 rsi）、rules（記分板）、rsiFilter
     gooaye_stocks.json 每一檔的檢核表，欄位寫在檔案的 fields
     strategy.json   策略頁：signals（今天的訊號，buy＝明天開盤會買）、free（空位）、regime（多空）、live（實盤追蹤：
-                    holdings、trades、stats、curve）、year（近一年同樣的欄位）、rule、research（5 年回測摘要）
+                    holdings、trades、stats、curve）、year（近一年同樣的欄位）、rule、research（5 年回測摘要）；
+                    b 是第二套（好財報＋開高）同樣的欄位，另有 mix（兩個帳各放一半的淨值）
     rule.json       紀律頁直接讀的表：stocks 是代號 -> [簡稱, 收, 漲跌%, 10／20／60／240
                     日線, 10／20／60 日線連續站上（正）跌破（負）天數, 多頭排列, 外資連買天數]，
                     另帶整份 taiex。判斷規則不在檔案裡，在 docs/rule.js

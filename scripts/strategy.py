@@ -1,4 +1,4 @@
-"""策略頁與它的回測共用的算式：動能 ＋ 營收創新高，抱 20 天。
+"""策略頁與它的回測共用的算式：A＝動能 ＋ 營收創新高，B＝好財報 ＋ 開高（規則寫在檔案後半），都抱 20 天。
 
 同一個算式寫在兩個地方，遲早會一邊改了、另一邊沒改——回測說成立的規則，網站上跑的就不是
 同一個東西了。所以 build_strategy.py 與 backtest_strategy.py 都從這裡拿。
@@ -103,7 +103,8 @@ class Data:
             top[i, nz[np.argsort(-val[i, nz])[:RULE["liq_top"]]]] = True
         cs = np.cumsum(top, 0)
         w = RULE["liq_window"]
-        self.LIQ = (cs - np.vstack([np.zeros((w, N)), cs[:-w]])) >= RULE["liq_days"]
+        self.top_days = cs - np.vstack([np.zeros((w, N)), cs[:-w]])   # 近 w 天有幾天在前 liq_top
+        self.LIQ = self.top_days >= RULE["liq_days"]
         self.LIQ[:w - 1] = False
 
         # 創 60 日新高（還原收盤，含當天）
@@ -294,6 +295,80 @@ def simulate(D: Data, sig, start: int, end: int | None = None, hold=None, K=None
         tr.pop("ex", None)
     return {"eq": eq, "bench": bench, "trades": trades, "open": pos,
             "cash": units * D.b_close[T - 1] + cashv}
+
+
+# --------------------------------------------------------------------------
+# 策略 B：好財報 ＋ 開高，抱 20 天（2026-11-14 定案，回測在 BACKTEST.md「好財報 ＋ 開高」）
+#
+# - 範圍：普通股，近 20 個交易日至少 1 天在上市＋上櫃成交值前 300 名（比 A 寬：訊號多半是中小型股）
+# - 訊號：季報第一次公布（events.py：同一家同一期只算第一則），單季歸屬母公司淨利年增 ≥ 30% 或轉盈，
+#   而且公布後的第一個開盤 ÷ 公布前最後一個收盤 ≥ +2%。開高那天收盤後才算訊號（t 日），t+1 開盤買——
+#   「看到開高當場買」不好照做，回測也沒有比較好
+# - 開盤就漲停的跳過；抱 20 個交易日，第 21 天開盤賣；最多同時 20 檔、每檔 1/20；訊號多於空位時先買 20 日漲幅大的
+# - 閒錢、成本、多空開關都跟 A 一樣（0050、來回 0.585%、0050 在 120 日線下不買新股、閒錢放現金）
+RULE_B = {
+    "grow": 0.3,         # 單季淨利年增門檻（events.GROW）
+    "react": 0.02,       # 開盤反應門檻（events.REACT）
+    "liq_top": 300,
+    "liq_days": 1,       # 近 liq_window 天至少幾天在前 liq_top
+    "liq_window": 20,
+    "hold": 20,
+    "slots": 20,
+    "limit": 1.095,
+    "cost": 0.00585,
+    "regime_ma": 120,
+    "bear_slots": 0,
+    "bear_idle": "cash",
+}
+
+
+def fin_events(D: Data):
+    """每一則季報（有去年同季可比的）：[(t, k, g, react, 期末)]。
+    t 是反應日（公布後第一個開盤的那一天）在 D.dates 的位置，收盤後才知道訊號、t+1 開盤買；
+    g 是單季淨利年增（小數、"轉盈"、"轉虧"、"續虧"）；react 是那個開盤 ÷ 公布前最後一個收盤 − 1。"""
+    import events as E
+    first = E.first_fin(E.load_news(SITE))
+    q = E.quarterly(first)
+    out = []
+    for (code, p0, p1), (d, tm, _) in first.items():
+        if p0[5:] != "01-01" or p1[5:7] not in ("03", "06", "09", "12"):
+            continue
+        k = D.ci.get(code)
+        s, c0 = E.entry(D.dates, d, tm)
+        if k is None or c0 < 0 or s + 1 >= D.T:
+            continue
+        if not np.isfinite(D.AO[s + 1, k]) or not np.isfinite(D.ACf[c0, k]):
+            continue
+        g = E.growth(q, code, p1)
+        if g is not None:
+            out.append((s + 1, k, g, float(D.AO[s + 1, k] / D.ACf[c0, k] - 1), p1))
+    return out
+
+
+def pool_b(D: Data):
+    liq = D.top_days >= RULE_B["liq_days"]
+    liq[:RULE_B["liq_window"] - 1] = False
+    return liq
+
+
+def signals_b(D: Data, ev=None):
+    """(T × N 訊號, {(t, k): (g, react, 期末)})：t 日收盤後成立，t+1 開盤買"""
+    import events as E
+    ev = fin_events(D) if ev is None else ev
+    liq = pool_b(D)
+    sig, info = np.zeros((D.T, D.N), bool), {}
+    for t, k, g, r, p1 in ev:
+        if E.signal(g, r) == "good" and liq[t, k]:
+            sig[t, k] = True
+            info[(t, k)] = (g, r, p1)
+    return sig, info
+
+
+def run_b(D: Data, sig, start: int, **kw):
+    """策略 B 照定案的規則跑（20 檔、含多空切換）。網站與回測都用這個"""
+    opts = {"K": RULE_B["slots"], "hold": RULE_B["hold"], "regime": regime_ma(D, RULE_B["regime_ma"]),
+            "K_bear": RULE_B["bear_slots"], "bear_idle": RULE_B["bear_idle"], **kw}
+    return simulate(D, sig, start, **opts)
 
 
 def regime_ma(D: Data, n: int):
