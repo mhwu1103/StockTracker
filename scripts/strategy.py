@@ -1,4 +1,5 @@
-"""策略頁與它的回測共用的算式：A＝動能 ＋ 營收創新高，B＝好財報 ＋ 開高（規則寫在檔案後半），都抱 20 天。
+"""策略頁與它的回測共用的算式：A＝動能 ＋ 營收創新高，B＝好財報 ＋ 開高（都抱 20 天），C＝處置期間
+（公布隔天開盤買、抱到處置最後一天收盤）。B、C 的規則寫在檔案後半。
 
 同一個算式寫在兩個地方，遲早會一邊改了、另一邊沒改——回測說成立的規則，網站上跑的就不是
 同一個東西了。所以 build_strategy.py 與 backtest_strategy.py 都從這裡拿。
@@ -369,6 +370,154 @@ def run_b(D: Data, sig, start: int, **kw):
     opts = {"K": RULE_B["slots"], "hold": RULE_B["hold"], "regime": regime_ma(D, RULE_B["regime_ma"]),
             "K_bear": RULE_B["bear_slots"], "bear_idle": RULE_B["bear_idle"], **kw}
     return simulate(D, sig, start, **opts)
+
+
+# --------------------------------------------------------------------------
+# 策略 C：處置期間（2026-11-14 定案，回測在 BACKTEST.md「處置期間」）
+#
+# - 範圍：被交易所處置的普通股（disposal/<年>.json），不設流動性門檻
+# - 訊號：處置公布日 p 收盤後 → p+1（處置第一天）開盤買；開盤就漲停的跳過；已經在手上的不重複買
+# - 出場：處置最後一個交易日收盤賣；那天收盤跌停（≤ 前收 × 0.905，鎖住賣不掉）就隔天開盤賣
+# - 最多同時 10 檔、每檔 1/10；訊號多於空位時先買 20 日漲幅大的
+# - 閒錢放 0050、個股來回扣 0.585%。**不看多空**：這個效果在 2022 也在，加開關只是少賺
+RULE_C = {
+    "slots": 10,
+    "limit": 1.095,
+    "limit_down": 0.905,  # 最後一天收盤 ≤ 前收 × 這個數：跌停賣不掉，隔天開盤賣
+    "cost": 0.00585,
+}
+
+
+def disposal_events(D: Data, site=SITE):
+    """每一筆處置（普通股）：[{s, k, ie, n, fr, to}]。s 是公布日（收盤後才知道，s+1 開盤買），
+    ie 是處置最後一個交易日在 D.dates 的位置——迄日還沒到（超出資料）的給 D.T + 5，表示還沒到出場日。"""
+    import glob
+    import json
+    dates, out = D.dates, []
+
+    def on_or_before(d):
+        i = int(np.searchsorted(dates, d, "right")) - 1
+        return i if i >= 0 else None
+
+    for p in sorted(glob.glob(os.path.join(site, "disposal", "*.json"))):
+        with open(p, encoding="utf-8") as f:
+            rows = json.load(f)
+        for pub, code, name, fr, to, n, mins, mk in rows:
+            k = D.ci.get(code)
+            if k is None or pub < dates[0]:
+                continue
+            s = on_or_before(pub)
+            ie = on_or_before(to) if to <= dates[-1] else D.T + 5
+            if s is None or ie is None or ie <= s:
+                continue
+            out.append({"s": s, "k": k, "ie": ie, "n": min(n, 2), "fr": fr, "to": to})
+    return out
+
+
+def simulate_c(D: Data, ev, start: int, end: int | None = None, K=None, delay=0, order="ret20", seed=None,
+               skip_limit=True, last=None, slip=0.0, ld=True, hold=None, exit_open=False,
+               regime=None, bear_idle="cash"):
+    """策略 C 的逐日模擬，帳的記法跟 simulate 一樣（閒錢是 0050 的單位數，收盤結算）。
+
+    ev 是 disposal_events 的清單。s+1+delay 開盤買；last 給數字就改成「只抱最後 last 天」
+    （處置最後一天往前數第 last 天的開盤才買）。出場預設是處置最後一天收盤；ld＝那天收盤跌停就隔天開盤賣；
+    exit_open＝改成出關那天開盤賣；hold 給數字就改成固定抱 hold 天、第 hold+1 天開盤賣。
+    slip 是額外的來回滑價。regime 給了就是空頭不買新股、閒錢依 bear_idle 放現金或 0050。
+    回傳跟 simulate 一樣的 dict；open 裡每一筆多帶 to（處置迄日）、n（第幾次）、mode（"close"／"open"）。
+    """
+    K = K or RULE_C["slots"]
+    T = D.T if end is None else end
+    cost = RULE_C["cost"] + slip
+    rng = random.Random(seed)
+    by = defaultdict(list)
+    for e in ev:
+        t0 = e["s"] + 1 + delay
+        if last is not None:
+            t0 = max(t0, e["ie"] - last + 1)
+        by[t0].append(e)
+    units, cashv = 1.0 / D.b_open[start], 0.0
+    pos, trades, held = [], [], set()
+    eq = np.full(D.T, np.nan)
+    bench = np.full(D.T, np.nan)
+
+    def close_out(p, t, px, at, in_cash):
+        nonlocal units, cashv
+        r = px / p["px"] - 1 - cost
+        if in_cash:                                        # 空頭、閒錢放現金
+            cashv += p["amt"] * (1 + r)
+        else:
+            units += p["amt"] * (1 + r) / at
+        trades.append({"k": p["k"], "s": p["s"], "e": p["e"], "x": t, "r": r})
+        held.discard(p["k"])
+
+    for t in range(start, T):
+        bo, bc = D.b_open[t], D.b_close[t]
+        bull = True if regime is None or t == 0 else bool(regime[t - 1])
+        in_cash = not bull and bear_idle == "cash"
+        if in_cash and units:
+            cashv, units = cashv + units * bo, 0.0
+        elif not in_cash and cashv:
+            units, cashv = units + cashv / bo, 0.0
+        keep = []
+        for p in pos:                                      # 開盤賣（跌停延後的、或 exit_open／hold）
+            if p["mode"] == "open" and t >= p["x"]:
+                close_out(p, t, D.AOf[t, p["k"]], bo, in_cash)
+            else:
+                keep.append(p)
+        pos = keep
+        idle = units * bo + cashv
+        mark = idle + sum(p["amt"] * D.AOf[t, p["k"]] / p["px"] for p in pos)
+        if bull and len(pos) < K:
+            cand = list(by.get(t, ()))
+            if order == "random":
+                rng.shuffle(cand)
+            else:
+                cand.sort(key=lambda e: -np.nan_to_num(D.ret20[t - 1, e["k"]]))
+            for e in cand:
+                if len(pos) >= K:
+                    break
+                k = e["k"]
+                if k in held or np.isnan(D.AO[t, k]) or (skip_limit and D.LIMIT_OPEN[t, k]):
+                    continue
+                if hold is None and e["ie"] < t:
+                    continue
+                amt = mark / K
+                if idle < amt * 0.999:
+                    break
+                if in_cash:
+                    cashv -= amt
+                else:
+                    units -= amt / bo
+                idle -= amt
+                if hold is not None:
+                    x, mode = t + hold, "open"
+                elif exit_open:
+                    x, mode = e["ie"] + 1, "open"
+                else:
+                    x, mode = e["ie"], "close"
+                pos.append({"k": k, "s": e["s"], "e": t, "x": x, "amt": amt, "px": D.AOf[t, k], "mode": mode,
+                            "to": e["to"], "n": e["n"]})
+                held.add(k)
+        keep = []
+        for p in pos:                                      # 收盤賣
+            if p["mode"] == "close" and t >= p["x"]:
+                if ld and t > 0 and D.RCf[t, p["k"]] <= D.RCf[t - 1, p["k"]] * RULE_C["limit_down"]:
+                    p["mode"], p["x"] = "open", t + 1      # 跌停鎖住：隔天開盤賣
+                    keep.append(p)
+                else:
+                    close_out(p, t, D.ACf[t, p["k"]], bc, in_cash)
+            else:
+                keep.append(p)
+        pos = keep
+        eq[t] = units * bc + cashv + sum(p["amt"] * D.ACf[t, p["k"]] / p["px"] for p in pos)
+        bench[t] = bc / D.b_open[start]
+    return {"eq": eq, "bench": bench, "trades": trades, "open": pos,
+            "cash": units * D.b_close[T - 1] + cashv}
+
+
+def run_c(D: Data, ev, start: int, **kw):
+    """策略 C 照定案的規則跑。網站與回測都用這個"""
+    return simulate_c(D, ev, start, **kw)
 
 
 def regime_ma(D: Data, n: int):

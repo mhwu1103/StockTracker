@@ -1,8 +1,9 @@
 /*
- * 策略（strategy.html）：兩套各一個帳，最上面一排切換——
+ * 策略（strategy.html）：三套各一個帳，最上面一排切換——
  *   A  動能 ＋ 營收創新高、抱 20 天、最多 10 檔（strategy.json 最上層的欄位）
- *   B  好財報 ＋ 開高、抱 20 天、最多 20 檔（strategy.json 的 b，欄位相同；另有 mix＝兩個帳各放一半）
- * 多空開關（0050 對 120 日線）兩套共用。底下三個分頁兩套都一樣：
+ *   B  好財報 ＋ 開高、抱 20 天、最多 20 檔（strategy.json 的 b，欄位相同；另有 mix＝A、B 兩個帳各放一半）
+ *   C  處置期間：公布隔天開盤買、處置最後一天收盤賣、最多 10 檔、不看多空（strategy.json 的 c；mix＝三個帳各放三分之一）
+ * 多空開關（0050 對 120 日線）A、B 共用。底下三個分頁三套都一樣：
  *
  *   今天   多空狀態（0050 對 120 日線）、今天收盤後的訊號（明天開盤照空位依序買）與實盤追蹤的持股
  *   績效   實盤追蹤（2026-10-19 起）與近一年照同一套規則跑的淨值，都跟 0050 並排；
@@ -22,6 +23,7 @@ const TABS = [
 const STRATS = [
   { value: 'a', label: '動能＋營收創高' },
   { value: 'b', label: '好財報＋開高' },
+  { value: 'c', label: '處置期間' },
 ];
 const PAGE = 20;
 const KEY_TAB = 'stocktracker.strategytab';
@@ -29,6 +31,7 @@ const KEY_STRAT = 'stocktracker.strategywhich';
 
 const state = { data: null, strat: 'a', tab: 'today', more: {} };
 const isB = () => state.strat === 'b';
+const isC = () => state.strat === 'c';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -153,9 +156,13 @@ function listMore(name, rows, render, empty) {
     ${rest > 0 ? `<button class="cyc-morebtn" data-more="${key}">再列 ${Math.min(PAGE, rest)} 檔（還有 ${rest}）</button>` : ''}`;
 }
 
-const holdingRow = (r) => stockRow(r, pct(r.r, 1), dir(r.r),
-  r.left <= 1 ? '明天開盤賣' : `第 ${r.day}/20 天`,
-  `${md(r.ed)} 開盤 ${fmt(r.px)} 買`);
+const holdingRow = (r) => (r.to
+  ? stockRow(r, pct(r.r, 1), dir(r.r),                       // 策略 C：抱到處置最後一天收盤
+    r.sell === 'open' ? '明天開盤賣' : `${md(r.to)} 收盤賣`,
+    `${md(r.ed)} 開盤 ${fmt(r.px)} 買 · 第${r.k === 2 ? '二' : '一'}次處置${r.sell === 'open' ? ' · 收盤跌停沒賣掉' : ''}`)
+  : stockRow(r, pct(r.r, 1), dir(r.r),
+    r.left <= 1 ? '明天開盤賣' : `第 ${r.day}/20 天`,
+    `${md(r.ed)} 開盤 ${fmt(r.px)} 買`));
 const tradeRow = (r) => stockRow(r, pct(r.r, 1), dir(r.r), `${md(r.ed)} → ${md(r.xd)}`, '已扣來回成本');
 
 // 外資台指期：不在規則裡，只當參考（回測在 BACKTEST.md「台指期法人未平倉」）
@@ -173,25 +180,36 @@ function futLine(f) {
 // --------------------------------------------------------------------------
 function todayView(d) {
   const B = isB();
+  const C = isC();
   const u = d.rule;
   const L = d.live;
   const buys = d.signals.filter((s) => s.buy);
   const rest = d.signals.filter((s) => !s.buy);
-  const sigRow = B
+  const sigRow = C
+    ? (s) => stockRow(s, pct(s.r10, 1), dir(s.r10), '近 10 日',
+      `第${s.k === 2 ? '二' : '一'}次處置 ${md(s.fr)}～${md(s.to)} · ${md(s.to)} 收盤賣${s.held ? ' · 已持有' : ''}`)
+    : B
     ? (s) => stockRow(s, pct(s.react, 1), dir(s.react), '公布後開盤',
       `${esc(s.q)} 單季淨利${s.gt ? esc(s.gt) : `年增 ${pct(s.g)}`} · 20 日 ${pct(s.r20)}${s.held ? ' · 已持有' : ''}`)
     : (s) => stockRow(s, pct(s.r20, 1), dir(s.r20), '20 日漲幅',
       `${s.m ? `${esc(s.m)} 營收 YoY ${pct(s.yoy)}` : '營收創新高'}${s.held ? ' · 已持有' : ''}`);
-  const none = B
+  const none = C
+    ? '今天沒有新公布的處置股。'
+    : B
     ? '今天沒有符合的季報。季報集中在 3 月底、5 月中、8 月中、11 月中公布，其他時候這裡多半是空的。'
     : '今天沒有同時符合兩個條件的股票。';
-  const what = B
+  const what = C
+    ? `今天收盤後公布、明天開始處置的普通股。明天開盤買，開盤就漲停的跳過、換下一檔；已經在手上的不重複買。
+      每檔投入淨值的 1/${u.slots}，抱到處置最後一天<b>收盤賣</b>（不等出關：回測裡出關後頭兩天各跌約 0.5%）；
+      那天收盤跌停賣不掉，就隔天開盤賣。訊號多於空位時先買 20 日漲幅大的。
+      處置期間是分盤撮合、可能要預收款券，戶頭要先有錢。`
+    : B
     ? `季報第一次公布、單季淨利年增 ≥ ${u.grow * 100}% 或轉盈，而且公布後第一個開盤開高 ≥ ${u.react * 100}%（今天就是開高的那一天）、
       近 ${u.liq_window} 日進過成交值前 ${u.liq_top}。照 20 日漲幅排，有空位就依序買；開盤就漲停的跳過、換下一檔。
       每檔投入淨值的 1/${u.slots}，抱 ${u.hold} 個交易日。<b>錯過就不追</b>：回測裡晚 1 天還行，晚 5 天以上超額剩不到一成。`
     : `收盤創 60 日新高、最新月營收創 12 個月新高、在成交值前 300 的常客。照 20 日漲幅排，有空位就依序買；
       開盤就漲停的跳過、換下一檔（得等開盤才知道）。每檔投入淨值的 1/${u.slots}，抱 ${u.hold} 個交易日。`;
-  const R = d.regime;
+  const R = C ? null : d.regime;              // 策略 C 不看多空
   const regime = R ? `<section class="card">
     <p class="rule-level rule-level--${R.bull ? 'ok' : 'warn'}">
       <b>${R.bull ? '多頭：照常買進' : '空頭：明天不買新股，閒錢放現金'}</b>
@@ -200,7 +218,7 @@ function todayView(d) {
     </p>${futLine(R.fut)}</section>` : '';
   const bear = R && !R.bull;
   return `${regime}<section class="card">
-    <h2>${bear ? '今天的訊號（空頭，不買）' : '明天開盤要買'} <small>${d.d} 收盤後 · 空位 ${d.free}/${d.rule.slots}</small></h2>
+    <h2>${bear ? '今天的訊號（空頭，不買）' : '明天開盤要買'} <small>${d.d} 收盤後 · 空位 ${d.free}/${d.rule.slots}${C ? ' · 不看多空' : ''}</small></h2>
     <p class="note">${what}</p>
     ${bear
       ? listMore('buy', d.signals, sigRow, none)
@@ -218,18 +236,28 @@ function todayView(d) {
   </section>`;
 }
 
-// 兩個帳各放一半資金（只有 B 那邊顯示）：淨值相加，不是共用空位
-function mixCard(M) {
+// 幾個帳各放一樣多的資金（B 那邊是 A、B 各一半，C 那邊是三套各三分之一）：淨值相加，不是共用空位
+function mixCard(M, three, R) {
   if (!M) return '';
+  const name = three ? '三套各三分之一' : '兩套各半';
   const part = (x, title) => (x && x.curve.dates.length > 1
     ? `<h3 class="gy-sec">${title} <small>${esc(x.from)} 起</small></h3>
-       ${equityChart(x.curve, `${title}：兩套各半的淨值與 0050`)}${riskTable(x.stats)}` : '');
+       ${equityChart(x.curve, `${title}：${name}的淨值與 0050`)}${riskTable(x.stats)}` : '');
   const body = part(M.live, '實盤追蹤') + part(M.year, '近一年');
-  return body ? `<section class="card">
+  if (!body) return '';
+  const m = R && R.mix;
+  return three ? `<section class="card">
+    <h2>三套各放三分之一 <small>三個帳各跑各的</small></h2>
+    <p class="note">表裡的「策略」是三個帳各放三分之一資金的合計。${m ? `回測（${esc(m.from)} 起）減掉 0050 之後，這一套跟動能＋營收創高的相關是
+      ${m.ca}、跟好財報＋開高是 ${m.cb}。三套各三分之一 ${pct(m.s)}、回落 ${m.mdd}%、夏普 ${m.sharpe.toFixed(2)}；
+      只做前兩套各一半 ${pct(m.ab)}、回落 ${m.abmdd}%、夏普 ${m.absharpe}；只做這一套 ${pct(m.c)}、回落 ${m.cmdd}%。
+      前兩套都輸的 2024 年，三套合起來每一條路徑都贏。` : ''}</p>
+    ${body}</section>`
+    : `<section class="card">
     <h2>兩套各放一半 <small>動能＋營收創高、好財報＋開高各一個帳</small></h2>
     <p class="note">表裡的「策略」是兩個帳各放一半資金的合計。回測（2023-03 起）兩套減掉 0050 之後的相關是 0.36：
       各放一半，報酬跟單做一套差不多，回落與「挑到哪幾檔」的運氣成分都比只做動能那一套小。</p>
-    ${body}</section>` : '';
+    ${body}</section>`;
 }
 
 function perfView(d) {
@@ -247,13 +275,13 @@ function perfView(d) {
       </section>`
     : `<section class="card"><h2>實盤追蹤 <small>${esc(L.from)} 開盤開始</small></h2>
         <p class="hint">還沒開始。從那天起的每一筆都會記在這裡，跟 0050 並排。</p></section>`;
-  return `${live}${B ? mixCard(d.mix) : ''}
+  return `${live}${B || isC() ? mixCard(d.mix, isC(), d.research) : ''}
   <section class="card">
     <h2>近一年照規則跑 <small>${esc(Y.from)} 起 · 每天往前滾</small></h2>
     ${statGrid(Y.stats)}
     ${equityChart(Y.curve, '近一年淨值與 0050')}
     ${riskTable(Y.stats)}
-    <p class="note">同一套規則從一年前開始跑。這一年的資料，在決定用這套規則的時候已經看過（${B ? '就在回測那一段裡' : '是回測的後段'}），
+    <p class="note">同一套規則從一年前開始跑。這一年的資料，在決定用這套規則的時候已經看過（${B || isC() ? '就在回測那一段裡' : '是回測的後段'}），
       所以只是讓你看規則長什麼樣子，不算考試；考試是上面的實盤追蹤。</p>
     <h3 class="gy-sec">每個月</h3>
     ${monthTable(Y.stats)}
@@ -261,6 +289,55 @@ function perfView(d) {
     ${listMore('yhold', Y.holdings, holdingRow, '沒有持股。')}
     <h3 class="gy-sec">最近出場</h3>
     ${listMore('ytr', Y.trades, tradeRow, '還沒有出場的交易。')}
+  </section>`;
+}
+
+function rulesViewC(d) {
+  const R = d.research;
+  const u = d.rule;
+  const T = R.trade;
+  const N = R.new;
+  return `<section class="card">
+    <h2>規則 <small>收盤後看公告，隔天開盤執行</small></h2>
+    <ul class="rule-rules">
+      <li><b>範圍</b><span>被證交所、櫃買公布處置（分盤撮合）的普通股，第一次、第二次處置都算。不設流動性門檻。</span></li>
+      <li><b>進場</b><span>處置公布那天收盤後確認，隔天（處置第一天）開盤買；開盤就漲停的跳過。已經在手上的不重複買。</span></li>
+      <li><b>出場</b><span>處置最後一個交易日收盤賣（現在的處置是 5 個交易日）。那天收盤跌停
+        （≤ 前一天收盤 × ${u.limit_down}）賣不掉，就隔天開盤賣。中間不停損、不停利。</span></li>
+      <li><b>多空</b><span>不看。另外兩套在 0050 跌破 120 日線時停手，這一套照做。</span></li>
+      <li><b>資金</b><span>最多同時 ${u.slots} 檔，每檔投入當下淨值的 1/${u.slots}；訊號多於空位時先買 20 日漲幅大的。
+        沒用到的錢放 0050。個股來回扣 ${(u.cost * 100).toFixed(3)}%。</span></li>
+    </ul>
+  </section>
+  <section class="card">
+    <h2>5 年回測 <small>${esc(R.period)} · 30 種挑股順序的中位數與 10～90% 範圍</small></h2>
+    <p class="rule-level rule-level--warn"><b>先看這兩件事</b>
+      <span>${esc(N.from)} 起處置從 10 個交易日改成 5 個，下面的數字幾乎都是舊制；新制只有 ${N.n} 筆。
+        而且每筆賺得薄，來回多扣 ${R.slip[2].p}% 滑價就跟 0050 打平。真正的考試是實盤追蹤。</span></p>
+    <ul class="rule-rules">
+      ${R.rows.map((r) => `<li><b>${esc(r.k)}</b><span>策略 ${pct(r.s)}（${pct(r.lo)} ～ ${pct(r.hi)}），0050 ${pct(r.b)}；
+        ${r.win}% 的路徑贏 0050。</span></li>`).join('')}
+      <li><b>最大回落</b><span>中位數 ${R.mdd}%，0050 ${R.bmdd}%；夏普值 ${R.sharpe}，0050 ${R.bsharpe}。</span></li>
+      <li><b>對照：同樣大漲、沒被處置的</b><span>前段 ${pct(R.ctrl.a)}、後段 ${pct(R.ctrl.b)}，沒有一條路徑贏 0050——
+        賺的不是「大漲之後還會漲」，是處置這件事。</span></li>
+      <li><b>新制單獨看</b><span>${esc(N.from)} 起 ${pct(N.s)}（${pct(N.lo)} ～ ${pct(N.hi)}），0050 ${pct(N.b)}，${N.win}% 的路徑贏；
+        每筆減同期 0050 平均 ${pct(N.x, 1)}、中位數 ${pct(N.xmed, 1)}。</span></li>
+      <li><b>多扣滑價</b><span>${R.slip.map((x) => `${x.p}%：${pct(x.a)}／${pct(x.b)}（後段 ${x.wb}% 贏）`).join('、')}。</span></li>
+      <li><b>只抱最後 5 天</b><span>前段 ${pct(R.last5.a)}、後段 ${pct(R.last5.b)}，回落 ${R.last5.mdd}%。舊制 10 天裡，報酬集中在後半。</span></li>
+      <li><b>不管處置到哪天、固定抱</b><span>${R.fixed.map((x) => `${x.d} 天 ${pct(x.a)}／${pct(x.b)}`).join('、')}，都輸 0050——
+        要賣在處置結束的那一天，不是抱幾天。</span></li>
+      <li><b>加上空頭停手</b><span>前段 ${pct(R.bear.a)}、後段 ${pct(R.bear.b)}，回落 ${R.bear.mdd}%。</span></li>
+    </ul>
+    <div class="stat-grid">
+      ${R.years.map((y) => `<div class="stat"><b class="${dir(y.pt)}">${y.pt > 0 ? '+' : ''}${y.pt} 點</b>
+        <span>${esc(y.y)}（${y.win}% 的路徑贏）</span></div>`).join('')}
+    </div>
+    <p class="note">每格是那一年策略減 0050 的中位數（百分點），30 種挑股順序。組合裡每筆勝率約 ${T.pwin}%。
+      每個訊號都買的話是 ${T.n} 筆：${T.win}% 賺錢，賺的平均 ${pct(T.gain, 1)}、賠的平均 ${pct(T.loss, 1)}，
+      每筆平均 ${pct(T.avg, 1)}、中位數 ${pct(T.med, 1)}；減同期 0050 平均 ${pct(T.x, 1)}、中位數 ${pct(T.xmed, 1)}。
+      拿掉最賺的 5%，平均只剩 ${pct(T.cut5, 1)}；${T.big}% 的交易單筆賠超過 20%。</p>
+    <h3 class="gy-sec">要知道的事</h3>
+    <ul class="rule-rules">${R.notes.map((x) => `<li><span>${esc(x)}</span></li>`).join('')}</ul>
   </section>`;
 }
 
@@ -344,13 +421,13 @@ function rulesView(d) {
 
 // --------------------------------------------------------------------------
 function render() {
-  // B 的欄位蓋在最上層（A）的上面：日期、多空兩套共用，其餘各自一份
-  const d = isB() ? { ...state.data, ...state.data.b } : state.data;
+  // B、C 的欄位蓋在最上層（A）的上面：日期共用（多空只有 A、B 看），其餘各自一份
+  const d = isB() ? { ...state.data, ...state.data.b } : isC() ? { ...state.data, ...state.data.c } : state.data;
   $('#meta').textContent = `資料 ${d.d} · 訊號 ${d.signals.length} 檔${d.live.started ? ` · 實盤 ${pct(d.live.stats.ret, 1)}（0050 ${pct(d.live.stats.bret, 1)}）` : ''}`;
   const head = `<section class="card"><div class="controls cyc-tabs">${pills('strat', STRATS, state.strat)}</div>
     <div class="controls cyc-tabs">${pills('tab', TABS, state.tab)}</div></section>`;
   const body = state.tab === 'perf' ? perfView(d)
-    : state.tab === 'rules' ? (isB() ? rulesViewB(d) : rulesView(d)) : todayView(d);
+    : state.tab === 'rules' ? (isC() ? rulesViewC(d) : isB() ? rulesViewB(d) : rulesView(d)) : todayView(d);
   $('#view').innerHTML = head + body;
 }
 
@@ -385,7 +462,7 @@ async function main() {
     const res = await fetch(`${DATA}/strategy.json`);
     if (!res.ok) throw new Error(`strategy.json ${res.status}`);
     state.data = await res.json();
-    if (!state.data.b) state.strat = 'a';          // 舊的 strategy.json 還沒有第二套
+    if (!state.data[state.strat] && state.strat !== 'a') state.strat = 'a';   // 舊的 strategy.json 還沒有那一套
   } catch (err) {
     console.error(err);
     $('#meta').textContent = '載入失敗';
